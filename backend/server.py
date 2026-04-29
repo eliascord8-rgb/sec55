@@ -147,23 +147,28 @@ async def checkout(req: CheckoutRequest, request: Request):
     # ----- Coupon flow -----
     if req.payment_method == "coupon":
         code = (req.coupon_code or "").strip().upper()
-        coupon = await db.coupons.find_one({"code": code})
-        if not coupon:
-            raise HTTPException(status_code=404, detail="Invalid coupon code")
-        if coupon["balance"] < req.price_usd:
-            raise HTTPException(status_code=400, detail=f"Insufficient coupon balance (${coupon['balance']:.2f})")
+        # Atomic deduct: only if balance is sufficient
+        deducted = await db.coupons.find_one_and_update(
+            {"code": code, "balance": {"$gte": req.price_usd}},
+            {"$inc": {"balance": -req.price_usd}},
+            return_document=False,
+        )
+        if not deducted:
+            existing = await db.coupons.find_one({"code": code})
+            if not existing:
+                raise HTTPException(status_code=404, detail="Invalid coupon code")
+            raise HTTPException(status_code=400, detail=f"Insufficient coupon balance (${existing['balance']:.2f})")
 
-        # Place SMM order
+        # Place SMM order; refund on failure
         try:
             smm_resp = await place_smm_order(req.service_id, req.link, req.quantity)
         except Exception as e:
+            await db.coupons.update_one({"code": code}, {"$inc": {"balance": req.price_usd}})
             raise HTTPException(status_code=502, detail=f"SMM API error: {e}")
 
         if "error" in smm_resp:
+            await db.coupons.update_one({"code": code}, {"$inc": {"balance": req.price_usd}})
             raise HTTPException(status_code=400, detail=f"SMM error: {smm_resp['error']}")
-
-        # Deduct balance
-        await db.coupons.update_one({"code": code}, {"$inc": {"balance": -req.price_usd}})
 
         base_doc.update({
             "status": "completed",
