@@ -413,6 +413,52 @@ async def set_smm_admin_config(payload: SmmConfig, x_admin_token: Optional[str] 
 
 
 # ===== Curated services =====
+@api_router.post("/admin/services/add-by-id")
+async def add_service_by_id(payload: dict, x_admin_token: Optional[str] = Header(None)):
+    """Body: {service_id: int}. Fetches the single service from provider and upserts it."""
+    check_admin(x_admin_token)
+    try:
+        sid = int(payload.get("service_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="service_id must be an integer")
+
+    try:
+        data = await smm_request({"action": "services"})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch from provider: {e}")
+    if not isinstance(data, list):
+        raise HTTPException(status_code=502, detail="Provider returned unexpected format")
+
+    match = None
+    for s in data:
+        try:
+            if int(s.get("service")) == sid:
+                match = s
+                break
+        except (TypeError, ValueError):
+            continue
+    if not match:
+        raise HTTPException(status_code=404, detail=f"Service #{sid} not found at provider")
+
+    provider_rate = float(match.get("rate") or 0)
+    base = {
+        "name": match.get("name", ""),
+        "category": match.get("category", "Other"),
+        "provider_rate": provider_rate,
+        "min": int(match.get("min", 1)),
+        "max": int(match.get("max", 1000000)),
+        "type": match.get("type", "Default"),
+        "synced_at": datetime.now(timezone.utc).isoformat(),
+    }
+    existing = await db.curated_services.find_one({"service_id": sid})
+    if existing:
+        await db.curated_services.update_one({"service_id": sid}, {"$set": base})
+        return {"action": "updated", "service_id": sid, "name": base["name"], "enabled": existing.get("enabled", False)}
+    new_doc = {"service_id": sid, "enabled": False, "custom_rate": provider_rate, **base}
+    await db.curated_services.insert_one(new_doc.copy())
+    return {"action": "added", "service_id": sid, "name": base["name"], "enabled": False}
+
+
 @api_router.post("/admin/services/sync")
 async def sync_services(x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
