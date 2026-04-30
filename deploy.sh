@@ -64,7 +64,12 @@ if ! command -v mongod >/dev/null; then
   curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc \
     | gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor
   CODENAME=$(. /etc/os-release && echo "${VERSION_CODENAME:-jammy}")
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg] https://repo.mongodb.org/apt/ubuntu ${CODENAME}/mongodb-org/7.0 multiverse" \
+  # MongoDB 7 has no 'noble' (24.04) repo yet — fall back to jammy packages (compatible)
+  case "${CODENAME}" in
+    noble|oracular) MONGO_CODENAME="jammy" ;;
+    *) MONGO_CODENAME="${CODENAME}" ;;
+  esac
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg] https://repo.mongodb.org/apt/ubuntu ${MONGO_CODENAME}/mongodb-org/7.0 multiverse" \
     > /etc/apt/sources.list.d/mongodb-org-7.0.list
   apt update
   apt install -y mongodb-org
