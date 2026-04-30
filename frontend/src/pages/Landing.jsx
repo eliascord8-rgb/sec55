@@ -305,8 +305,17 @@ export default function Landing() {
           <div className="font-display font-black text-base text-white">
             Better<span className="text-[#FF007F]">Social</span>
           </div>
-          <div className="text-xs uppercase tracking-[0.2em]">
-            © {new Date().getFullYear()} · No-login SMM
+          <div className="flex flex-col md:flex-row items-center gap-3 md:gap-6 text-center">
+            <div className="text-xs uppercase tracking-[0.2em]">
+              © {new Date().getFullYear()} · No-login SMM
+            </div>
+            <a
+              href="mailto:balkinstr@web.de"
+              data-testid="footer-contact"
+              className="text-xs uppercase tracking-[0.2em] text-[#FF007F] hover:text-white transition"
+            >
+              Contact 24/7 · balkinstr@web.de
+            </a>
           </div>
           <a href="/admin" className="text-xs uppercase tracking-[0.2em] hover:text-white" data-testid="admin-link">
             Admin →
