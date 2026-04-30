@@ -555,6 +555,17 @@ function ServicesPanel({ token }) {
         >
           Disable all
         </button>
+        <button
+          onClick={() => {
+            if (window.confirm(`Delete ALL ${items.length} services? This cannot be undone.`)) {
+              bulk("delete_all");
+            }
+          }}
+          data-testid="delete-all-btn"
+          className="px-3 py-2 bg-[#FF3B30]/15 border border-[#FF3B30]/40 text-[#FF3B30] hover:bg-[#FF3B30]/25 rounded-sm text-xs font-bold uppercase tracking-wider"
+        >
+          Delete all
+        </button>
         <div className="flex items-center gap-1">
           <Input
             type="number"

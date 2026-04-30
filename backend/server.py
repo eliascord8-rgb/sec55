@@ -533,6 +533,9 @@ async def bulk_update(payload: dict, x_admin_token: Optional[str] = Header(None)
     if action == "disable_all":
         r = await db.curated_services.update_many({}, {"$set": {"enabled": False}})
         return {"modified": r.modified_count}
+    if action == "delete_all":
+        r = await db.curated_services.delete_many({})
+        return {"deleted": r.deleted_count}
     if action == "apply_markup":
         try:
             pct = float(payload.get("percent", 0))
