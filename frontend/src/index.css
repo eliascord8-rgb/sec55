@@ -87,6 +87,16 @@ body {
     border-radius: 4px;
 }
 
+/* Hide Emergent injected badge */
+#emergent-badge,
+[id^="emergent-badge"],
+a[href*="emergent.sh"][id*="badge"] {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
 /* SweetAlert dark override */
 .swal2-popup.bs-swal {
     background: #1a1525 !important;
