@@ -404,6 +404,8 @@ function ServicesPanel({ token }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all"); // all | enabled | disabled
   const [markup, setMarkup] = useState("");
+  const [singleId, setSingleId] = useState("");
+  const [adding, setAdding] = useState(false);
   const [edits, setEdits] = useState({}); // { service_id: { custom_rate, enabled } }
 
   const load = async () => {
@@ -432,6 +434,25 @@ function ServicesPanel({ token }) {
       toast.error(e.response?.data?.detail || "Sync failed");
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const addById = async () => {
+    if (!singleId) return;
+    setAdding(true);
+    try {
+      const r = await adminApi(token).post("/admin/services/add-by-id", {
+        service_id: Number(singleId),
+      });
+      toast.success(`${r.data.action === "added" ? "Added" : "Updated"} #${r.data.service_id} · ${r.data.name?.slice(0, 40)}`);
+      setSingleId("");
+      // Filter to highlight the newly added service
+      setSearch(String(r.data.service_id));
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to add");
+    } finally {
+      setAdding(false);
     }
   };
 
@@ -493,13 +514,32 @@ function ServicesPanel({ token }) {
             {enabledCount} live
           </span>
         </div>
+        <div className="flex items-center gap-1">
+          <Input
+            type="number"
+            placeholder="provider service ID"
+            value={singleId}
+            onChange={(e) => setSingleId(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addById())}
+            data-testid="single-service-id"
+            className="w-44 bg-[#0d0a14] border-white/10 h-9 text-xs"
+          />
+          <button
+            onClick={addById}
+            disabled={adding || !singleId}
+            data-testid="add-by-id-btn"
+            className="px-3 py-2 bg-[#FF007F]/15 border border-[#FF007F]/40 text-[#FF007F] rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-[#FF007F]/25 disabled:opacity-50"
+          >
+            {adding ? "Adding…" : "+ Add by ID"}
+          </button>
+        </div>
         <button
           onClick={sync}
           disabled={syncing}
           data-testid="services-sync-btn"
           className="px-4 py-2 bg-[#00E5FF]/10 border border-[#00E5FF]/40 text-[#00E5FF] rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-[#00E5FF]/20 disabled:opacity-50"
         >
-          {syncing ? "Syncing…" : "↻ Sync from provider"}
+          {syncing ? "Syncing…" : "↻ Sync all"}
         </button>
         <button
           onClick={() => bulk("enable_all")}
