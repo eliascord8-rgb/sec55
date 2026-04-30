@@ -22,12 +22,21 @@
 
 ## Implemented (Feb 29, 2026)
 - Landing page (Hero / Features / How it works / Services teaser / Payments / FAQ / Footer)
-- Live checkout dialog: pulls 9000+ services from smmcost.com, search + category filter, link/qty/email inputs, total calc, two payment tabs
-- Coupon flow: multi-use balance, atomic deduction with refund-on-SMM-failure
+- Live checkout dialog: pulls **curated** services from the admin's selection, search + category filter, link/qty/email inputs, total calc, two payment tabs
+- Coupon flow: multi-use balance, atomic deduction with refund-on-SMM-failure, **auto-deletes when balance reaches $0**
 - CoinPayments flow: HMAC SHA-512 signed create_transaction; pending state with QR + address; "I've paid → check & fulfill" polls get_tx_info
 - SweetAlert2 success modal with SMM order ID
-- Admin login (DEMO/DEMO) → 3-tab dashboard: Orders (IP + status), Coupons (generate custom amount + table), Settings (CoinPayments keys with masked display)
+- Admin login (DEMO/DEMO) → 4-tab dashboard:
+  - **Orders** (IP + status)
+  - **Services** — sync 9k+ provider catalog, see provider price + your custom price, enable/disable per service, bulk enable/disable, % markup tool
+  - **Coupons** (generate custom amount + table)
+  - **Settings** (configurable SMM API URL+Key + CoinPayments keys with masked display)
 - Backend tests: 19/20 passed (1 skipped due to test ordering, not a bug)
+
+### Iteration 2 (Feb 29, 2026)
+- SMM API URL + Key are now stored in DB and editable from admin (was hardcoded)
+- Curated services system: admin syncs from provider, sets custom prices, only enabled services appear on the public checkout (provider price hidden from buyers)
+- Coupons auto-delete when balance hits $0
 
 ## Backlog
 ### P1

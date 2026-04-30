@@ -23,8 +23,8 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-SMM_API_URL = "https://smmcost.com/api/v2"
-SMM_API_KEY = os.environ.get("SMM_API_KEY", "47b5c3b01e4b5ecd1e53b39baef31a6e")
+SMM_API_URL_DEFAULT = "https://smmcost.com/api/v2"
+SMM_API_KEY_DEFAULT = os.environ.get("SMM_API_KEY", "47b5c3b01e4b5ecd1e53b39baef31a6e")
 
 ADMIN_USER = "DEMO"
 ADMIN_PASS = "DEMO"
@@ -58,6 +58,17 @@ class CoinPaymentsConfig(BaseModel):
     merchant_id: str
 
 
+class SmmConfig(BaseModel):
+    api_url: str
+    api_key: str
+
+
+class ServiceUpdate(BaseModel):
+    custom_rate: Optional[float] = None
+    enabled: Optional[bool] = None
+    name: Optional[str] = None
+
+
 class AdminLogin(BaseModel):
     username: str
     password: str
@@ -85,10 +96,18 @@ def gen_coupon_code() -> str:
     return "BS-" + "-".join("".join(secrets.choice(chars) for _ in range(4)) for _ in range(3))
 
 
+async def get_smm_config() -> dict:
+    cfg = await db.smm_config.find_one({}, {"_id": 0})
+    if cfg and cfg.get("api_url") and cfg.get("api_key"):
+        return cfg
+    return {"api_url": SMM_API_URL_DEFAULT, "api_key": SMM_API_KEY_DEFAULT}
+
+
 async def smm_request(payload: dict) -> dict:
-    payload["key"] = SMM_API_KEY
+    cfg = await get_smm_config()
+    payload["key"] = cfg["api_key"]
     async with httpx.AsyncClient(timeout=30.0) as c:
-        r = await c.post(SMM_API_URL, data=payload)
+        r = await c.post(cfg["api_url"], data=payload)
         r.raise_for_status()
         return r.json()
 
@@ -105,12 +124,21 @@ async def root():
 
 @api_router.get("/services")
 async def list_services():
-    try:
-        data = await smm_request({"action": "services"})
-        return {"services": data}
-    except Exception as e:
-        logger.error(f"SMM services error: {e}")
-        raise HTTPException(status_code=502, detail="Failed to fetch services")
+    """Public catalog: only curated enabled services with admin's custom price."""
+    items = await db.curated_services.find({"enabled": True}, {"_id": 0}).to_list(2000)
+    services = [
+        {
+            "service": s["service_id"],
+            "name": s.get("name", ""),
+            "category": s.get("category", "Other"),
+            "rate": s.get("custom_rate", 0),
+            "min": s.get("min", 1),
+            "max": s.get("max", 1000000),
+            "type": s.get("type", "Default"),
+        }
+        for s in items
+    ]
+    return {"services": services}
 
 
 @api_router.post("/coupon/check")
@@ -177,6 +205,12 @@ async def checkout(req: CheckoutRequest, request: Request):
             "smm_response": smm_resp,
         })
         await db.orders.insert_one(base_doc.copy())
+
+        # Auto-delete coupon when balance hits zero (or rounds to zero)
+        remaining = await db.coupons.find_one({"code": code}, {"_id": 0, "balance": 1})
+        if remaining and remaining.get("balance", 0) <= 0.005:
+            await db.coupons.delete_one({"code": code})
+
         return {"status": "success", "order_id": order_id, "smm_order_id": smm_resp.get("order")}
 
     # ----- CoinPayments flow -----
@@ -349,6 +383,125 @@ async def set_cp_config(payload: CoinPaymentsConfig, x_admin_token: Optional[str
     doc["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.coinpayments_config.update_one({}, {"$set": doc}, upsert=True)
     return {"configured": True}
+
+
+# ===== SMM API config =====
+@api_router.get("/admin/smm-config")
+async def get_smm_admin_config(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.smm_config.find_one({}, {"_id": 0})
+    if not cfg:
+        return {
+            "configured": False,
+            "api_url": SMM_API_URL_DEFAULT,
+            "api_key_masked": "*" * 8 + SMM_API_KEY_DEFAULT[-4:],
+        }
+    return {
+        "configured": True,
+        "api_url": cfg.get("api_url", ""),
+        "api_key_masked": ("*" * 8 + cfg.get("api_key", "")[-4:]) if cfg.get("api_key") else "",
+    }
+
+
+@api_router.post("/admin/smm-config")
+async def set_smm_admin_config(payload: SmmConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    doc = payload.model_dump()
+    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.smm_config.update_one({}, {"$set": doc}, upsert=True)
+    return {"configured": True}
+
+
+# ===== Curated services =====
+@api_router.post("/admin/services/sync")
+async def sync_services(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    try:
+        data = await smm_request({"action": "services"})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch from provider: {e}")
+    if not isinstance(data, list):
+        raise HTTPException(status_code=502, detail="Provider returned unexpected format")
+
+    added = 0
+    updated = 0
+    for s in data:
+        try:
+            sid = int(s.get("service"))
+        except (TypeError, ValueError):
+            continue
+        provider_rate = float(s.get("rate") or 0)
+        existing = await db.curated_services.find_one({"service_id": sid})
+        update_doc = {
+            "name": s.get("name", ""),
+            "category": s.get("category", "Other"),
+            "provider_rate": provider_rate,
+            "min": int(s.get("min", 1)),
+            "max": int(s.get("max", 1000000)),
+            "type": s.get("type", "Default"),
+            "synced_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not existing:
+            new_doc = {
+                "service_id": sid,
+                "enabled": False,
+                "custom_rate": provider_rate,
+                **update_doc,
+            }
+            await db.curated_services.insert_one(new_doc.copy())
+            added += 1
+        else:
+            await db.curated_services.update_one({"service_id": sid}, {"$set": update_doc})
+            updated += 1
+    total = await db.curated_services.count_documents({})
+    return {"added": added, "updated": updated, "total": total}
+
+
+@api_router.get("/admin/services")
+async def list_curated(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    items = await db.curated_services.find({}, {"_id": 0}).sort("service_id", 1).to_list(5000)
+    return {"services": items}
+
+
+@api_router.patch("/admin/services/{service_id}")
+async def update_curated(service_id: int, payload: ServiceUpdate, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    update_doc = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not update_doc:
+        return {"updated": False}
+    res = await db.curated_services.update_one({"service_id": service_id}, {"$set": update_doc})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Service not found")
+    return {"updated": True}
+
+
+@api_router.post("/admin/services/bulk")
+async def bulk_update(payload: dict, x_admin_token: Optional[str] = Header(None)):
+    """Body: {action: 'enable_all'|'disable_all'|'apply_markup', percent?: 30}"""
+    check_admin(x_admin_token)
+    action = payload.get("action")
+    if action == "enable_all":
+        r = await db.curated_services.update_many({}, {"$set": {"enabled": True}})
+        return {"modified": r.modified_count}
+    if action == "disable_all":
+        r = await db.curated_services.update_many({}, {"$set": {"enabled": False}})
+        return {"modified": r.modified_count}
+    if action == "apply_markup":
+        try:
+            pct = float(payload.get("percent", 0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid percent")
+        items = await db.curated_services.find({}, {"_id": 0, "service_id": 1, "provider_rate": 1}).to_list(5000)
+        modified = 0
+        for it in items:
+            new_rate = round(float(it.get("provider_rate", 0)) * (1 + pct / 100.0), 6)
+            await db.curated_services.update_one(
+                {"service_id": it["service_id"]}, {"$set": {"custom_rate": new_rate}}
+            )
+            modified += 1
+        return {"modified": modified, "percent": pct}
+    raise HTTPException(status_code=400, detail="Unknown action")
 
 
 app.include_router(api_router)
