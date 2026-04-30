@@ -36,9 +36,20 @@ log() { echo -e "\n\033[1;35m▶ $*\033[0m"; }
 
 log "1/8  Installing system packages…"
 apt update
+DEBIAN_FRONTEND=noninteractive apt install -y software-properties-common
+# Ensure Python 3.10+ on any Ubuntu (20 has 3.8 by default → install 3.11 from deadsnakes)
+. /etc/os-release
+if [[ "${VERSION_ID%%.*}" -lt "22" ]]; then
+  add-apt-repository -y ppa:deadsnakes/ppa
+  apt update
+  DEBIAN_FRONTEND=noninteractive apt install -y python3.11 python3.11-venv python3.11-distutils
+  PY=python3.11
+else
+  DEBIAN_FRONTEND=noninteractive apt install -y python3 python3-venv python3-pip
+  PY=python3
+fi
 DEBIAN_FRONTEND=noninteractive apt install -y \
-  python3.11 python3.11-venv python3-pip git curl gnupg \
-  nginx certbot python3-certbot-nginx ufw
+  git curl gnupg nginx certbot python3-certbot-nginx ufw
 
 if ! command -v node >/dev/null; then
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -70,7 +81,7 @@ chown -R www-data:www-data "${APP_DIR}"
 
 log "4/8  Setting up backend…"
 cd "${APP_DIR}/backend"
-sudo -u www-data python3.11 -m venv venv
+sudo -u www-data ${PY} -m venv venv
 sudo -u www-data ./venv/bin/pip install --upgrade pip
 sudo -u www-data ./venv/bin/pip install -r requirements.txt
 sudo -u www-data ./venv/bin/pip install gunicorn uvicorn
