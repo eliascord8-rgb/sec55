@@ -26,8 +26,8 @@ db = client[os.environ['DB_NAME']]
 SMM_API_URL_DEFAULT = "https://smmcost.com/api/v2"
 SMM_API_KEY_DEFAULT = os.environ.get("SMM_API_KEY", "47b5c3b01e4b5ecd1e53b39baef31a6e")
 
-ADMIN_USER = "DEMO"
-ADMIN_PASS = "DEMO"
+ADMIN_USER = "Balkin99"
+ADMIN_PASS = "Armin1234"
 ADMIN_SESSIONS = set()  # in-mem session tokens
 
 app = FastAPI()
