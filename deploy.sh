@@ -20,11 +20,11 @@
 set -euo pipefail
 
 # ───────────────────────── CONFIG ────────────────────────────────────────────
-DOMAIN="yourdomain.com"                 # <-- CHANGE ME (no https://, no trailing /)
+DOMAIN="better-social.pro"              # <-- CHANGE ME (no https://, no trailing /)
 WWW_DOMAIN="www.${DOMAIN}"
-REPO_URL="https://github.com/YOU/better-social.git"   # <-- CHANGE ME
+REPO_URL="https://github.com/eliascord8-rgb/sec55.git"   # <-- CHANGE ME
 APP_DIR="/opt/better-social"
-ADMIN_EMAIL="you@example.com"           # <-- for Let's Encrypt notices
+ADMIN_EMAIL="balkinstr@web.de"          # <-- for Let's Encrypt notices
 DB_NAME="better_social"
 # ─────────────────────────────────────────────────────────────────────────────
 
