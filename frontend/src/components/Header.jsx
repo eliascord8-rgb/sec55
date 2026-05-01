@@ -7,12 +7,12 @@ export default function Header({ onCheckout }) {
       data-testid="site-header"
       className="fixed top-0 inset-x-0 z-40 backdrop-blur-md bg-[#050505]/70 border-b border-white/5"
     >
-      <div className="max-w-7xl mx-auto px-6 md:px-10 h-16 flex items-center justify-between">
-        <Link to="/" className="flex items-center gap-2" data-testid="brand-logo">
-          <div className="w-8 h-8 rounded-sm gradient-pp flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-white" strokeWidth={2.5} />
+      <div className="max-w-7xl mx-auto px-4 md:px-10 h-14 md:h-16 flex items-center justify-between gap-3">
+        <Link to="/" className="flex items-center gap-2 shrink-0" data-testid="brand-logo">
+          <div className="w-7 h-7 md:w-8 md:h-8 rounded-sm gradient-pp flex items-center justify-center">
+            <Sparkles className="w-3.5 h-3.5 md:w-4 md:h-4 text-white" strokeWidth={2.5} />
           </div>
-          <span className="font-display font-black text-lg tracking-tight">
+          <span className="font-display font-black text-base md:text-lg tracking-tight">
             Better<span className="text-[#FF007F]">Social</span>
           </span>
         </Link>
@@ -32,9 +32,9 @@ export default function Header({ onCheckout }) {
         <button
           onClick={onCheckout}
           data-testid="header-checkout-btn"
-          className="px-5 py-2 gradient-pp rounded-sm text-sm font-bold tracking-wide hover:opacity-90 transition"
+          className="px-4 md:px-5 py-2 gradient-pp rounded-sm text-xs md:text-sm font-bold tracking-wide hover:opacity-90 transition whitespace-nowrap"
         >
-          Checkout
+          Order now
         </button>
       </div>
     </header>
