@@ -59,7 +59,7 @@ export default function OrderPage() {
   };
 
   const submit = async () => {
-    if (!service || !link || !validQty) return;
+    if (!service || !link || !validQty || !email.trim() || !/.+@.+\..+/.test(email)) return;
     setSubmitting(true);
     try {
       const r = await api.post("/checkout", {
@@ -68,7 +68,7 @@ export default function OrderPage() {
         quantity: Number(qty),
         payment_method: method,
         coupon_code: method === "coupon" ? coupon : null,
-        customer_email: email || null,
+        customer_email: email,
         price_usd: Number(price.toFixed(4)),
       });
       if (r.data.status === "success") {
@@ -218,15 +218,20 @@ export default function OrderPage() {
 
               <div>
                 <Label className="text-[11px] uppercase tracking-wider text-white/60">
-                  Email (optional)
+                  Email <span className="text-[#FF007F]">*</span>
                 </Label>
                 <Input
                   data-testid="order-email"
+                  type="email"
+                  required
                   placeholder="you@email.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="bg-[#1a1525] border-white/10 mt-1"
                 />
+                <p className="text-[10px] text-white/40 mt-1">
+                  Required — we use it only to send your order confirmation.
+                </p>
               </div>
 
               <Tabs value={method} onValueChange={setMethod} className="w-full">
@@ -296,6 +301,8 @@ export default function OrderPage() {
                     submitting ||
                     !validQty ||
                     !link ||
+                    !email.trim() ||
+                    !/.+@.+\..+/.test(email) ||
                     (method === "coupon" && !coupon)
                   }
                   data-testid="order-submit"

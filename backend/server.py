@@ -42,9 +42,9 @@ class CheckoutRequest(BaseModel):
     service_id: int
     link: str
     quantity: int
-    payment_method: str  # "coupon" | "coinpayments"
+    payment_method: str  # "coupon" | "cryptomus"
     coupon_code: Optional[str] = None
-    customer_email: Optional[str] = None
+    customer_email: str = Field(..., min_length=3)
     price_usd: float
 
 
@@ -676,6 +676,22 @@ async def bulk_update(payload: dict, x_admin_token: Optional[str] = Header(None)
 
 
 app.include_router(api_router)
+
+# Register auth, chat, client dashboard, AI buy routers
+from auth_and_chat import auth_router, chat_router, client_router, ai_router, seed_owner  # noqa: E402
+
+app.include_router(auth_router)
+app.include_router(chat_router)
+app.include_router(client_router)
+app.include_router(ai_router)
+
+app.state.db = db
+app.state.place_smm_order = place_smm_order
+
+
+@app.on_event("startup")
+async def _startup():
+    await seed_owner(db)
 
 app.add_middleware(
     CORSMiddleware,
