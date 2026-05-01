@@ -4,7 +4,7 @@ import { adminApi, api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound } from "lucide-react";
+import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Admin() {
@@ -301,6 +301,17 @@ function CouponsPanel({ token }) {
     }
   };
 
+  const remove = async (code) => {
+    if (!window.confirm(`Delete coupon ${code}? This cannot be undone.`)) return;
+    try {
+      await adminApi(token).delete(`/admin/coupons/${code}`);
+      toast.success("Coupon deleted");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    }
+  };
+
   return (
     <div className="grid lg:grid-cols-[1fr_2fr] gap-6">
       <form
@@ -377,15 +388,26 @@ function CouponsPanel({ token }) {
                     {new Date(c.created_at).toLocaleDateString()}
                   </td>
                   <td className="px-6 py-3">
-                    <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(c.code);
-                        toast.success("Copied");
-                      }}
-                      className="text-white/60 hover:text-[#FF007F]"
-                    >
-                      <Copy className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-2 justify-end">
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(c.code);
+                          toast.success("Copied");
+                        }}
+                        className="text-white/60 hover:text-[#FF007F]"
+                        data-testid={`copy-coupon-${c.code}`}
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => remove(c.code)}
+                        data-testid={`delete-coupon-${c.code}`}
+                        className="text-white/60 hover:text-[#FF3B30]"
+                        title="Delete coupon"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -704,7 +726,7 @@ function SettingsPanel({ token }) {
   return (
     <div className="space-y-6">
       <SmmConfigPanel token={token} />
-      <CoinPaymentsPanel token={token} />
+      <CryptomusPanel token={token} />
     </div>
   );
 }
@@ -788,6 +810,111 @@ function SmmConfigPanel({ token }) {
         className="mt-5 px-6 py-3 gradient-pp rounded-sm font-bold tracking-wide hover:opacity-90 transition disabled:opacity-50"
       >
         {saving ? "Saving…" : "Save SMM API"}
+      </button>
+    </form>
+  );
+}
+
+function CryptomusPanel({ token }) {
+  const [cfg, setCfg] = useState(null);
+  const [merchantUuid, setMerchantUuid] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/cryptomus-config");
+      setCfg(r.data);
+      if (r.data.configured) setMerchantUuid(r.data.merchant_uuid || "");
+    } catch {}
+  };
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const save = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/cryptomus-config", {
+        merchant_uuid: merchantUuid,
+        payment_api_key: apiKey,
+      });
+      toast.success("Cryptomus configured");
+      setApiKey("");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form
+      onSubmit={save}
+      data-testid="cryptomus-form"
+      className="bg-[#1a1525] border border-white/5 rounded-sm p-8 max-w-2xl"
+    >
+      <div className="flex items-center gap-3 mb-6">
+        <KeyRound className="w-5 h-5 text-[#FF007F]" />
+        <h2 className="font-display font-bold text-lg">Cryptomus Payment Gateway</h2>
+      </div>
+      {cfg?.configured && (
+        <div className="mb-4 p-3 rounded-sm bg-[#00E5FF]/10 border border-[#00E5FF]/30 text-xs text-[#00E5FF]">
+          Configured · merchant: {cfg.merchant_uuid} · api key: {cfg.payment_api_key_masked}
+        </div>
+      )}
+      <div className="space-y-4">
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">
+            Merchant UUID
+          </Label>
+          <Input
+            data-testid="cryptomus-merchant"
+            value={merchantUuid}
+            onChange={(e) => setMerchantUuid(e.target.value)}
+            placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+            required
+          />
+          <p className="text-[10px] text-white/40 mt-1">
+            Dashboard → Merchant → API → Merchant UUID
+          </p>
+        </div>
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">
+            Payment API Key
+          </Label>
+          <Input
+            data-testid="cryptomus-api-key"
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="re-enter to update"
+            className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+            required
+          />
+          <p className="text-[10px] text-white/40 mt-1">
+            Used to sign requests and verify webhook postbacks.
+          </p>
+        </div>
+        <div className="p-3 bg-[#0d0a14] border border-white/5 rounded-sm">
+          <div className="text-[10px] uppercase tracking-wider text-white/50 mb-1">
+            Webhook URL (add this in Cryptomus dashboard)
+          </div>
+          <div className="font-mono text-xs text-[#00E5FF] break-all">
+            {typeof window !== "undefined" ? window.location.origin : ""}/api/cryptomus/webhook
+          </div>
+        </div>
+      </div>
+      <button
+        type="submit"
+        disabled={saving}
+        data-testid="cryptomus-save-btn"
+        className="mt-6 px-6 py-3 gradient-pp rounded-sm font-bold tracking-wide hover:opacity-90 transition disabled:opacity-50"
+      >
+        {saving ? "Saving…" : "Save Cryptomus credentials"}
       </button>
     </form>
   );

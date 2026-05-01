@@ -5,6 +5,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import uuid
+import base64
+import json as jsonlib
 import hmac
 import hashlib
 import secrets
@@ -56,6 +58,11 @@ class CoinPaymentsConfig(BaseModel):
     private_key: str
     ipn_secret: str
     merchant_id: str
+
+
+class CryptomusConfig(BaseModel):
+    merchant_uuid: str
+    payment_api_key: str
 
 
 class SmmConfig(BaseModel):
@@ -213,45 +220,51 @@ async def checkout(req: CheckoutRequest, request: Request):
 
         return {"status": "success", "order_id": order_id, "smm_order_id": smm_resp.get("order")}
 
-    # ----- CoinPayments flow -----
-    if req.payment_method == "coinpayments":
-        cfg = await db.coinpayments_config.find_one({}, {"_id": 0})
-        if not cfg or not cfg.get("public_key"):
-            raise HTTPException(status_code=400, detail="CoinPayments is not configured. Use coupon code instead.")
+    # ----- Cryptomus flow -----
+    if req.payment_method == "cryptomus":
+        cfg = await db.cryptomus_config.find_one({}, {"_id": 0})
+        if not cfg or not cfg.get("merchant_uuid") or not cfg.get("payment_api_key"):
+            raise HTTPException(status_code=400, detail="Cryptomus is not configured. Use coupon code instead.")
 
-        post_data = urlencode({
-            "version": "1",
-            "cmd": "create_transaction",
-            "key": cfg["public_key"],
-            "format": "json",
+        # Build backend origin (for callback) from request
+        origin = str(request.base_url).rstrip("/")
+        body = {
             "amount": f"{req.price_usd:.2f}",
-            "currency1": "USD",
-            "currency2": "BTC",
-            "buyer_email": req.customer_email or "noreply@bettersocial.app",
-            "item_name": f"Order {order_id[:8]}",
-            "custom": order_id,
-        })
-        sig = hmac.new(cfg["private_key"].encode(), post_data.encode(), hashlib.sha512).hexdigest()
+            "currency": "USD",
+            "order_id": order_id,
+            "url_callback": f"{origin}/api/cryptomus/webhook",
+            "url_success": f"{origin}/status/{order_id}",
+            "url_return": f"{origin}/status/{order_id}",
+            "lifetime": 3600,
+        }
+        body_json = jsonlib.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        b64 = base64.b64encode(body_json.encode("utf-8")).decode("utf-8")
+        sign = hashlib.md5((b64 + cfg["payment_api_key"]).encode("utf-8")).hexdigest()
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as c:
                 r = await c.post(
-                    "https://www.coinpayments.net/api.php",
-                    content=post_data,
-                    headers={"HMAC": sig, "Content-Type": "application/x-www-form-urlencoded"},
+                    "https://api.cryptomus.com/v1/payment",
+                    content=body_json.encode("utf-8"),
+                    headers={
+                        "merchant": cfg["merchant_uuid"],
+                        "sign": sign,
+                        "Content-Type": "application/json",
+                    },
                 )
                 cp = r.json()
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"CoinPayments error: {e}")
+            raise HTTPException(status_code=502, detail=f"Cryptomus error: {e}")
 
-        if cp.get("error") != "ok":
-            raise HTTPException(status_code=400, detail=f"CoinPayments: {cp.get('error')}")
+        if cp.get("state") != 0 or not cp.get("result"):
+            errors = cp.get("errors") or cp.get("message") or "Unknown Cryptomus error"
+            raise HTTPException(status_code=400, detail=f"Cryptomus: {errors}")
 
-        result = cp.get("result", {})
+        result = cp["result"]
         base_doc.update({
             "status": "pending",
-            "txn_id": result.get("txn_id"),
-            "checkout_url": result.get("checkout_url"),
-            "qrcode_url": result.get("qrcode_url"),
+            "txn_id": result.get("uuid"),
+            "checkout_url": result.get("url"),
             "crypto_amount": result.get("amount"),
             "crypto_address": result.get("address"),
         })
@@ -259,64 +272,142 @@ async def checkout(req: CheckoutRequest, request: Request):
         return {
             "status": "pending",
             "order_id": order_id,
-            "txn_id": result.get("txn_id"),
-            "checkout_url": result.get("checkout_url"),
-            "qrcode_url": result.get("qrcode_url"),
+            "txn_id": result.get("uuid"),
+            "checkout_url": result.get("url"),
             "amount": result.get("amount"),
+            "currency": result.get("currency"),
             "address": result.get("address"),
         }
 
     raise HTTPException(status_code=400, detail="Invalid payment method")
 
 
-@api_router.post("/coinpayments/check")
-async def check_coinpayments(req: CheckTxRequest):
-    """Poll CoinPayments status; if complete, place SMM order and mark fulfilled."""
+@api_router.get("/order-status/{order_id}")
+async def public_order_status(order_id: str):
+    """Public endpoint for the status page to poll order state."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0, "smm_response": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return {
+        "status": order.get("status", "pending"),
+        "smm_order_id": order.get("smm_order_id"),
+        "failure_reason": order.get("failure_reason"),
+        "payment_method": order.get("payment_method"),
+        "checkout_url": order.get("checkout_url"),
+        "price_usd": order.get("price_usd"),
+    }
+
+
+async def _cryptomus_sign(api_key: str, body: dict) -> tuple[str, str]:
+    body_json = jsonlib.dumps(body, separators=(",", ":"), ensure_ascii=False)
+    b64 = base64.b64encode(body_json.encode("utf-8")).decode("utf-8")
+    sig = hashlib.md5((b64 + api_key).encode("utf-8")).hexdigest()
+    return body_json, sig
+
+
+async def _finalize_order(order_id: str) -> dict:
+    """Place SMM order for a pending order; mark completed or failed."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        return {"status": "not_found"}
+    if order.get("status") == "completed":
+        return {"status": "completed", "smm_order_id": order.get("smm_order_id")}
+    try:
+        smm_resp = await place_smm_order(order["service_id"], order["link"], order["quantity"])
+    except Exception as e:
+        await db.orders.update_one({"id": order_id}, {"$set": {"status": "failed", "failure_reason": str(e)}})
+        return {"status": "failed", "reason": str(e)}
+    if "error" in smm_resp:
+        await db.orders.update_one(
+            {"id": order_id},
+            {"$set": {"status": "failed", "failure_reason": smm_resp["error"], "smm_response": smm_resp}},
+        )
+        return {"status": "failed", "reason": smm_resp["error"]}
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {"status": "completed", "smm_order_id": smm_resp.get("order"), "smm_response": smm_resp}},
+    )
+    return {"status": "completed", "smm_order_id": smm_resp.get("order")}
+
+
+@api_router.post("/cryptomus/check")
+async def check_cryptomus(req: CheckTxRequest):
+    """Poll Cryptomus status; if paid, place SMM order and mark fulfilled."""
     order = await db.orders.find_one({"id": req.order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.get("status") == "completed":
         return {"status": "completed", "smm_order_id": order.get("smm_order_id")}
-    if not order.get("txn_id"):
-        raise HTTPException(status_code=400, detail="No transaction id")
+    if order.get("status") == "failed":
+        return {"status": "failed", "reason": order.get("failure_reason")}
 
-    cfg = await db.coinpayments_config.find_one({}, {"_id": 0})
+    cfg = await db.cryptomus_config.find_one({}, {"_id": 0})
     if not cfg:
-        raise HTTPException(status_code=400, detail="CoinPayments not configured")
+        raise HTTPException(status_code=400, detail="Cryptomus not configured")
 
-    post_data = urlencode({
-        "version": "1",
-        "cmd": "get_tx_info",
-        "key": cfg["public_key"],
-        "format": "json",
-        "txid": order["txn_id"],
-    })
-    sig = hmac.new(cfg["private_key"].encode(), post_data.encode(), hashlib.sha512).hexdigest()
+    body = {"order_id": req.order_id}
+    body_json, sig = await _cryptomus_sign(cfg["payment_api_key"], body)
     async with httpx.AsyncClient(timeout=30.0) as c:
         r = await c.post(
-            "https://www.coinpayments.net/api.php",
-            content=post_data,
-            headers={"HMAC": sig, "Content-Type": "application/x-www-form-urlencoded"},
+            "https://api.cryptomus.com/v1/payment/info",
+            content=body_json.encode("utf-8"),
+            headers={"merchant": cfg["merchant_uuid"], "sign": sig, "Content-Type": "application/json"},
         )
         cp = r.json()
 
-    if cp.get("error") != "ok":
-        return {"status": "pending", "detail": cp.get("error")}
+    if cp.get("state") != 0:
+        return {"status": "pending", "detail": cp.get("message")}
 
     result = cp.get("result", {})
-    cp_status = result.get("status", 0)
-    # status >= 100 means complete
-    if int(cp_status) >= 100:
-        try:
-            smm_resp = await place_smm_order(order["service_id"], order["link"], order["quantity"])
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"SMM API error: {e}")
+    pay_status = (result.get("status") or "").lower()
+    if pay_status in ("paid", "paid_over"):
+        return await _finalize_order(req.order_id)
+    if pay_status in ("fail", "cancel", "system_fail", "wrong_amount"):
         await db.orders.update_one(
             {"id": req.order_id},
-            {"$set": {"status": "completed", "smm_order_id": smm_resp.get("order"), "smm_response": smm_resp}},
+            {"$set": {"status": "failed", "failure_reason": f"Payment {pay_status}"}},
         )
-        return {"status": "completed", "smm_order_id": smm_resp.get("order")}
-    return {"status": "pending", "cp_status": cp_status, "status_text": result.get("status_text")}
+        return {"status": "failed", "reason": f"Payment {pay_status}"}
+    return {"status": "pending", "cp_status": pay_status}
+
+
+@api_router.post("/cryptomus/webhook")
+async def cryptomus_webhook(request: Request):
+    """Receive Cryptomus IPN. Verify sign, then place SMM order on paid."""
+    cfg = await db.cryptomus_config.find_one({}, {"_id": 0})
+    if not cfg:
+        raise HTTPException(status_code=503, detail="Cryptomus not configured")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    provided_sign = payload.get("sign")
+    if not provided_sign:
+        raise HTTPException(status_code=400, detail="Missing sign")
+
+    verify_body = {k: v for k, v in payload.items() if k != "sign"}
+    body_json = jsonlib.dumps(verify_body, separators=(",", ":"), ensure_ascii=False)
+    b64 = base64.b64encode(body_json.encode("utf-8")).decode("utf-8")
+    expected = hashlib.md5((b64 + cfg["payment_api_key"]).encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(expected, provided_sign):
+        logger.warning(f"Cryptomus webhook sign mismatch for order {payload.get('order_id')}")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    order_id = payload.get("order_id")
+    pay_status = (payload.get("status") or "").lower()
+    if not order_id:
+        return {"ok": True}
+
+    if pay_status in ("paid", "paid_over"):
+        await _finalize_order(order_id)
+    elif pay_status in ("fail", "cancel", "system_fail", "wrong_amount"):
+        await db.orders.update_one(
+            {"id": order_id},
+            {"$set": {"status": "failed", "failure_reason": f"Payment {pay_status}"}},
+        )
+    return {"ok": True}
 
 
 # ============ ADMIN ROUTES ============
@@ -358,6 +449,37 @@ async def admin_create_coupon(payload: CouponCreate, x_admin_token: Optional[str
     }
     await db.coupons.insert_one(doc.copy())
     return {"code": code, "amount": payload.amount, "balance": payload.amount}
+
+
+@api_router.delete("/admin/coupons/{code}")
+async def admin_delete_coupon(code: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    res = await db.coupons.delete_one({"code": code.upper()})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Coupon not found")
+    return {"deleted": True}
+
+
+@api_router.get("/admin/cryptomus-config")
+async def get_cryptomus_admin_config(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.cryptomus_config.find_one({}, {"_id": 0})
+    if not cfg:
+        return {"configured": False}
+    return {
+        "configured": True,
+        "merchant_uuid": cfg.get("merchant_uuid", ""),
+        "payment_api_key_masked": ("*" * 8 + cfg.get("payment_api_key", "")[-4:]) if cfg.get("payment_api_key") else "",
+    }
+
+
+@api_router.post("/admin/cryptomus-config")
+async def set_cryptomus_admin_config(payload: CryptomusConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    doc = payload.model_dump()
+    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.cryptomus_config.update_one({}, {"$set": doc}, upsert=True)
+    return {"configured": True}
 
 
 @api_router.get("/admin/coinpayments-config")

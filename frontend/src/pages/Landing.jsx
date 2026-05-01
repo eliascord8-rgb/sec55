@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import Header from "@/components/Header";
-import CheckoutDialog from "@/components/CheckoutDialog";
-import { ArrowRight, Zap, Shield, Coins, Rocket, Ticket, Globe, TrendingUp } from "lucide-react";
+import ServicesCatalog from "@/components/ServicesCatalog";
+import { useNavigate } from "react-router-dom";
+import { ArrowRight, Zap, Shield, Coins, Rocket, Ticket } from "lucide-react";
 import { api } from "@/lib/api";
 
 const HERO_BG = "https://images.pexels.com/photos/31032752/pexels-photo-31032752.jpeg";
@@ -56,8 +57,8 @@ const FAQ = [
 ];
 
 export default function Landing() {
-  const [open, setOpen] = useState(false);
   const [stats, setStats] = useState({ services: 0, networks: 0 });
+  const navigate = useNavigate();
 
   useEffect(() => {
     api
@@ -70,9 +71,14 @@ export default function Landing() {
       .catch(() => {});
   }, []);
 
+  const goCatalog = () => {
+    const el = document.getElementById("services");
+    if (el) el.scrollIntoView({ behavior: "smooth" });
+  };
+
   return (
     <div className="relative bg-[#050505] text-white">
-      <Header onCheckout={() => setOpen(true)} />
+      <Header onCheckout={goCatalog} />
 
       {/* HERO */}
       <section className="relative pt-32 pb-24 md:pt-44 md:pb-40 overflow-hidden grain">
@@ -119,7 +125,7 @@ export default function Landing() {
 
             <div className="flex flex-col sm:flex-row gap-3">
               <button
-                onClick={() => setOpen(true)}
+                onClick={goCatalog}
                 data-testid="hero-checkout-btn"
                 className="group inline-flex items-center justify-center gap-2 px-8 py-4 gradient-pp rounded-sm font-bold tracking-wide hover:opacity-90 transition glow-purple"
               >
@@ -205,30 +211,8 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* SERVICES TEASER */}
-      <section id="services" className="py-24 md:py-32 border-t border-white/5 relative grain">
-        <div className="max-w-7xl mx-auto px-6 md:px-10 text-center">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full glass text-xs uppercase tracking-[0.2em] mb-6">
-            <Globe className="w-3 h-3 text-[#00E5FF]" /> Live catalog
-          </div>
-          <h2 className="font-display text-4xl md:text-6xl font-black tracking-tighter mb-6">
-            <span className="gradient-text">{stats.services || "1,000+"}</span> services.
-            <br />
-            One checkout.
-          </h2>
-          <p className="text-white/50 max-w-xl mx-auto mb-10">
-            Followers, likes, views, listens, votes, live viewers — across every platform that matters. Pulled
-            in real time from premium providers.
-          </p>
-          <button
-            onClick={() => setOpen(true)}
-            data-testid="services-cta"
-            className="inline-flex items-center gap-2 px-8 py-4 gradient-pp rounded-sm font-bold tracking-wide hover:opacity-90 transition"
-          >
-            <TrendingUp className="w-4 h-4" /> Open the catalog
-          </button>
-        </div>
-      </section>
+      {/* LIVE SERVICES CATALOG */}
+      <ServicesCatalog />
 
       {/* PAYMENT */}
       <section className="py-24 md:py-32 border-t border-white/5 bg-[#0d0a14]">
@@ -323,9 +307,13 @@ export default function Landing() {
         </div>
       </footer>
 
-      <CheckoutDialog open={open} onOpenChange={setOpen} />
+      <CheckoutDialogReplaced />
     </div>
   );
+}
+
+function CheckoutDialogReplaced() {
+  return null;
 }
 
 function Stat({ label, value }) {
