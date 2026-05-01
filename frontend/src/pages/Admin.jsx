@@ -122,7 +122,7 @@ function Dashboard({ token, onLogout }) {
 
       <main className="max-w-7xl mx-auto px-6 md:px-10 py-10">
         <Tabs defaultValue="orders" className="w-full">
-          <TabsList className="grid grid-cols-4 max-w-2xl bg-[#1a1525] mb-6 rounded-sm">
+          <TabsList className="grid grid-cols-5 max-w-3xl bg-[#1a1525] mb-6 rounded-sm">
             <TabsTrigger
               value="orders"
               data-testid="tab-orders"
@@ -145,6 +145,13 @@ function Dashboard({ token, onLogout }) {
               Coupons
             </TabsTrigger>
             <TabsTrigger
+              value="ai"
+              data-testid="tab-ai"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              AI Buy
+            </TabsTrigger>
+            <TabsTrigger
               value="settings"
               data-testid="tab-settings"
               className="data-[state=active]:bg-[#FF007F] rounded-sm"
@@ -161,6 +168,9 @@ function Dashboard({ token, onLogout }) {
           </TabsContent>
           <TabsContent value="coupons">
             <CouponsPanel token={token} />
+          </TabsContent>
+          <TabsContent value="ai">
+            <AIPanel token={token} />
           </TabsContent>
           <TabsContent value="settings">
             <SettingsPanel token={token} />
@@ -812,6 +822,163 @@ function SmmConfigPanel({ token }) {
         {saving ? "Saving…" : "Save SMM API"}
       </button>
     </form>
+  );
+}
+
+function AIPanel({ token }) {
+  const [map, setMap] = useState({ likes: 0, views: 0, comments: 0 });
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [m, o] = await Promise.all([
+        adminApi(token).get("/ai/admin/service-map"),
+        adminApi(token).get("/ai/admin/orders"),
+      ]);
+      setMap({
+        likes: m.data.likes || 0,
+        views: m.data.views || 0,
+        comments: m.data.comments || 0,
+      });
+      setOrders(o.data.orders || []);
+    } catch {
+      toast.error("Failed to load AI data");
+    }
+    setLoading(false);
+  };
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const save = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await adminApi(token).post("/ai/admin/service-map", {
+        likes: Number(map.likes) || 0,
+        views: Number(map.views) || 0,
+        comments: Number(map.comments) || 0,
+      });
+      toast.success("AI service map saved");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="space-y-6">
+      <form
+        onSubmit={save}
+        data-testid="ai-map-form"
+        className="bg-[#1a1525] border border-white/5 rounded-sm p-6 md:p-8 max-w-2xl"
+      >
+        <h2 className="font-display font-bold text-lg mb-1">AI Buy · Service Mapping</h2>
+        <p className="text-xs text-white/50 mb-5">
+          Assign a provider service ID to each category the AI can sell. Only curated services with
+          those IDs (enabled & priced) will work.
+        </p>
+        <div className="grid sm:grid-cols-3 gap-4">
+          {["likes", "views", "comments"].map((k) => (
+            <div key={k}>
+              <Label className="text-[11px] uppercase tracking-wider text-white/60">
+                TikTok Live {k}
+              </Label>
+              <Input
+                data-testid={`ai-map-${k}`}
+                type="number"
+                value={map[k]}
+                onChange={(e) => setMap({ ...map, [k]: e.target.value })}
+                className="bg-[#0d0a14] border-white/10 mt-1 font-mono"
+                placeholder="service ID"
+              />
+            </div>
+          ))}
+        </div>
+        <button
+          type="submit"
+          disabled={saving}
+          data-testid="ai-map-save"
+          className="mt-5 px-6 py-3 gradient-pp rounded-sm font-bold tracking-wide hover:opacity-90 transition disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save mapping"}
+        </button>
+      </form>
+
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-white/5 flex justify-between items-center">
+          <h2 className="font-display font-bold text-lg">AI Buy · Order Log</h2>
+          <button onClick={load} className="text-xs uppercase tracking-wider text-white/60 hover:text-white">
+            Refresh
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm" data-testid="ai-orders-table">
+            <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14]">
+              <tr>
+                <th className="text-left px-6 py-3">Date</th>
+                <th className="text-left px-6 py-3">User</th>
+                <th className="text-left px-6 py-3">Service</th>
+                <th className="text-left px-6 py-3">Link</th>
+                <th className="text-left px-6 py-3">Qty</th>
+                <th className="text-left px-6 py-3">Price</th>
+                <th className="text-left px-6 py-3">Coupon</th>
+                <th className="text-left px-6 py-3">Status</th>
+                <th className="text-left px-6 py-3">SMM ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={9} className="text-center py-10 text-white/40">
+                    <Loader2 className="inline w-4 h-4 animate-spin mr-2" /> Loading…
+                  </td>
+                </tr>
+              )}
+              {!loading && orders.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="text-center py-10 text-white/40 text-xs">
+                    No AI orders yet.
+                  </td>
+                </tr>
+              )}
+              {orders.map((o) => (
+                <tr key={o.id} className="border-t border-white/5 hover:bg-white/[0.02]">
+                  <td className="px-6 py-3 font-mono text-xs text-white/60">
+                    {new Date(o.created_at).toLocaleString()}
+                  </td>
+                  <td className="px-6 py-3 text-[#00E5FF] font-mono text-xs">
+                    @{o.username || "—"}
+                  </td>
+                  <td className="px-6 py-3 font-mono text-xs">#{o.service_id}</td>
+                  <td className="px-6 py-3 text-xs truncate max-w-[180px]">{o.link}</td>
+                  <td className="px-6 py-3 font-mono">{o.quantity}</td>
+                  <td className="px-6 py-3 font-mono text-[#FF007F]">
+                    ${o.price_usd?.toFixed(2)}
+                  </td>
+                  <td className="px-6 py-3 font-mono text-xs">{o.coupon_code || "—"}</td>
+                  <td className="px-6 py-3">
+                    <span
+                      className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded-sm ${
+                        o.status === "completed"
+                          ? "bg-[#00E5FF]/20 text-[#00E5FF]"
+                          : "bg-[#FFB800]/20 text-[#FFB800]"
+                      }`}
+                    >
+                      {o.status}
+                    </span>
+                  </td>
+                  <td className="px-6 py-3 font-mono text-xs">{o.smm_order_id || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   );
 }
 
