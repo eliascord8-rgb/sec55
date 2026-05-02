@@ -122,7 +122,7 @@ function Dashboard({ token, onLogout }) {
 
       <main className="max-w-7xl mx-auto px-6 md:px-10 py-10">
         <Tabs defaultValue="orders" className="w-full">
-          <TabsList className="grid grid-cols-5 max-w-3xl bg-[#1a1525] mb-6 rounded-sm">
+          <TabsList className="grid grid-cols-6 max-w-4xl bg-[#1a1525] mb-6 rounded-sm">
             <TabsTrigger
               value="orders"
               data-testid="tab-orders"
@@ -152,6 +152,13 @@ function Dashboard({ token, onLogout }) {
               AI Buy
             </TabsTrigger>
             <TabsTrigger
+              value="discord"
+              data-testid="tab-discord"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Discord
+            </TabsTrigger>
+            <TabsTrigger
               value="settings"
               data-testid="tab-settings"
               className="data-[state=active]:bg-[#FF007F] rounded-sm"
@@ -171,6 +178,9 @@ function Dashboard({ token, onLogout }) {
           </TabsContent>
           <TabsContent value="ai">
             <AIPanel token={token} />
+          </TabsContent>
+          <TabsContent value="discord">
+            <DiscordPanel token={token} />
           </TabsContent>
           <TabsContent value="settings">
             <SettingsPanel token={token} />
@@ -971,6 +981,239 @@ function AIPanel({ token }) {
                       {o.status}
                     </span>
                   </td>
+                  <td className="px-6 py-3 font-mono text-xs">{o.smm_order_id || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DiscordPanel({ token }) {
+  const [cfg, setCfg] = useState(null);
+  const [role, setRole] = useState("Developer");
+  const [secret, setSecret] = useState("");
+  const [botToken, setBotToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [c, o] = await Promise.all([
+        adminApi(token).get("/admin/discord-config"),
+        adminApi(token).get("/admin/discord/orders"),
+      ]);
+      setCfg(c.data);
+      setRole(c.data.developer_role_name || "Developer");
+      setOrders(o.data.orders || []);
+    } catch {
+      toast.error("Failed to load Discord data");
+    }
+    setLoading(false);
+  };
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const save = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/discord-config", {
+        bot_token: botToken || undefined,
+        developer_role_name: role,
+        shared_secret: secret,
+      });
+      toast.success("Discord config saved");
+      setSecret("");
+      setBotToken("");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    }
+    setSaving(false);
+  };
+
+  const genSecret = () => {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let out = "";
+    for (let i = 0; i < 32; i++) out += chars[Math.floor(Math.random() * chars.length)];
+    setSecret(out);
+  };
+
+  return (
+    <div className="space-y-6">
+      <form
+        onSubmit={save}
+        data-testid="discord-form"
+        className="bg-[#1a1525] border border-white/5 rounded-sm p-6 md:p-8 max-w-2xl"
+      >
+        <h2 className="font-display font-bold text-lg mb-1">Discord Bot Configuration</h2>
+        <p className="text-xs text-white/50 mb-5">
+          Shared secret is used by your Discord bot to authenticate with the backend. Set the same value
+          as the bot's <code className="text-[#FF007F]">BS_BOT_SHARED_SECRET</code> env var.
+        </p>
+        {cfg && (
+          <div className="mb-4 p-3 rounded-sm bg-[#00E5FF]/10 border border-[#00E5FF]/30 text-xs text-[#00E5FF]">
+            {cfg.configured ? "Bot configured" : "Not configured yet"} · role:{" "}
+            <b>{cfg.developer_role_name}</b>
+            {cfg.configured && (
+              <>
+                {" "}
+                · token: {cfg.bot_token_masked} · secret: {cfg.shared_secret_masked}
+              </>
+            )}
+          </div>
+        )}
+        <div className="space-y-4">
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">
+              Discord Bot Token
+            </Label>
+            <Input
+              data-testid="discord-bot-token"
+              type="password"
+              value={botToken}
+              onChange={(e) => setBotToken(e.target.value)}
+              placeholder={cfg?.configured ? "re-enter to update" : "MTA..."}
+              className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+            />
+            <p className="text-[10px] text-white/40 mt-1">
+              From https://discord.com/developers/applications → Bot → Token. Stored here for your
+              reference; the bot process itself reads it from its environment variable.
+            </p>
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">
+              Developer Role Name
+            </Label>
+            <Input
+              data-testid="discord-role"
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              required
+              className="bg-[#0d0a14] border-white/10 mt-1"
+            />
+            <p className="text-[10px] text-white/40 mt-1">
+              Members with this exact role can order without a coupon. Everyone else must supply one.
+            </p>
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">
+              Shared Secret
+            </Label>
+            <div className="flex gap-2 mt-1">
+              <Input
+                data-testid="discord-secret"
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                placeholder={cfg?.configured ? "re-enter to rotate" : "32+ chars"}
+                className="bg-[#0d0a14] border-white/10 font-mono text-xs"
+              />
+              <button
+                type="button"
+                onClick={genSecret}
+                data-testid="discord-gen-secret"
+                className="px-3 bg-white/5 hover:bg-white/10 rounded-sm text-xs font-bold uppercase tracking-wider whitespace-nowrap"
+              >
+                Generate
+              </button>
+            </div>
+          </div>
+        </div>
+        <button
+          type="submit"
+          disabled={saving || !secret}
+          data-testid="discord-save"
+          className="mt-5 px-6 py-3 gradient-pp rounded-sm font-bold tracking-wide hover:opacity-90 transition disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save Discord config"}
+        </button>
+      </form>
+
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6">
+        <h2 className="font-display font-bold text-lg mb-3">How to run the bot</h2>
+        <ol className="text-sm text-white/70 space-y-2 list-decimal ml-5">
+          <li>
+            SSH to the VPS and cd to <code className="text-[#FF007F]">/opt/better-social/discord_bot</code>
+          </li>
+          <li>
+            Install deps once:{" "}
+            <code className="text-[#00E5FF]">sudo /opt/better-social/backend/venv/bin/pip install "discord.py&gt;=2.3"</code>
+          </li>
+          <li>Follow the README to add the systemd service and start it</li>
+          <li>
+            In Discord: create a <b>{role}</b> role and assign it to team members who should order free
+          </li>
+          <li>
+            Invite the bot with <code className="text-[#FF007F]">bot</code> +{" "}
+            <code className="text-[#FF007F]">applications.commands</code> scopes
+          </li>
+        </ol>
+      </div>
+
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-white/5 flex justify-between items-center">
+          <h2 className="font-display font-bold text-lg">Discord Orders</h2>
+          <button onClick={load} className="text-xs uppercase tracking-wider text-white/60 hover:text-white">
+            Refresh
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm" data-testid="discord-orders-table">
+            <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14]">
+              <tr>
+                <th className="text-left px-6 py-3">Date</th>
+                <th className="text-left px-6 py-3">Discord User</th>
+                <th className="text-left px-6 py-3">Dev?</th>
+                <th className="text-left px-6 py-3">Service</th>
+                <th className="text-left px-6 py-3">Link</th>
+                <th className="text-left px-6 py-3">Qty</th>
+                <th className="text-left px-6 py-3">Price</th>
+                <th className="text-left px-6 py-3">Coupon</th>
+                <th className="text-left px-6 py-3">SMM ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={9} className="text-center py-10 text-white/40">
+                    <Loader2 className="inline w-4 h-4 animate-spin mr-2" /> Loading…
+                  </td>
+                </tr>
+              )}
+              {!loading && orders.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="text-center py-10 text-white/40 text-xs">
+                    No Discord orders yet.
+                  </td>
+                </tr>
+              )}
+              {orders.map((o) => (
+                <tr key={o.id} className="border-t border-white/5 hover:bg-white/[0.02]">
+                  <td className="px-6 py-3 font-mono text-xs text-white/60">
+                    {new Date(o.created_at).toLocaleString()}
+                  </td>
+                  <td className="px-6 py-3 text-[#00E5FF] font-mono text-xs">{o.discord_username || "—"}</td>
+                  <td className="px-6 py-3 text-xs">
+                    {o.is_developer ? (
+                      <span className="text-[10px] uppercase tracking-wider bg-[#FFB800]/20 text-[#FFB800] px-2 py-1 rounded-sm">
+                        dev
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="px-6 py-3 text-xs">{o.service_type || `#${o.service_id}`}</td>
+                  <td className="px-6 py-3 text-xs truncate max-w-[160px]">{o.link}</td>
+                  <td className="px-6 py-3 font-mono">{o.quantity}</td>
+                  <td className="px-6 py-3 font-mono text-[#FF007F]">${o.price_usd?.toFixed(2)}</td>
+                  <td className="px-6 py-3 font-mono text-xs">{o.coupon_code || "—"}</td>
                   <td className="px-6 py-3 font-mono text-xs">{o.smm_order_id || "—"}</td>
                 </tr>
               ))}

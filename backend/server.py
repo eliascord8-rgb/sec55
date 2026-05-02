@@ -65,6 +65,12 @@ class CryptomusConfig(BaseModel):
     payment_api_key: str
 
 
+class DiscordConfig(BaseModel):
+    bot_token: Optional[str] = None
+    developer_role_name: str = "Developer"
+    shared_secret: str
+
+
 class SmmConfig(BaseModel):
     api_url: str
     api_key: str
@@ -471,6 +477,150 @@ async def get_cryptomus_admin_config(x_admin_token: Optional[str] = Header(None)
         "merchant_uuid": cfg.get("merchant_uuid", ""),
         "payment_api_key_masked": ("*" * 8 + cfg.get("payment_api_key", "")[-4:]) if cfg.get("payment_api_key") else "",
     }
+
+
+# ===== Discord Bot Integration =====
+@api_router.get("/admin/discord-config")
+async def get_discord_config(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.discord_config.find_one({}, {"_id": 0})
+    if not cfg:
+        return {"configured": False, "developer_role_name": "Developer"}
+    return {
+        "configured": bool(cfg.get("bot_token")),
+        "developer_role_name": cfg.get("developer_role_name", "Developer"),
+        "bot_token_masked": ("*" * 12 + cfg.get("bot_token", "")[-6:]) if cfg.get("bot_token") else "",
+        "shared_secret_masked": ("*" * 8 + cfg.get("shared_secret", "")[-4:]) if cfg.get("shared_secret") else "",
+    }
+
+
+@api_router.post("/admin/discord-config")
+async def set_discord_config(payload: DiscordConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    doc = payload.model_dump(exclude_none=True)
+    if not doc.get("shared_secret"):
+        raise HTTPException(status_code=400, detail="Shared secret is required")
+    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.discord_config.update_one({}, {"$set": doc}, upsert=True)
+    return {"configured": True}
+
+
+class DiscordOrderRequest(BaseModel):
+    service_type: str  # likes|views|comments
+    link: str
+    quantity: int
+    coupon_code: Optional[str] = None
+    is_developer: bool = False
+    discord_user_id: str
+    discord_username: str
+
+
+@api_router.post("/discord/order")
+async def discord_order(
+    body: DiscordOrderRequest,
+    x_bot_secret: Optional[str] = Header(None),
+    request: Request = None,
+):
+    """Called by the Discord bot. Requires the shared secret."""
+    cfg = await db.discord_config.find_one({}, {"_id": 0})
+    if not cfg or not cfg.get("shared_secret"):
+        raise HTTPException(status_code=503, detail="Discord bot not configured")
+    if not x_bot_secret or not hmac.compare_digest(x_bot_secret, cfg["shared_secret"]):
+        raise HTTPException(status_code=401, detail="Invalid bot secret")
+
+    # Look up service map
+    ai_map = await db.ai_service_map.find_one({}, {"_id": 0}) or {}
+    stype = body.service_type.lower()
+    if stype not in ("likes", "views", "comments"):
+        raise HTTPException(status_code=400, detail="service_type must be likes/views/comments")
+    sid = int(ai_map.get(stype, 0) or 0)
+    if not sid:
+        raise HTTPException(status_code=400, detail=f"Admin hasn't mapped '{stype}' yet.")
+
+    svc = await db.curated_services.find_one({"service_id": sid, "enabled": True}, {"_id": 0})
+    if not svc:
+        raise HTTPException(status_code=400, detail="Mapped service is not enabled")
+    rate = float(svc.get("custom_rate", 0))
+    price = round((rate * body.quantity) / 1000.0, 4)
+    if body.quantity < int(svc.get("min", 1)) or body.quantity > int(svc.get("max", 10**9)):
+        raise HTTPException(status_code=400, detail=f"Quantity must be {svc.get('min')}–{svc.get('max')}")
+
+    coupon_used = None
+    # Non-developers MUST provide a valid coupon and pay from it
+    if not body.is_developer:
+        if not body.coupon_code:
+            raise HTTPException(status_code=400, detail="Coupon required for non-developers")
+        code = body.coupon_code.strip().upper()
+        deducted = await db.coupons.find_one_and_update(
+            {"code": code, "balance": {"$gte": price}},
+            {"$inc": {"balance": -price}},
+            return_document=False,
+        )
+        if not deducted:
+            exists = await db.coupons.find_one({"code": code})
+            if not exists:
+                raise HTTPException(status_code=404, detail="Invalid coupon")
+            raise HTTPException(status_code=400, detail=f"Insufficient balance (${exists['balance']:.2f})")
+        coupon_used = code
+
+    # Place SMM order
+    try:
+        smm_resp = await place_smm_order(sid, body.link, body.quantity)
+    except Exception as e:
+        if coupon_used:
+            await db.coupons.update_one({"code": coupon_used}, {"$inc": {"balance": price}})
+        raise HTTPException(status_code=502, detail=f"SMM error: {e}")
+    if "error" in smm_resp:
+        if coupon_used:
+            await db.coupons.update_one({"code": coupon_used}, {"$inc": {"balance": price}})
+        raise HTTPException(status_code=400, detail=f"SMM error: {smm_resp['error']}")
+
+    order_id = str(uuid.uuid4())
+    order_doc = {
+        "id": order_id,
+        "service_id": sid,
+        "service_name": svc.get("name"),
+        "service_type": stype,
+        "link": body.link,
+        "quantity": body.quantity,
+        "price_usd": price,
+        "payment_method": "developer" if body.is_developer else "coupon",
+        "coupon_code": coupon_used,
+        "customer_email": "",
+        "ip": "discord",
+        "discord_user_id": body.discord_user_id,
+        "discord_username": body.discord_username,
+        "is_developer": body.is_developer,
+        "source": "discord",
+        "status": "completed",
+        "smm_order_id": smm_resp.get("order"),
+        "smm_response": smm_resp,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.orders.insert_one(order_doc.copy())
+
+    if coupon_used:
+        remaining = await db.coupons.find_one({"code": coupon_used}, {"_id": 0, "balance": 1})
+        if remaining and remaining.get("balance", 0) <= 0.005:
+            await db.coupons.delete_one({"code": coupon_used})
+
+    return {
+        "status": "completed",
+        "order_id": order_id,
+        "smm_order_id": smm_resp.get("order"),
+        "price": price,
+        "service": svc.get("name"),
+    }
+
+
+@api_router.get("/admin/discord/orders")
+async def admin_discord_orders(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    items = await db.orders.find(
+        {"source": "discord"},
+        {"_id": 0, "smm_response": 0},
+    ).sort("created_at", -1).to_list(500)
+    return {"orders": items}
 
 
 @api_router.post("/admin/cryptomus-config")
