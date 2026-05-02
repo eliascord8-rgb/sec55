@@ -8,7 +8,34 @@ const GREETING = {
     "Hi! I'm Better Social AI ✨  I can place an order for you in seconds. Tell me what you'd like — TikTok Live Likes, Views, or Comments? (Write in any language, I'll follow.)",
 };
 
-const READY_RE = /READY_TO_ORDER:\s*(\{[^}]*\})/;
+const READY_RE = /READY_TO_ORDER:\s*(\{[\s\S]*?\})/;
+
+function parseReady(text) {
+  if (!text) return null;
+  // Strip code fences if any
+  const stripped = text.replace(/```json|```/g, "");
+  const m = stripped.match(READY_RE);
+  if (!m) return null;
+  try {
+    const data = JSON.parse(m[1]);
+    if (
+      ["likes", "views", "comments"].includes(String(data.service_type).toLowerCase()) &&
+      data.link &&
+      data.quantity &&
+      data.coupon_code
+    ) {
+      return {
+        service_type: String(data.service_type).toLowerCase(),
+        link: String(data.link),
+        quantity: Number(data.quantity),
+        coupon_code: String(data.coupon_code).toUpperCase(),
+      };
+    }
+  } catch (e) {
+    // fall through
+  }
+  return null;
+}
 
 export default function AIWidget({ open, onOpenChange }) {
   const [messages, setMessages] = useState([GREETING]);
@@ -30,11 +57,9 @@ export default function AIWidget({ open, onOpenChange }) {
   }, [messages.length, sending]);
 
   const tryExecuteOrder = async (assistantText) => {
-    const m = assistantText.match(READY_RE);
-    if (!m) return;
+    const data = parseReady(assistantText);
+    if (!data) return;
     try {
-      const data = JSON.parse(m[1]);
-      if (!data.service_type || !data.link || !data.quantity || !data.coupon_code) return;
       const r = await api.post("/ai/confirm-order", data);
       setResult({ ok: true, ...r.data });
       setMessages((prev) => [
@@ -74,7 +99,8 @@ export default function AIWidget({ open, onOpenChange }) {
       sessionIdRef.current = r.data.session_id;
       const reply = r.data.reply;
       setMessages((prev) => [...prev, { role: "assistant", text: reply }]);
-      if (READY_RE.test(reply)) await tryExecuteOrder(reply);
+      const ready = parseReady(reply);
+      if (ready) await tryExecuteOrder(reply);
     } catch (err) {
       setMessages((prev) => [
         ...prev,
