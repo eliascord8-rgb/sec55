@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import Header from "@/components/Header";
 import ServicesCatalog from "@/components/ServicesCatalog";
+import AIWidget from "@/components/AIWidget";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, Zap, Shield, Coins, Rocket, Ticket } from "lucide-react";
+import { ArrowRight, Zap, Shield, Coins, Rocket, Ticket, Bot } from "lucide-react";
 import { api } from "@/lib/api";
 
 const HERO_BG = "https://images.pexels.com/photos/31032752/pexels-photo-31032752.jpeg";
@@ -58,6 +59,7 @@ const FAQ = [
 
 export default function Landing() {
   const [stats, setStats] = useState({ services: 0, networks: 0 });
+  const [aiOpen, setAiOpen] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -78,7 +80,7 @@ export default function Landing() {
 
   return (
     <div className="relative bg-[#050505] text-white">
-      <Header onCheckout={goCatalog} />
+      <Header onCheckout={goCatalog} onAIClick={() => setAiOpen(true)} />
 
       {/* HERO */}
       <section className="relative pt-32 pb-24 md:pt-44 md:pb-40 overflow-hidden grain">
@@ -307,13 +309,26 @@ export default function Landing() {
         </div>
       </footer>
 
-      <CheckoutDialogReplaced />
+      {/* AI Widget + launcher FAB */}
+      <AIWidget open={aiOpen} onOpenChange={setAiOpen} />
+      {!aiOpen && (
+        <button
+          onClick={() => setAiOpen(true)}
+          data-testid="ai-fab"
+          aria-label="Open AI assistant"
+          className="fixed bottom-5 right-5 md:bottom-6 md:right-6 z-50 group"
+        >
+          <div className="relative">
+            <span className="absolute inset-0 rounded-full gradient-pp blur-lg opacity-70 group-hover:opacity-100 transition animate-pulse" />
+            <div className="relative w-14 h-14 md:w-16 md:h-16 rounded-full gradient-pp flex items-center justify-center shadow-[0_10px_40px_-12px_rgba(255,0,127,0.8)] group-hover:scale-105 transition">
+              <Bot className="w-6 h-6 md:w-7 md:h-7 text-white" />
+            </div>
+            <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-[#00E5FF] border-2 border-[#050505] animate-pulse" />
+          </div>
+        </button>
+      )}
     </div>
   );
-}
-
-function CheckoutDialogReplaced() {
-  return null;
 }
 
 function Stat({ label, value }) {

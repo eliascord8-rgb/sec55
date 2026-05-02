@@ -388,21 +388,17 @@ async def get_ai_service_map(db) -> dict:
 
 
 @ai_router.post("/chat")
-async def ai_chat(
-    req: AIChatRequest,
-    user: CurrentUser = Depends(current_user_dep),
-    request: Request = None,
-):
+async def ai_chat(req: AIChatRequest, request: Request):
+    """Public AI chat — no login required."""
     from emergentintegrations.llm.chat import LlmChat, UserMessage
     api_key = os.environ.get("EMERGENT_LLM_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="LLM not configured")
-    session_id = req.session_id or f"ai-{user.id}-{uuid.uuid4().hex[:8]}"
+    session_id = req.session_id or f"ai-guest-{uuid.uuid4().hex[:8]}"
     chat = LlmChat(api_key=api_key, session_id=session_id, system_message=AI_SYSTEM).with_model(
         "anthropic", "claude-sonnet-4-5-20250929"
     )
 
-    # Replay history so context is preserved on each call
     last_user = None
     for m in req.messages:
         if m.role == "user":
@@ -410,9 +406,6 @@ async def ai_chat(
     if not last_user:
         raise HTTPException(status_code=400, detail="No user message")
 
-    # For multi-turn, we re-send full history via repeated send_message calls
-    # LlmChat keeps its own state; we simulate by sending only the latest user msg + history context prefix
-    # Simpler: build one condensed message
     history_text = ""
     for m in req.messages[:-1]:
         prefix = "USER" if m.role == "user" else "ASSISTANT"
@@ -437,12 +430,8 @@ class AIConfirmRequest(BaseModel):
 
 
 @ai_router.post("/confirm-order")
-async def ai_confirm_order(
-    body: AIConfirmRequest,
-    user: CurrentUser = Depends(current_user_dep),
-    request: Request = None,
-):
-    """Called by frontend after AI emits READY_TO_ORDER. Deducts coupon, places SMM order, logs."""
+async def ai_confirm_order(body: AIConfirmRequest, request: Request):
+    """Public — called by AI widget after READY_TO_ORDER. Deducts coupon, places SMM order, logs."""
     db: AsyncIOMotorDatabase = request.app.state.db
 
     service_map = await get_ai_service_map(db)
@@ -450,13 +439,12 @@ async def ai_confirm_order(
     if not sid:
         raise HTTPException(
             status_code=400,
-            detail=f"Admin has not mapped '{body.service_type}' to a service ID yet. Contact support.",
+            detail=f"'{body.service_type}' isn't available yet. Contact support.",
         )
 
-    # Look up curated service for price
     svc = await db.curated_services.find_one({"service_id": sid, "enabled": True}, {"_id": 0})
     if not svc:
-        raise HTTPException(status_code=400, detail="Mapped service is not enabled")
+        raise HTTPException(status_code=400, detail="Service is not enabled")
     rate = float(svc.get("custom_rate", 0))
     price = round((rate * body.quantity) / 1000.0, 4)
     if body.quantity < int(svc.get("min", 1)) or body.quantity > int(svc.get("max", 10**9)):
@@ -466,7 +454,6 @@ async def ai_confirm_order(
         )
 
     code = body.coupon_code.strip().upper()
-    # Atomic deduct
     deducted = await db.coupons.find_one_and_update(
         {"code": code, "balance": {"$gte": price}},
         {"$inc": {"balance": -price}},
@@ -475,10 +462,9 @@ async def ai_confirm_order(
     if not deducted:
         exists = await db.coupons.find_one({"code": code})
         if not exists:
-            raise HTTPException(status_code=404, detail="Invalid coupon")
+            raise HTTPException(status_code=404, detail="Invalid coupon code")
         raise HTTPException(status_code=400, detail=f"Insufficient balance (${exists['balance']:.2f})")
 
-    # Place SMM order via app state helper
     place_smm = request.app.state.place_smm_order
     try:
         smm_resp = await place_smm(sid, body.link, body.quantity)
@@ -489,19 +475,22 @@ async def ai_confirm_order(
         await db.coupons.update_one({"code": code}, {"$inc": {"balance": price}})
         raise HTTPException(status_code=400, detail=f"SMM error: {smm_resp['error']}")
 
+    # Collect IP
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
+        request.client.host if request.client else "unknown"
+    )
     order_id = str(uuid.uuid4())
     order_doc = {
         "id": order_id,
         "service_id": sid,
+        "service_name": svc.get("name"),
         "link": body.link,
         "quantity": body.quantity,
         "price_usd": price,
         "payment_method": "coupon",
         "coupon_code": code,
         "customer_email": "",
-        "ip": "ai",
-        "user_id": user.id,
-        "username": user.username,
+        "ip": ip,
         "source": "ai",
         "status": "completed",
         "smm_order_id": smm_resp.get("order"),
@@ -510,7 +499,6 @@ async def ai_confirm_order(
     }
     await db.orders.insert_one(order_doc.copy())
 
-    # Delete coupon if drained
     remaining = await db.coupons.find_one({"code": code}, {"_id": 0, "balance": 1})
     if remaining and remaining.get("balance", 0) <= 0.005:
         await db.coupons.delete_one({"code": code})
