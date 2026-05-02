@@ -176,12 +176,12 @@ export default function ClientDashboard() {
                   <div className="font-bold">Browse all services</div>
                 </Link>
                 <Link
-                  to="/ai-buy"
+                  to="/"
                   data-testid="shortcut-ai"
                   className="p-4 rounded-sm bg-[#1a1525] hover:bg-[#2a1f3a] transition border border-white/5"
                 >
                   <div className="text-xs uppercase tracking-wider text-[#00E5FF] mb-1">AI</div>
-                  <div className="font-bold">Try Buy Via AI</div>
+                  <div className="font-bold">Open the AI assistant (on home page)</div>
                 </Link>
               </div>
             </div>

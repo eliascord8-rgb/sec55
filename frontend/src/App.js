@@ -7,7 +7,6 @@ import OrderPage from "@/pages/OrderPage";
 import StatusPage from "@/pages/StatusPage";
 import ClientAuth from "@/pages/ClientAuth";
 import ClientDashboard from "@/pages/ClientDashboard";
-import AIBuy from "@/pages/AIBuy";
 import Splash from "@/components/Splash";
 import { AuthProvider } from "@/context/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
@@ -32,7 +31,6 @@ function App() {
             <Route path="/status/:orderId" element={<StatusPage />} />
             <Route path="/client" element={<ClientAuth />} />
             <Route path="/client/dashboard" element={<ClientDashboard />} />
-            <Route path="/ai-buy" element={<AIBuy />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>
         </BrowserRouter>

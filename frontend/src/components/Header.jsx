@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { Sparkles, Bot, User as UserIcon } from "lucide-react";
 
-export default function Header({ onCheckout }) {
+export default function Header({ onCheckout, onAIClick }) {
   return (
     <header
       data-testid="site-header"
@@ -30,13 +30,14 @@ export default function Header({ onCheckout }) {
         </nav>
 
         <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
-          <Link
-            to="/ai-buy"
+          <button
+            onClick={onAIClick}
+            type="button"
             data-testid="header-ai-btn"
             className="hidden sm:inline-flex items-center gap-1.5 px-3 md:px-4 py-2 border border-[#00E5FF]/40 bg-[#00E5FF]/10 text-[#00E5FF] rounded-sm text-[11px] md:text-xs font-bold uppercase tracking-wider hover:bg-[#00E5FF]/20 transition"
           >
             <Bot className="w-3.5 h-3.5" /> Try Buy <span className="hidden md:inline">Via</span> AI
-          </Link>
+          </button>
           <Link
             to="/client"
             data-testid="header-client-btn"
