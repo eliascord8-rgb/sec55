@@ -270,7 +270,12 @@ export default function AIWidget({ open, onOpenChange }) {
 
 function Bubble({ m, typing }) {
   const isUser = m.role === "user";
-  const cleanText = m.text.replace(READY_RE, "").trim() || m.text;
+  // Strip ANY READY_TO_ORDER block (any JSON length) before showing to user
+  let cleanText = (m.text || "")
+    .replace(/READY_TO_ORDER:[\s\S]*?(\{[\s\S]*?\})\s*/g, "")
+    .replace(/```json|```/g, "")
+    .trim();
+  if (!cleanText && !isUser) cleanText = "Got it — placing your order…";
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (

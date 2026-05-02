@@ -439,7 +439,10 @@ async def ai_confirm_order(body: AIConfirmRequest, request: Request):
     if not sid:
         raise HTTPException(
             status_code=400,
-            detail=f"'{body.service_type}' isn't available yet. Contact support.",
+            detail=(
+                f"AI ordering for '{body.service_type}' isn't activated yet. "
+                "Owner: open Admin → AI Buy → set the service ID for this category and save."
+            ),
         )
 
     svc = await db.curated_services.find_one({"service_id": sid, "enabled": True}, {"_id": 0})
