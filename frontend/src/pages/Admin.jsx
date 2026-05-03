@@ -4,7 +4,7 @@ import { adminApi, api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2 } from "lucide-react";
+import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Admin() {
@@ -122,7 +122,7 @@ function Dashboard({ token, onLogout }) {
 
       <main className="max-w-7xl mx-auto px-6 md:px-10 py-10">
         <Tabs defaultValue="orders" className="w-full">
-          <TabsList className="grid grid-cols-6 max-w-4xl bg-[#1a1525] mb-6 rounded-sm">
+          <TabsList className="grid grid-cols-7 max-w-5xl bg-[#1a1525] mb-6 rounded-sm">
             <TabsTrigger
               value="orders"
               data-testid="tab-orders"
@@ -152,6 +152,13 @@ function Dashboard({ token, onLogout }) {
               AI Buy
             </TabsTrigger>
             <TabsTrigger
+              value="inbox"
+              data-testid="tab-inbox"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              AI Inbox
+            </TabsTrigger>
+            <TabsTrigger
               value="discord"
               data-testid="tab-discord"
               className="data-[state=active]:bg-[#FF007F] rounded-sm"
@@ -178,6 +185,9 @@ function Dashboard({ token, onLogout }) {
           </TabsContent>
           <TabsContent value="ai">
             <AIPanel token={token} />
+          </TabsContent>
+          <TabsContent value="inbox">
+            <AIInboxPanel token={token} />
           </TabsContent>
           <TabsContent value="discord">
             <DiscordPanel token={token} />
@@ -287,6 +297,9 @@ function CouponsPanel({ token }) {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState(null); // { code, balance }
+  const [editValue, setEditValue] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const load = async () => {
     try {
@@ -329,6 +342,33 @@ function CouponsPanel({ token }) {
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed");
+    }
+  };
+
+  const startEdit = (c) => {
+    setEditing(c);
+    setEditValue(String(c.balance ?? 0));
+  };
+
+  const saveEdit = async () => {
+    const newBal = Number(editValue);
+    if (Number.isNaN(newBal) || newBal < 0) {
+      toast.error("Enter a valid non-negative amount");
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      await adminApi(token).put(`/admin/coupons/${editing.code}/balance`, {
+        balance: newBal,
+      });
+      toast.success(`Balance updated to $${newBal.toFixed(2)}`);
+      setEditing(null);
+      setEditValue("");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -420,6 +460,14 @@ function CouponsPanel({ token }) {
                         <Copy className="w-4 h-4" />
                       </button>
                       <button
+                        onClick={() => startEdit(c)}
+                        data-testid={`edit-coupon-${c.code}`}
+                        className="text-white/60 hover:text-[#00E5FF]"
+                        title="Edit balance"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
                         onClick={() => remove(c.code)}
                         data-testid={`delete-coupon-${c.code}`}
                         className="text-white/60 hover:text-[#FF3B30]"
@@ -435,6 +483,56 @@ function CouponsPanel({ token }) {
           </table>
         </div>
       </div>
+
+      {/* Edit Balance Modal */}
+      {editing && (
+        <div
+          data-testid="edit-coupon-modal"
+          className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => !savingEdit && setEditing(null)}
+        >
+          <div
+            className="w-full max-w-sm bg-[#1a1525] border border-white/10 rounded-sm p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display font-bold text-lg mb-1">Edit Coupon Balance</h3>
+            <div className="text-xs text-white/50 font-mono mb-4">{editing.code}</div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">
+              New balance (USD)
+            </Label>
+            <Input
+              type="number"
+              step="0.01"
+              min="0"
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              data-testid="edit-coupon-balance-input"
+              className="bg-[#0d0a14] border-white/10 mt-1 font-mono"
+              autoFocus
+              disabled={savingEdit}
+            />
+            <div className="flex gap-2 mt-5">
+              <button
+                onClick={() => setEditing(null)}
+                disabled={savingEdit}
+                data-testid="edit-coupon-cancel"
+                className="flex-1 py-2.5 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveEdit}
+                disabled={savingEdit}
+                data-testid="edit-coupon-save"
+                className="flex-1 py-2.5 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {savingEdit ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1444,5 +1542,255 @@ function CoinPaymentsPanel({ token }) {
         {saving ? "Saving…" : "Save credentials"}
       </button>
     </form>
+  );
+}
+
+
+function AIInboxPanel({ token }) {
+  const [sessions, setSessions] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [activeSess, setActiveSess] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [loadingList, setLoadingList] = useState(true);
+
+  const loadSessions = async () => {
+    try {
+      const r = await adminApi(token).get("/ai/admin/sessions");
+      setSessions(r.data.sessions || []);
+    } catch {
+      // ignore
+    } finally {
+      setLoadingList(false);
+    }
+  };
+
+  const loadMessages = async (sid) => {
+    try {
+      const r = await adminApi(token).get(`/ai/admin/sessions/${sid}/messages`);
+      setMessages(r.data.messages || []);
+      setActiveSess(r.data.session || null);
+    } catch {
+      toast.error("Failed to load conversation");
+    }
+  };
+
+  useEffect(() => {
+    loadSessions();
+    const t = setInterval(loadSessions, 8000);
+    return () => clearInterval(t);
+  }, [token]);
+
+  useEffect(() => {
+    if (!activeId) return;
+    loadMessages(activeId);
+    const t = setInterval(() => loadMessages(activeId), 4000);
+    return () => clearInterval(t);
+  }, [activeId, token]);
+
+  const takeover = async () => {
+    if (!activeId) return;
+    try {
+      await adminApi(token).post(`/ai/admin/sessions/${activeId}/takeover`);
+      toast.success("You're now handling this chat");
+      loadMessages(activeId);
+    } catch {
+      toast.error("Failed");
+    }
+  };
+
+  const release = async () => {
+    if (!activeId) return;
+    try {
+      await adminApi(token).post(`/ai/admin/sessions/${activeId}/release`);
+      toast.success("Returned to AI");
+      loadMessages(activeId);
+    } catch {
+      toast.error("Failed");
+    }
+  };
+
+  const send = async (e) => {
+    e?.preventDefault();
+    const t = text.trim();
+    if (!t || !activeId || sending) return;
+    setSending(true);
+    try {
+      await adminApi(token).post(`/ai/admin/sessions/${activeId}/send`, {
+        text: t,
+        admin_name: "Support",
+      });
+      setText("");
+      loadMessages(activeId);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to send");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const fmtTime = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return d.toLocaleString();
+  };
+
+  const isHuman = activeSess?.status === "human";
+
+  return (
+    <div className="grid lg:grid-cols-[320px_1fr] gap-6 h-[calc(100vh-220px)] min-h-[480px]">
+      {/* Sessions list */}
+      <div
+        data-testid="ai-inbox-sessions"
+        className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden flex flex-col"
+      >
+        <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+          <h3 className="font-display font-bold text-sm">Conversations</h3>
+          <span className="text-[10px] uppercase tracking-wider text-white/40">
+            {sessions.length}
+          </span>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          {loadingList && (
+            <div className="p-4 text-xs text-white/40">Loading…</div>
+          )}
+          {!loadingList && sessions.length === 0 && (
+            <div className="p-4 text-xs text-white/40">No AI chats yet.</div>
+          )}
+          {sessions.map((s) => {
+            const active = s.session_id === activeId;
+            const human = s.status === "human";
+            return (
+              <button
+                key={s.session_id}
+                onClick={() => setActiveId(s.session_id)}
+                data-testid={`inbox-session-${s.session_id}`}
+                className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/[0.03] transition ${
+                  active ? "bg-[#FF007F]/10 border-l-2 border-l-[#FF007F]" : ""
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="font-mono text-[11px] text-white/80 truncate">
+                    {s.session_id}
+                  </span>
+                  {human && (
+                    <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[#00E5FF]/20 text-[#00E5FF] font-bold shrink-0">
+                      Live
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-white/50 truncate">
+                  {s.last_user_text || "—"}
+                </div>
+                <div className="text-[10px] text-white/30 mt-1 font-mono">
+                  {fmtTime(s.last_activity)}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Conversation */}
+      <div
+        data-testid="ai-inbox-conversation"
+        className="bg-[#1a1525] border border-white/5 rounded-sm flex flex-col overflow-hidden"
+      >
+        {!activeId ? (
+          <div className="flex-1 flex items-center justify-center text-sm text-white/40">
+            Pick a conversation on the left.
+          </div>
+        ) : (
+          <>
+            <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-display font-bold text-sm truncate">
+                  {activeId}
+                </div>
+                <div className="text-[10px] uppercase tracking-wider text-white/40">
+                  {isHuman ? "Human takeover · AI paused" : "AI handling · click Take Over to reply"}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {!isHuman ? (
+                  <button
+                    onClick={takeover}
+                    data-testid="inbox-takeover"
+                    className="px-3 py-1.5 text-[10px] uppercase tracking-wider gradient-pp rounded-sm font-bold"
+                  >
+                    Take Over
+                  </button>
+                ) : (
+                  <button
+                    onClick={release}
+                    data-testid="inbox-release"
+                    className="px-3 py-1.5 text-[10px] uppercase tracking-wider border border-white/20 rounded-sm hover:bg-white/5"
+                  >
+                    Return to AI
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#0d0a14]">
+              {messages.length === 0 && (
+                <div className="text-xs text-white/40 text-center py-12">
+                  No messages yet.
+                </div>
+              )}
+              {messages.map((m) => {
+                const isUser = m.role === "user";
+                const isAdmin = m.role === "admin";
+                return (
+                  <div
+                    key={m.id}
+                    className={`flex ${isUser ? "justify-start" : "justify-end"}`}
+                  >
+                    <div
+                      className={`max-w-[78%] px-3 py-2 rounded-sm text-sm whitespace-pre-wrap leading-snug ${
+                        isUser
+                          ? "bg-[#1a1525] border border-white/10 text-white/90"
+                          : isAdmin
+                          ? "bg-[#00E5FF] text-[#050505] font-medium"
+                          : "bg-[#FF007F] text-white"
+                      }`}
+                    >
+                      {m.text.replace(/READY_TO_ORDER:[\s\S]*?(\{[\s\S]*?\})\s*/g, "").trim() ||
+                        (isUser ? "(empty)" : "…")}
+                      <div className={`text-[9px] mt-1 ${isAdmin ? "text-[#050505]/60" : "text-white/40"}`}>
+                        {isAdmin ? `${m.admin_name || "Support"} · ` : ""}
+                        {fmtTime(m.created_at)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <form
+              onSubmit={send}
+              className="border-t border-white/5 p-3 flex items-center gap-2 bg-[#050505]"
+            >
+              <input
+                data-testid="inbox-input"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder={isHuman ? "Type your reply…" : "Click Take Over first to reply…"}
+                className="flex-1 bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-[#FF007F]"
+              />
+              <button
+                type="submit"
+                disabled={sending || !text.trim()}
+                data-testid="inbox-send"
+                className="px-4 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-40"
+              >
+                {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : "Send"}
+              </button>
+            </form>
+          </>
+        )}
+      </div>
+    </div>
   );
 }

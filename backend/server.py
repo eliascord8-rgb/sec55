@@ -466,6 +466,70 @@ async def admin_delete_coupon(code: str, x_admin_token: Optional[str] = Header(N
     return {"deleted": True}
 
 
+class CouponBalanceUpdate(BaseModel):
+    balance: float
+
+
+@api_router.put("/admin/coupons/{code}/balance")
+async def admin_update_coupon_balance(
+    code: str,
+    payload: CouponBalanceUpdate,
+    x_admin_token: Optional[str] = Header(None),
+):
+    check_admin(x_admin_token)
+    if payload.balance < 0:
+        raise HTTPException(status_code=400, detail="Balance must be ≥ 0")
+    res = await db.coupons.find_one_and_update(
+        {"code": code.upper()},
+        {"$set": {"balance": round(payload.balance, 4)}},
+        return_document=True,
+        projection={"_id": 0},
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="Coupon not found")
+    return {"code": res["code"], "balance": res["balance"]}
+
+
+@api_router.get("/orders/recent-feed")
+async def public_orders_feed():
+    """Public ticker feed — masked email + service name. Last 30 completed orders."""
+    cursor = (
+        db.orders.find(
+            {"smm_order_id": {"$ne": None}},
+            {"_id": 0, "service_id": 1, "quantity": 1, "customer_email": 1, "created_at": 1, "source": 1},
+        )
+        .sort("created_at", -1)
+        .limit(30)
+    )
+    items = await cursor.to_list(30)
+
+    # Resolve service names (cache in dict to avoid N+1)
+    svc_ids = list({i.get("service_id") for i in items if i.get("service_id")})
+    svc_map = {}
+    if svc_ids:
+        async for s in db.curated_services.find({"service_id": {"$in": svc_ids}}, {"_id": 0, "service_id": 1, "name": 1}):
+            svc_map[s["service_id"]] = s.get("name") or "Service"
+
+    def mask(email: str) -> str:
+        e = (email or "").strip()
+        if not e or "@" not in e:
+            return "gu**"
+        local = e.split("@")[0]
+        if len(local) <= 2:
+            return local + "**"
+        return local[:2] + "*" * (max(2, len(local) - 2))
+
+    feed = []
+    for o in items:
+        feed.append({
+            "user": mask(o.get("customer_email", "")),
+            "service": svc_map.get(o.get("service_id"), "an SMM service"),
+            "quantity": o.get("quantity"),
+            "created_at": o.get("created_at"),
+        })
+    return {"feed": feed}
+
+
 @api_router.get("/admin/cryptomus-config")
 async def get_cryptomus_admin_config(x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
@@ -837,6 +901,7 @@ app.include_router(ai_router)
 
 app.state.db = db
 app.state.place_smm_order = place_smm_order
+app.state.check_admin = check_admin
 
 
 @app.on_event("startup")
