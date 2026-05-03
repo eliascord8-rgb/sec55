@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import Header from "@/components/Header";
 import ServicesCatalog from "@/components/ServicesCatalog";
 import AIWidget from "@/components/AIWidget";
+import OrderTicker from "@/components/OrderTicker";
 import { useNavigate } from "react-router-dom";
 import { ArrowRight, Zap, Shield, Coins, Rocket, Ticket, Bot } from "lucide-react";
 import { api } from "@/lib/api";
@@ -316,7 +317,7 @@ export default function Landing() {
           onClick={() => setAiOpen(true)}
           data-testid="ai-fab"
           aria-label="Open AI assistant"
-          className="fixed bottom-5 right-5 md:bottom-6 md:right-6 z-50 group"
+          className="fixed bottom-16 right-5 md:bottom-16 md:right-6 z-50 group"
         >
           <div className="relative">
             <span className="absolute inset-0 rounded-full gradient-pp blur-lg opacity-70 group-hover:opacity-100 transition animate-pulse" />
@@ -327,6 +328,8 @@ export default function Landing() {
           </div>
         </button>
       )}
+
+      <OrderTicker />
     </div>
   );
 }

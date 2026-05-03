@@ -389,15 +389,9 @@ async def get_ai_service_map(db) -> dict:
 
 @ai_router.post("/chat")
 async def ai_chat(req: AIChatRequest, request: Request):
-    """Public AI chat — no login required."""
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
-    api_key = os.environ.get("EMERGENT_LLM_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="LLM not configured")
+    """Public AI chat — no login required. If admin has taken over, returns no AI reply."""
+    db: AsyncIOMotorDatabase = request.app.state.db
     session_id = req.session_id or f"ai-guest-{uuid.uuid4().hex[:8]}"
-    chat = LlmChat(api_key=api_key, session_id=session_id, system_message=AI_SYSTEM).with_model(
-        "anthropic", "claude-sonnet-4-5-20250929"
-    )
 
     last_user = None
     for m in req.messages:
@@ -405,6 +399,45 @@ async def ai_chat(req: AIChatRequest, request: Request):
             last_user = m.text
     if not last_user:
         raise HTTPException(status_code=400, detail="No user message")
+
+    # Persist user message + ensure session exists
+    now = datetime.now(timezone.utc).isoformat()
+    user_msg = {
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "role": "user",
+        "text": last_user[:2000],
+        "created_at": now,
+    }
+    await db.ai_chat_messages.insert_one(user_msg.copy())
+    await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {
+            "$setOnInsert": {
+                "session_id": session_id,
+                "status": "ai",
+                "created_at": now,
+                "ip": (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or
+                       (request.client.host if request.client else "")),
+            },
+            "$set": {"last_activity": now, "last_user_text": last_user[:200]},
+        },
+        upsert=True,
+    )
+
+    # If admin has taken over → don't call LLM, return empty reply
+    sess = await db.ai_sessions.find_one({"session_id": session_id}, {"_id": 0, "status": 1})
+    if sess and sess.get("status") == "human":
+        return {"reply": "", "session_id": session_id, "human_takeover": True}
+
+    # Otherwise, call LLM
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="LLM not configured")
+    chat = LlmChat(api_key=api_key, session_id=session_id, system_message=AI_SYSTEM).with_model(
+        "anthropic", "claude-sonnet-4-5-20250929"
+    )
 
     history_text = ""
     for m in req.messages[:-1]:
@@ -419,7 +452,115 @@ async def ai_chat(req: AIChatRequest, request: Request):
         raise HTTPException(status_code=502, detail=f"AI error: {e}")
 
     reply_text = str(reply).strip()
-    return {"reply": reply_text, "session_id": session_id}
+    # Persist assistant message
+    await db.ai_chat_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "role": "assistant",
+        "text": reply_text[:4000],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"reply": reply_text, "session_id": session_id, "human_takeover": False}
+
+
+@ai_router.get("/poll")
+async def ai_poll(request: Request, session_id: str, since: Optional[str] = None):
+    """Client polls for new admin/assistant messages since timestamp."""
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+    db: AsyncIOMotorDatabase = request.app.state.db
+    q = {"session_id": session_id, "role": {"$in": ["assistant", "admin"]}}
+    if since:
+        q["created_at"] = {"$gt": since}
+    items = await db.ai_chat_messages.find(q, {"_id": 0}).sort("created_at", 1).to_list(50)
+    sess = await db.ai_sessions.find_one({"session_id": session_id}, {"_id": 0, "status": 1})
+    return {
+        "messages": items,
+        "human_takeover": bool(sess and sess.get("status") == "human"),
+    }
+
+
+def _admin_check(request: Request):
+    token = request.headers.get("x-admin-token")
+    fn = getattr(request.app.state, "check_admin", None)
+    if fn is None:
+        raise HTTPException(status_code=500, detail="Admin auth not initialised")
+    fn(token)
+
+
+# ---------------- Admin AI inbox ----------------
+
+@ai_router.get("/admin/sessions")
+async def admin_ai_sessions(request: Request):
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    cursor = db.ai_sessions.find({}, {"_id": 0}).sort("last_activity", -1).limit(100)
+    items = await cursor.to_list(100)
+    return {"sessions": items}
+
+
+@ai_router.get("/admin/sessions/{session_id}/messages")
+async def admin_ai_messages(session_id: str, request: Request):
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    items = (
+        await db.ai_chat_messages.find({"session_id": session_id}, {"_id": 0})
+        .sort("created_at", 1)
+        .to_list(500)
+    )
+    sess = await db.ai_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    return {"messages": items, "session": sess}
+
+
+class AdminAISend(BaseModel):
+    text: str = Field(..., min_length=1, max_length=2000)
+    admin_name: Optional[str] = "Support"
+
+
+@ai_router.post("/admin/sessions/{session_id}/send")
+async def admin_ai_send(session_id: str, body: AdminAISend, request: Request):
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    now = datetime.now(timezone.utc).isoformat()
+    msg = {
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "role": "admin",
+        "admin_name": body.admin_name or "Support",
+        "text": body.text[:2000],
+        "created_at": now,
+    }
+    await db.ai_chat_messages.insert_one(msg.copy())
+    # Sending implicitly takes over the session
+    await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {"$set": {"status": "human", "last_activity": now}},
+        upsert=True,
+    )
+    return {"message": {k: v for k, v in msg.items() if k != "_id"}}
+
+
+@ai_router.post("/admin/sessions/{session_id}/takeover")
+async def admin_ai_takeover(session_id: str, request: Request):
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    res = await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {"$set": {"status": "human", "last_activity": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "matched": res.matched_count}
+
+
+@ai_router.post("/admin/sessions/{session_id}/release")
+async def admin_ai_release(session_id: str, request: Request):
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {"$set": {"status": "ai", "last_activity": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
 
 
 class AIConfirmRequest(BaseModel):
@@ -517,6 +658,7 @@ async def ai_confirm_order(body: AIConfirmRequest, request: Request):
 
 @ai_router.get("/admin/orders")
 async def ai_orders(request: Request):
+    _admin_check(request)
     db: AsyncIOMotorDatabase = request.app.state.db
     items = await db.orders.find({"source": "ai"}, {"_id": 0, "smm_response": 0}).sort("created_at", -1).to_list(500)
     return {"orders": items}
@@ -530,6 +672,7 @@ class AIServiceMapBody(BaseModel):
 
 @ai_router.post("/admin/service-map")
 async def ai_set_map(body: AIServiceMapBody, request: Request):
+    _admin_check(request)
     db: AsyncIOMotorDatabase = request.app.state.db
     doc = body.model_dump()
     doc["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -539,6 +682,7 @@ async def ai_set_map(body: AIServiceMapBody, request: Request):
 
 @ai_router.get("/admin/service-map")
 async def ai_get_map(request: Request):
+    _admin_check(request)
     db: AsyncIOMotorDatabase = request.app.state.db
     m = await get_ai_service_map(db)
     return m

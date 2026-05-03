@@ -38,14 +38,30 @@
 - Curated services system: admin syncs from provider, sets custom prices, only enabled services appear on the public checkout (provider price hidden from buyers)
 - Coupons auto-delete when balance hits $0
 
+### Iteration 3 — Client Area + AI + Discord (May 2, 2026)
+- Migrated CoinPayments → **Cryptomus** (merchant callback + sig verify)
+- **Client Area**: JWT auth (bcrypt), hCaptcha, dashboard, Community Chat with half-username privacy, `/mute` moderation command
+- **Floating AI Widget** (Claude Sonnet 4.5 via `EMERGENT_LLM_KEY`): natural-language ordering flow (detect language → ask service/link/qty/coupon → `READY_TO_ORDER` JSON → auto-place)
+- **Standalone Discord Bot** (`/app/discord_bot/bot.py`) with `/buy` slash command; Developer role bypass for coupon; configured via Admin → Discord tab
+- VPS one-shot deploy script `/app/deploy.sh`
+
+### Iteration 4 — Social-Proof Ticker + Admin Live Takeover (May 2, 2026)
+- **Public order ticker** on Landing page: `GET /api/orders/recent-feed` returns last 30 orders with masked emails (`ab**`, `gu**` for guests). Marquee at bottom of landing.
+- **Coupon balance edit** in Admin → Coupons: pencil icon opens modal → `PUT /api/admin/coupons/{code}/balance`
+- **AI chat persistence**: `ai_chat_messages` + `ai_sessions` collections store every exchange with IP + last activity
+- **Admin AI Inbox** (`Admin → AI Inbox` tab): list of all live chats, click to view history, **Take Over** button pauses AI and lets admin reply directly — client widget polls `/api/ai/poll` every 3s and renders admin bubbles in cyan with "Support" label + system notice "A human team-member is now handling your chat"
+- **Security fix**: added `_admin_check(request)` to `/api/ai/admin/orders`, `/api/ai/admin/service-map` (GET+POST) — these were missing auth in iter 3
+- Backend tests: 24/24 new tests pass (total 43+ passing)
+
 ## Backlog
 ### P1
-- Persist admin sessions in DB (currently in-memory; lost on restart)
-- IPN webhook receiver for instant CoinPayments confirmation (currently manual poll)
-- Encrypt CoinPayments private key + IPN secret at rest
-- Coupon disable/delete from admin
+- hCaptcha: swap test keys for production keys in backend `.env` on VPS
+- Persist admin sessions in DB (currently in-memory; lost on restart — breaks AI Inbox + Coupons across backend restarts until re-login)
+- Rate limit Discord `/buy` command to prevent coupon spam drain
 ### P2
 - Email receipt on success
 - Service favorites / quick-pick
 - Order status tracking page (smmcost status API)
-- Multi-admin support with proper hashed passwords
+- Split `auth_and_chat.py` (~700 lines) into separate auth/chat/ai modules
+- Stream Claude replies instead of blocking HTTP worker
+- Push notifications / sound alert for admin when a new AI chat arrives (currently 8s polling)

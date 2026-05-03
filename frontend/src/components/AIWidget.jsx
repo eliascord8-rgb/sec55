@@ -42,8 +42,10 @@ export default function AIWidget({ open, onOpenChange }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
+  const [humanTakeover, setHumanTakeover] = useState(false);
   const endRef = useRef(null);
   const sessionIdRef = useRef(null);
+  const lastPollAtRef = useRef(null);
 
   useEffect(() => {
     if (open) {
@@ -55,6 +57,42 @@ export default function AIWidget({ open, onOpenChange }) {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, sending]);
+
+  // Poll for new admin/assistant messages every 3s while open
+  useEffect(() => {
+    if (!open) return;
+    const tick = async () => {
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+      try {
+        const r = await api.get("/ai/poll", {
+          params: { session_id: sid, since: lastPollAtRef.current || undefined },
+        });
+        setHumanTakeover(!!r.data.human_takeover);
+        const newOnes = r.data.messages || [];
+        if (newOnes.length) {
+          // Filter out duplicates we already have (shouldn't happen with `since`, but safe)
+          setMessages((prev) => {
+            const existingIds = new Set(prev.map((m) => m._id).filter(Boolean));
+            const adds = newOnes
+              .filter((m) => !existingIds.has(m.id))
+              .map((m) => ({
+                role: m.role === "admin" ? "admin" : "assistant",
+                text: m.text,
+                _id: m.id,
+                admin_name: m.admin_name,
+              }));
+            return adds.length ? [...prev, ...adds] : prev;
+          });
+          lastPollAtRef.current = newOnes[newOnes.length - 1].created_at;
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    const t = setInterval(tick, 3000);
+    return () => clearInterval(t);
+  }, [open]);
 
   const tryExecuteOrder = async (assistantText) => {
     const data = parseReady(assistantText);
@@ -97,10 +135,26 @@ export default function AIWidget({ open, onOpenChange }) {
         session_id: sessionIdRef.current,
       });
       sessionIdRef.current = r.data.session_id;
+      setHumanTakeover(!!r.data.human_takeover);
       const reply = r.data.reply;
-      setMessages((prev) => [...prev, { role: "assistant", text: reply }]);
-      const ready = parseReady(reply);
-      if (ready) await tryExecuteOrder(reply);
+      if (reply && !r.data.human_takeover) {
+        setMessages((prev) => [...prev, { role: "assistant", text: reply }]);
+        const ready = parseReady(reply);
+        if (ready) await tryExecuteOrder(reply);
+      } else if (r.data.human_takeover) {
+        // No AI reply — show a small system note ONCE
+        setMessages((prev) => {
+          if (prev.some((m) => m._sys === "takeover")) return prev;
+          return [
+            ...prev,
+            {
+              role: "system",
+              text: "👋 A human team-member is now handling your chat.",
+              _sys: "takeover",
+            },
+          ];
+        });
+      }
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -125,7 +179,9 @@ export default function AIWidget({ open, onOpenChange }) {
   const reset = () => {
     setMessages([GREETING]);
     setResult(null);
+    setHumanTakeover(false);
     sessionIdRef.current = null;
+    lastPollAtRef.current = null;
   };
 
   if (!open) return null;
@@ -151,8 +207,12 @@ export default function AIWidget({ open, onOpenChange }) {
               <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00E5FF] border-2 border-[#050505]" />
             </div>
             <div className="min-w-0">
-              <div className="font-bold text-sm truncate">Better Social AI</div>
-              <div className="text-[10px] text-white/50">Typically replies in seconds</div>
+              <div className="font-bold text-sm truncate">
+                {humanTakeover ? "Better Social Support" : "Better Social AI"}
+              </div>
+              <div className="text-[10px] text-white/50">
+                {humanTakeover ? "A team member is replying" : "Typically replies in seconds"}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -270,35 +330,63 @@ export default function AIWidget({ open, onOpenChange }) {
 
 function Bubble({ m, typing }) {
   const isUser = m.role === "user";
-  // Strip ANY READY_TO_ORDER block (any JSON length) before showing to user
+  const isAdmin = m.role === "admin";
+  const isSystem = m.role === "system";
+
+  // System messages render centered, no avatar
+  if (isSystem) {
+    return (
+      <div className="flex justify-center py-1">
+        <div className="text-[10px] uppercase tracking-wider px-3 py-1 rounded-full bg-[#00E5FF]/10 border border-[#00E5FF]/30 text-[#00E5FF]">
+          {m.text}
+        </div>
+      </div>
+    );
+  }
+
+  // Strip ANY READY_TO_ORDER block before showing to user
   let cleanText = (m.text || "")
     .replace(/READY_TO_ORDER:[\s\S]*?(\{[\s\S]*?\})\s*/g, "")
     .replace(/```json|```/g, "")
     .trim();
   if (!cleanText && !isUser) cleanText = "Got it — placing your order…";
+
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
-        <div className="w-7 h-7 rounded-full gradient-pp flex items-center justify-center mr-2 shrink-0 mt-auto">
-          <Bot className="w-3.5 h-3.5" />
+        <div
+          className={`w-7 h-7 rounded-full flex items-center justify-center mr-2 shrink-0 mt-auto ${
+            isAdmin ? "bg-[#00E5FF]" : "gradient-pp"
+          }`}
+        >
+          <Bot className={`w-3.5 h-3.5 ${isAdmin ? "text-[#050505]" : ""}`} />
         </div>
       )}
-      <div
-        className={`max-w-[80%] px-3.5 py-2 rounded-sm text-sm leading-snug whitespace-pre-wrap ${
-          isUser
-            ? "bg-[#FF007F] text-white rounded-br-none"
-            : "bg-[#1a1525] border border-white/10 text-white/90 rounded-bl-none"
-        }`}
-      >
-        {typing ? (
-          <span className="inline-flex gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "0ms" }} />
-            <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "150ms" }} />
-            <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "300ms" }} />
-          </span>
-        ) : (
-          cleanText
+      <div className="max-w-[80%]">
+        {isAdmin && (
+          <div className="text-[9px] uppercase tracking-wider text-[#00E5FF] font-bold mb-1 ml-0.5">
+            {m.admin_name || "Support"}
+          </div>
         )}
+        <div
+          className={`px-3.5 py-2 rounded-sm text-sm leading-snug whitespace-pre-wrap ${
+            isUser
+              ? "bg-[#FF007F] text-white rounded-br-none"
+              : isAdmin
+              ? "bg-[#00E5FF] text-[#050505] rounded-bl-none font-medium"
+              : "bg-[#1a1525] border border-white/10 text-white/90 rounded-bl-none"
+          }`}
+        >
+          {typing ? (
+            <span className="inline-flex gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "0ms" }} />
+              <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "150ms" }} />
+              <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "300ms" }} />
+            </span>
+          ) : (
+            cleanText
+          )}
+        </div>
       </div>
     </div>
   );
