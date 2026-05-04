@@ -53,6 +53,17 @@
 - **Security fix**: added `_admin_check(request)` to `/api/ai/admin/orders`, `/api/ai/admin/service-map` (GET+POST) — these were missing auth in iter 3
 - Backend tests: 24/24 new tests pass (total 43+ passing)
 
+### Iteration 5 — Smart AI Handover (May 4, 2026)
+- **AI Knowledge Base**: AI now knows enabled services + prices and the **24-hour money-back guarantee** (only IPTV / Followers / Likes — explicitly NOT Views/Comments). System prompt is built dynamically from the curated services collection so price changes auto-propagate.
+- **Multilingual Handover Detection**: when user asks for "staff/agent/support/admin/operator" or any equivalent in **any language** (verified: English, German, Spanish, French, Russian, Chinese, Japanese), AI replies with a transfer message in the user's language ("Please wait, I'm transferring you to our team…") and emits `HANDOVER_REQUEST` token. Backend strips the token, flags `session.needs_handover=true`, returns `admin_online` based on heartbeat.
+- **Staff Display Name** (`POST /api/ai/admin/settings`): admin sets the public-facing name (default "Support"). Stored in `ai_settings` singleton. Shown in user's widget header and bubble label.
+- **Admin Heartbeat** (`POST /api/ai/admin/heartbeat`): admin panel pings every ~8s while open. `is_admin_online()` returns true if heartbeat within 90s.
+- **Offline Fallback Form**: when handover requested but no admin online, the user widget renders an inline form (email + message + Send/Cancel). Public endpoint `POST /api/ai/offline-message` persists to `ai_offline_messages`. Admin sees them in the Inbox toggle with unread counter.
+- **"Live Chat?" Label** next to the floating chat circle FAB on the homepage.
+- **"Leave Chat" button** (renamed from "Return to AI"): when admin presses it, AI rejoins and inserts a system note `"({StaffName} has left the chat — I'm back to help.)"` so the user is never confused.
+- **"Wants Staff" badge** in admin Inbox highlights sessions awaiting handover (pink, pulsing). Header counter `🔴 X waiting for staff`.
+- Backend tests: 25/25 pass (iter 5). Total test coverage: ~70 tests.
+
 ## Backlog
 ### P1
 - hCaptcha: swap test keys for production keys in backend `.env` on VPS
