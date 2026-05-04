@@ -317,8 +317,14 @@ export default function Landing() {
           onClick={() => setAiOpen(true)}
           data-testid="ai-fab"
           aria-label="Open AI assistant"
-          className="fixed bottom-16 right-5 md:bottom-16 md:right-6 z-50 group"
+          className="fixed bottom-16 right-5 md:bottom-16 md:right-6 z-50 group flex items-center gap-3"
         >
+          <span
+            className="hidden sm:inline-block px-3 py-1.5 rounded-full bg-[#1a1525]/95 backdrop-blur border border-white/10 text-xs font-medium text-white shadow-lg group-hover:border-[#FF007F]/50 transition"
+            data-testid="ai-fab-label"
+          >
+            Live Chat?
+          </span>
           <div className="relative">
             <span className="absolute inset-0 rounded-full gradient-pp blur-lg opacity-70 group-hover:opacity-100 transition animate-pulse" />
             <div className="relative w-14 h-14 md:w-16 md:h-16 rounded-full gradient-pp flex items-center justify-center shadow-[0_10px_40px_-12px_rgba(255,0,127,0.8)] group-hover:scale-105 transition">
