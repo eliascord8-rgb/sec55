@@ -56,11 +56,7 @@ export default function StatusPage() {
   };
 
   const openChat = () => {
-    if (window.Tawk_API && typeof window.Tawk_API.maximize === "function") {
-      window.Tawk_API.maximize();
-    } else {
-      window.location.href = "mailto:balkinstr@web.de?subject=Order%20" + orderId;
-    }
+    window.location.href = "mailto:balkinstr@web.de?subject=Order%20" + orderId;
   };
 
   return (

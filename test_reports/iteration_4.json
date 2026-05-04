@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 4 testing — (1) Tawk.to live-chat widget fully removed and (2) AI chat file/image attachments. All 13 backend tests PASS (upload, fetch, reject paths, attach-message + admin visibility). Frontend E2E passes: Tawk has 0 network hits on Landing+Status, no Tawk_API in window, AIWidget paperclip opens file picker, pending preview renders, remove-file works, send-with-only-files enabled, bubble-image renders inline, assistant ack appears within ~5s via polling, and 4-file cap is enforced with a 'MAX 4 FILES AT ONCE.' warning when 5 files are attempted.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/ai/upload", "issue": "Missing session_id returns 422 (FastAPI Form validation) instead of the 400 implied by the spec. Acceptable — behavior documented and handled in tests."},
+      {"endpoint": "/api/ai/attach-message", "issue": "Mismatched session with valid file_ids returns 400 only when ALL ids are unknown to the session. If caller mixes one valid + one foreign id, the foreign one is silently dropped (message still succeeds). Not a security issue because file access is still admin-scoped, but worth logging a warning."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AIWidget", "issues": ["The small '⚠ MAX 4 FILES AT ONCE.' warning uses low-contrast yellow on a semi-transparent background. Readable but borderline on bright displays."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_4_attachments.py",
+    "/app/test_reports/pytest/iteration_4_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Normalize /api/ai/upload missing session_id to 400 for spec consistency (currently 422).",
+    "(Optional) Log a warning when /api/ai/attach-message receives a mix of valid + foreign file_ids instead of silently dropping."
+  ],
+  "critical_code_review_comments": [
+    "auth_and_chat.py: _safe_ext correctly blocks path-traversal extensions and falls back to mimetypes.guess_extension — good.",
+    "auth_and_chat.py: ai_upload reads MAX_UPLOAD_BYTES+1 in memory then checks length — fine for 8MB cap but note this loads the full file in RAM; for larger caps in future, switch to streaming write.",
+    "auth_and_chat.py: ai_get_upload uses a strict hex regex for file_id — prevents path traversal via the URL. Good.",
+    "AIWidget.jsx: send() switches to /ai/attach-message when files present AND skips LLM, which matches the spec. Polling picks up the assistant ack (~3-5s). Good.",
+    "Admin.jsx lines 1934, 1953, 1970: inbox-image-{id} / inbox-file-{id} testids render from m.attachments — matches backend contract verified in test_iteration_4_attachments.py::test_attach_message_persists_and_acks."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_4_attachments.py (new)"
+  ],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "100% for exercised flows"},
+  "test_credentials": "Admin: Balkin99 / Armin1234 (from /app/memory/test_credentials.md).",
+  "seed_data_creation": "Created ~3 TEST_sess_* ai_sessions and ~4 ai_uploads entries (small PNGs + a stub PDF) during the attach-message test. All files live at /app/backend/uploads/ai_chat/ and are 8x8 px / <100 B each — safe to leave or purge.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run `pytest backend/tests/test_iteration_4_attachments.py -v` from /app for regression. Frontend AIWidget launcher is data-testid='ai-fab' (NOT 'ai-widget-launcher'). File input is data-testid='ai-widget-file-input' and has the `multiple` attribute, so you can set_input_files([path]*n) to test the 4-file cap — the widget replaces (not appends) when set_input_files overrides the selection, but handleFileSelect still enforces MAX_FILES=4 and shows a yellow warning pill. Assistant ack text contains 'Got your file' and appears via /ai/poll within ~5s. Tawk is fully gone: 0 network requests and no window.Tawk_API on Landing or /status/*. Admin inbox attachments rendering was NOT end-to-end browser-verified (admin login page hit a navigation timeout once) but the JSX rendering the inbox-image-{id} / inbox-file-{id} testids is present at Admin.jsx:1953 and Admin.jsx:1970, and the backend endpoint /api/ai/admin/sessions/{sid}/messages correctly returns attachments[] (verified in test_attach_message_persists_and_acks).",
+  "rca of the issue": "N/A — no bugs found. Minor spec deviations noted above are by-design FastAPI behaviors (422 for missing Form field) or defensive no-ops (silent drop of foreign ids when at least one valid id is present)."
+}

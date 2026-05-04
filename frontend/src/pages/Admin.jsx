@@ -4,7 +4,7 @@ import { adminApi, api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil } from "lucide-react";
+import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil, FileText } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Admin() {
@@ -1928,26 +1928,72 @@ function AIInboxPanel({ token }) {
                 {messages.map((m) => {
                   const isUser = m.role === "user";
                   const isAdmin = m.role === "admin";
+                  const cleanText = (m.text || "")
+                    .replace(/READY_TO_ORDER:[\s\S]*?(\{[\s\S]*?\})\s*/g, "")
+                    .trim();
+                  const atts = Array.isArray(m.attachments) ? m.attachments : [];
                   return (
                     <div
                       key={m.id}
                       className={`flex ${isUser ? "justify-start" : "justify-end"}`}
                     >
-                      <div
-                        className={`max-w-[78%] px-3 py-2 rounded-sm text-sm whitespace-pre-wrap leading-snug ${
-                          isUser
-                            ? "bg-[#1a1525] border border-white/10 text-white/90"
-                            : isAdmin
-                            ? "bg-[#00E5FF] text-[#050505] font-medium"
-                            : "bg-[#FF007F] text-white"
-                        }`}
-                      >
-                        {m.text.replace(/READY_TO_ORDER:[\s\S]*?(\{[\s\S]*?\})\s*/g, "").trim() ||
-                          (isUser ? "(empty)" : "…")}
-                        <div className={`text-[9px] mt-1 ${isAdmin ? "text-[#050505]/60" : "text-white/40"}`}>
-                          {isAdmin ? `${m.admin_name || staffName} · ` : ""}
-                          {fmtTime(m.created_at)}
-                        </div>
+                      <div className="max-w-[78%]">
+                        {atts.length > 0 && (
+                          <div className={`flex flex-wrap gap-1.5 mb-1.5 ${isUser ? "" : "justify-end"}`}>
+                            {atts.map((a) => {
+                              const url = `/api/ai/uploads/${a.id}`;
+                              const isImg = (a.content_type || "").startsWith("image/");
+                              if (isImg) {
+                                return (
+                                  <a
+                                    key={a.id}
+                                    href={url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    data-testid={`inbox-image-${a.id}`}
+                                    className="block rounded-sm overflow-hidden border border-white/10 hover:border-[#00E5FF] transition"
+                                  >
+                                    <img
+                                      src={url}
+                                      alt={a.filename}
+                                      className="max-w-[200px] max-h-[200px] object-cover block"
+                                    />
+                                  </a>
+                                );
+                              }
+                              return (
+                                <a
+                                  key={a.id}
+                                  href={url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  data-testid={`inbox-file-${a.id}`}
+                                  className="inline-flex items-center gap-2 px-2 py-1.5 bg-white/10 hover:bg-white/15 rounded-sm border border-white/10 text-[11px] text-white max-w-[200px]"
+                                >
+                                  <FileText className="w-3 h-3 shrink-0" />
+                                  <span className="truncate">{a.filename}</span>
+                                </a>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {(cleanText || !atts.length) && (
+                          <div
+                            className={`px-3 py-2 rounded-sm text-sm whitespace-pre-wrap leading-snug ${
+                              isUser
+                                ? "bg-[#1a1525] border border-white/10 text-white/90"
+                                : isAdmin
+                                ? "bg-[#00E5FF] text-[#050505] font-medium"
+                                : "bg-[#FF007F] text-white"
+                            }`}
+                          >
+                            {cleanText || (isUser ? "(empty)" : "…")}
+                            <div className={`text-[9px] mt-1 ${isAdmin ? "text-[#050505]/60" : "text-white/40"}`}>
+                              {isAdmin ? `${m.admin_name || staffName} · ` : ""}
+                              {fmtTime(m.created_at)}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
