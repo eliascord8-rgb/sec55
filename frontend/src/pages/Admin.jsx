@@ -1548,17 +1548,23 @@ function CoinPaymentsPanel({ token }) {
 
 function AIInboxPanel({ token }) {
   const [sessions, setSessions] = useState([]);
+  const [waiting, setWaiting] = useState(0);
   const [activeId, setActiveId] = useState(null);
   const [activeSess, setActiveSess] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingList, setLoadingList] = useState(true);
+  const [staffName, setStaffName] = useState("Support");
+  const [savingName, setSavingName] = useState(false);
+  const [offlineMsgs, setOfflineMsgs] = useState([]);
+  const [showOffline, setShowOffline] = useState(false);
 
   const loadSessions = async () => {
     try {
       const r = await adminApi(token).get("/ai/admin/sessions");
       setSessions(r.data.sessions || []);
+      setWaiting(r.data.handover_waiting || 0);
     } catch {
       // ignore
     } finally {
@@ -1576,10 +1582,44 @@ function AIInboxPanel({ token }) {
     }
   };
 
+  const loadSettings = async () => {
+    try {
+      const r = await adminApi(token).get("/ai/admin/settings");
+      setStaffName(r.data.staff_display_name || "Support");
+    } catch {
+      // ignore
+    }
+  };
+
+  const loadOffline = async () => {
+    try {
+      const r = await adminApi(token).get("/ai/admin/offline-messages");
+      setOfflineMsgs(r.data.messages || []);
+    } catch {
+      // ignore
+    }
+  };
+
+  const heartbeat = async () => {
+    try {
+      await adminApi(token).post("/ai/admin/heartbeat");
+    } catch {
+      // ignore
+    }
+  };
+
   useEffect(() => {
     loadSessions();
-    const t = setInterval(loadSessions, 8000);
+    loadSettings();
+    loadOffline();
+    heartbeat();
+    const t = setInterval(() => {
+      loadSessions();
+      heartbeat();
+      loadOffline();
+    }, 8000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   useEffect(() => {
@@ -1587,7 +1627,23 @@ function AIInboxPanel({ token }) {
     loadMessages(activeId);
     const t = setInterval(() => loadMessages(activeId), 4000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, token]);
+
+  const saveStaffName = async (e) => {
+    e?.preventDefault();
+    const n = staffName.trim();
+    if (!n) return;
+    setSavingName(true);
+    try {
+      await adminApi(token).post("/ai/admin/settings", { staff_display_name: n });
+      toast.success(`Staff name set to "${n}"`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    } finally {
+      setSavingName(false);
+    }
+  };
 
   const takeover = async () => {
     if (!activeId) return;
@@ -1595,6 +1651,7 @@ function AIInboxPanel({ token }) {
       await adminApi(token).post(`/ai/admin/sessions/${activeId}/takeover`);
       toast.success("You're now handling this chat");
       loadMessages(activeId);
+      loadSessions();
     } catch {
       toast.error("Failed");
     }
@@ -1604,8 +1661,9 @@ function AIInboxPanel({ token }) {
     if (!activeId) return;
     try {
       await adminApi(token).post(`/ai/admin/sessions/${activeId}/release`);
-      toast.success("Returned to AI");
+      toast.success("AI is back in the chat");
       loadMessages(activeId);
+      loadSessions();
     } catch {
       toast.error("Failed");
     }
@@ -1619,14 +1677,23 @@ function AIInboxPanel({ token }) {
     try {
       await adminApi(token).post(`/ai/admin/sessions/${activeId}/send`, {
         text: t,
-        admin_name: "Support",
       });
       setText("");
       loadMessages(activeId);
+      loadSessions();
     } catch (err) {
       toast.error(err.response?.data?.detail || "Failed to send");
     } finally {
       setSending(false);
+    }
+  };
+
+  const markOfflineRead = async (id) => {
+    try {
+      await adminApi(token).post(`/ai/admin/offline-messages/${id}/mark-read`);
+      loadOffline();
+    } catch {
+      // ignore
     }
   };
 
@@ -1637,159 +1704,279 @@ function AIInboxPanel({ token }) {
   };
 
   const isHuman = activeSess?.status === "human";
+  const needsHandover = !!activeSess?.needs_handover;
+  const newOffline = offlineMsgs.filter((m) => m.status === "new").length;
 
   return (
-    <div className="grid lg:grid-cols-[320px_1fr] gap-6 h-[calc(100vh-220px)] min-h-[480px]">
-      {/* Sessions list */}
-      <div
-        data-testid="ai-inbox-sessions"
-        className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden flex flex-col"
-      >
-        <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
-          <h3 className="font-display font-bold text-sm">Conversations</h3>
-          <span className="text-[10px] uppercase tracking-wider text-white/40">
-            {sessions.length}
-          </span>
-        </div>
-        <div className="overflow-y-auto flex-1">
-          {loadingList && (
-            <div className="p-4 text-xs text-white/40">Loading…</div>
+    <div className="space-y-4">
+      {/* Top toolbar — staff name + offline messages toggle */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-[#1a1525] border border-white/5 rounded-sm p-4">
+        <form onSubmit={saveStaffName} className="flex items-center gap-2">
+          <Label className="text-[11px] uppercase tracking-wider text-white/60 shrink-0">
+            Staff name (shown to user)
+          </Label>
+          <Input
+            data-testid="staff-name-input"
+            value={staffName}
+            onChange={(e) => setStaffName(e.target.value)}
+            maxLength={40}
+            className="bg-[#0d0a14] border-white/10 max-w-[180px] text-sm"
+          />
+          <button
+            type="submit"
+            disabled={savingName}
+            data-testid="staff-name-save"
+            className="px-3 py-2 gradient-pp rounded-sm text-[10px] uppercase tracking-wider font-bold disabled:opacity-50"
+          >
+            {savingName ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save"}
+          </button>
+        </form>
+        <div className="flex items-center gap-3">
+          {waiting > 0 && (
+            <span
+              data-testid="handover-waiting-badge"
+              className="text-[10px] uppercase tracking-wider px-2.5 py-1 rounded-full bg-[#FF007F]/20 border border-[#FF007F]/40 text-[#FF007F] font-bold animate-pulse"
+            >
+              🔴 {waiting} waiting for staff
+            </span>
           )}
-          {!loadingList && sessions.length === 0 && (
-            <div className="p-4 text-xs text-white/40">No AI chats yet.</div>
-          )}
-          {sessions.map((s) => {
-            const active = s.session_id === activeId;
-            const human = s.status === "human";
-            return (
-              <button
-                key={s.session_id}
-                onClick={() => setActiveId(s.session_id)}
-                data-testid={`inbox-session-${s.session_id}`}
-                className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/[0.03] transition ${
-                  active ? "bg-[#FF007F]/10 border-l-2 border-l-[#FF007F]" : ""
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2 mb-1">
-                  <span className="font-mono text-[11px] text-white/80 truncate">
-                    {s.session_id}
-                  </span>
-                  {human && (
-                    <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[#00E5FF]/20 text-[#00E5FF] font-bold shrink-0">
-                      Live
-                    </span>
-                  )}
-                </div>
-                <div className="text-xs text-white/50 truncate">
-                  {s.last_user_text || "—"}
-                </div>
-                <div className="text-[10px] text-white/30 mt-1 font-mono">
-                  {fmtTime(s.last_activity)}
-                </div>
-              </button>
-            );
-          })}
+          <button
+            onClick={() => setShowOffline((v) => !v)}
+            data-testid="offline-msgs-toggle"
+            className="px-3 py-2 text-[10px] uppercase tracking-wider border border-white/20 rounded-sm hover:bg-white/5 inline-flex items-center gap-2"
+          >
+            Offline messages
+            {newOffline > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full bg-[#FF007F] text-white text-[9px] font-bold">
+                {newOffline}
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
-      {/* Conversation */}
-      <div
-        data-testid="ai-inbox-conversation"
-        className="bg-[#1a1525] border border-white/5 rounded-sm flex flex-col overflow-hidden"
-      >
-        {!activeId ? (
-          <div className="flex-1 flex items-center justify-center text-sm text-white/40">
-            Pick a conversation on the left.
+      {/* Offline messages drawer */}
+      {showOffline && (
+        <div
+          data-testid="offline-messages-list"
+          className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden"
+        >
+          <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+            <h3 className="font-display font-bold text-sm">Offline messages</h3>
+            <span className="text-[10px] uppercase tracking-wider text-white/40">
+              {offlineMsgs.length}
+            </span>
           </div>
-        ) : (
-          <>
-            <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="font-display font-bold text-sm truncate">
-                  {activeId}
-                </div>
-                <div className="text-[10px] uppercase tracking-wider text-white/40">
-                  {isHuman ? "Human takeover · AI paused" : "AI handling · click Take Over to reply"}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {!isHuman ? (
-                  <button
-                    onClick={takeover}
-                    data-testid="inbox-takeover"
-                    className="px-3 py-1.5 text-[10px] uppercase tracking-wider gradient-pp rounded-sm font-bold"
-                  >
-                    Take Over
-                  </button>
-                ) : (
-                  <button
-                    onClick={release}
-                    data-testid="inbox-release"
-                    className="px-3 py-1.5 text-[10px] uppercase tracking-wider border border-white/20 rounded-sm hover:bg-white/5"
-                  >
-                    Return to AI
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#0d0a14]">
-              {messages.length === 0 && (
-                <div className="text-xs text-white/40 text-center py-12">
-                  No messages yet.
-                </div>
-              )}
-              {messages.map((m) => {
-                const isUser = m.role === "user";
-                const isAdmin = m.role === "admin";
-                return (
-                  <div
-                    key={m.id}
-                    className={`flex ${isUser ? "justify-start" : "justify-end"}`}
-                  >
-                    <div
-                      className={`max-w-[78%] px-3 py-2 rounded-sm text-sm whitespace-pre-wrap leading-snug ${
-                        isUser
-                          ? "bg-[#1a1525] border border-white/10 text-white/90"
-                          : isAdmin
-                          ? "bg-[#00E5FF] text-[#050505] font-medium"
-                          : "bg-[#FF007F] text-white"
-                      }`}
-                    >
-                      {m.text.replace(/READY_TO_ORDER:[\s\S]*?(\{[\s\S]*?\})\s*/g, "").trim() ||
-                        (isUser ? "(empty)" : "…")}
-                      <div className={`text-[9px] mt-1 ${isAdmin ? "text-[#050505]/60" : "text-white/40"}`}>
-                        {isAdmin ? `${m.admin_name || "Support"} · ` : ""}
-                        {fmtTime(m.created_at)}
-                      </div>
+          <div className="max-h-72 overflow-y-auto">
+            {offlineMsgs.length === 0 && (
+              <div className="p-4 text-xs text-white/40">Nothing here yet.</div>
+            )}
+            {offlineMsgs.map((m) => (
+              <div
+                key={m.id}
+                data-testid={`offline-msg-${m.id}`}
+                className={`px-4 py-3 border-b border-white/5 ${
+                  m.status === "new" ? "bg-[#FF007F]/5" : ""
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-mono text-xs text-[#00E5FF] truncate">{m.email}</div>
+                    <div className="text-[10px] text-white/40 font-mono mt-0.5">
+                      {fmtTime(m.created_at)} · {m.ip}
                     </div>
                   </div>
-                );
-              })}
-            </div>
+                  {m.status === "new" && (
+                    <button
+                      onClick={() => markOfflineRead(m.id)}
+                      data-testid={`mark-read-${m.id}`}
+                      className="text-[10px] uppercase tracking-wider px-2 py-1 border border-white/20 rounded-sm hover:bg-white/5 shrink-0"
+                    >
+                      Mark read
+                    </button>
+                  )}
+                </div>
+                <div className="mt-2 text-sm text-white/80 whitespace-pre-wrap">
+                  {m.message}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
-            <form
-              onSubmit={send}
-              className="border-t border-white/5 p-3 flex items-center gap-2 bg-[#050505]"
-            >
-              <input
-                data-testid="inbox-input"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                placeholder={isHuman ? "Type your reply…" : "Click Take Over first to reply…"}
-                className="flex-1 bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-[#FF007F]"
-              />
-              <button
-                type="submit"
-                disabled={sending || !text.trim()}
-                data-testid="inbox-send"
-                className="px-4 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-40"
+      {/* Inbox grid */}
+      <div className="grid lg:grid-cols-[320px_1fr] gap-6 h-[calc(100vh-320px)] min-h-[480px]">
+        {/* Sessions list */}
+        <div
+          data-testid="ai-inbox-sessions"
+          className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden flex flex-col"
+        >
+          <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+            <h3 className="font-display font-bold text-sm">Conversations</h3>
+            <span className="text-[10px] uppercase tracking-wider text-white/40">
+              {sessions.length}
+            </span>
+          </div>
+          <div className="overflow-y-auto flex-1">
+            {loadingList && (
+              <div className="p-4 text-xs text-white/40">Loading…</div>
+            )}
+            {!loadingList && sessions.length === 0 && (
+              <div className="p-4 text-xs text-white/40">No AI chats yet.</div>
+            )}
+            {sessions.map((s) => {
+              const active = s.session_id === activeId;
+              const human = s.status === "human";
+              const handover = s.needs_handover && !human;
+              return (
+                <button
+                  key={s.session_id}
+                  onClick={() => setActiveId(s.session_id)}
+                  data-testid={`inbox-session-${s.session_id}`}
+                  className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/[0.03] transition ${
+                    active ? "bg-[#FF007F]/10 border-l-2 border-l-[#FF007F]" : ""
+                  } ${handover ? "bg-[#FF007F]/[0.07]" : ""}`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="font-mono text-[11px] text-white/80 truncate">
+                      {s.session_id}
+                    </span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {handover && (
+                        <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[#FF007F]/20 text-[#FF007F] font-bold animate-pulse">
+                          Wants Staff
+                        </span>
+                      )}
+                      {human && (
+                        <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[#00E5FF]/20 text-[#00E5FF] font-bold">
+                          Live
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-xs text-white/50 truncate">
+                    {s.last_user_text || "—"}
+                  </div>
+                  <div className="text-[10px] text-white/30 mt-1 font-mono">
+                    {fmtTime(s.last_activity)}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Conversation */}
+        <div
+          data-testid="ai-inbox-conversation"
+          className="bg-[#1a1525] border border-white/5 rounded-sm flex flex-col overflow-hidden"
+        >
+          {!activeId ? (
+            <div className="flex-1 flex items-center justify-center text-sm text-white/40">
+              Pick a conversation on the left.
+            </div>
+          ) : (
+            <>
+              <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-display font-bold text-sm truncate flex items-center gap-2">
+                    {activeId}
+                    {needsHandover && !isHuman && (
+                      <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[#FF007F]/20 text-[#FF007F] font-bold animate-pulse">
+                        Wants Staff
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] uppercase tracking-wider text-white/40">
+                    {isHuman
+                      ? `You're handling this as "${staffName}"`
+                      : needsHandover
+                      ? "User asked for staff — Take Over now"
+                      : "AI handling · click Take Over to reply"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {!isHuman ? (
+                    <button
+                      onClick={takeover}
+                      data-testid="inbox-takeover"
+                      className={`px-3 py-1.5 text-[10px] uppercase tracking-wider rounded-sm font-bold ${
+                        needsHandover ? "gradient-pp animate-pulse" : "gradient-pp"
+                      }`}
+                    >
+                      Take Over
+                    </button>
+                  ) : (
+                    <button
+                      onClick={release}
+                      data-testid="inbox-release"
+                      className="px-3 py-1.5 text-[10px] uppercase tracking-wider border border-white/20 rounded-sm hover:bg-white/5"
+                    >
+                      Leave Chat
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#0d0a14]">
+                {messages.length === 0 && (
+                  <div className="text-xs text-white/40 text-center py-12">
+                    No messages yet.
+                  </div>
+                )}
+                {messages.map((m) => {
+                  const isUser = m.role === "user";
+                  const isAdmin = m.role === "admin";
+                  return (
+                    <div
+                      key={m.id}
+                      className={`flex ${isUser ? "justify-start" : "justify-end"}`}
+                    >
+                      <div
+                        className={`max-w-[78%] px-3 py-2 rounded-sm text-sm whitespace-pre-wrap leading-snug ${
+                          isUser
+                            ? "bg-[#1a1525] border border-white/10 text-white/90"
+                            : isAdmin
+                            ? "bg-[#00E5FF] text-[#050505] font-medium"
+                            : "bg-[#FF007F] text-white"
+                        }`}
+                      >
+                        {m.text.replace(/READY_TO_ORDER:[\s\S]*?(\{[\s\S]*?\})\s*/g, "").trim() ||
+                          (isUser ? "(empty)" : "…")}
+                        <div className={`text-[9px] mt-1 ${isAdmin ? "text-[#050505]/60" : "text-white/40"}`}>
+                          {isAdmin ? `${m.admin_name || staffName} · ` : ""}
+                          {fmtTime(m.created_at)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <form
+                onSubmit={send}
+                className="border-t border-white/5 p-3 flex items-center gap-2 bg-[#050505]"
               >
-                {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : "Send"}
-              </button>
-            </form>
-          </>
-        )}
+                <input
+                  data-testid="inbox-input"
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder={isHuman ? `Reply as "${staffName}"…` : "Click Take Over first to reply…"}
+                  className="flex-1 bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-[#FF007F]"
+                />
+                <button
+                  type="submit"
+                  disabled={sending || !text.trim() || !isHuman}
+                  data-testid="inbox-send"
+                  className="px-4 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-40"
+                >
+                  {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : "Send"}
+                </button>
+              </form>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

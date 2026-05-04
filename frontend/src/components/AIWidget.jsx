@@ -43,6 +43,11 @@ export default function AIWidget({ open, onOpenChange }) {
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
   const [humanTakeover, setHumanTakeover] = useState(false);
+  const [staffName, setStaffName] = useState("Support");
+  const [handoverState, setHandoverState] = useState("none"); // none | waiting | offline_form | submitted
+  const [offlineEmail, setOfflineEmail] = useState("");
+  const [offlineText, setOfflineText] = useState("");
+  const [offlineSending, setOfflineSending] = useState(false);
   const endRef = useRef(null);
   const sessionIdRef = useRef(null);
   const lastPollAtRef = useRef(null);
@@ -68,10 +73,17 @@ export default function AIWidget({ open, onOpenChange }) {
         const r = await api.get("/ai/poll", {
           params: { session_id: sid, since: lastPollAtRef.current || undefined },
         });
+        const wasTakeover = humanTakeover;
         setHumanTakeover(!!r.data.human_takeover);
+        if (r.data.staff_display_name) setStaffName(r.data.staff_display_name);
+        // If admin just took over → reset handover state to "submitted" so we don't show form
+        if (r.data.human_takeover && handoverState !== "none") setHandoverState("none");
+        // If admin RELEASED chat → flip back to AI mode so input shows AI placeholder
+        if (wasTakeover && !r.data.human_takeover) {
+          // assistant message about leaving will be in newOnes
+        }
         const newOnes = r.data.messages || [];
         if (newOnes.length) {
-          // Filter out duplicates we already have (shouldn't happen with `since`, but safe)
           setMessages((prev) => {
             const existingIds = new Set(prev.map((m) => m._id).filter(Boolean));
             const adds = newOnes
@@ -92,7 +104,7 @@ export default function AIWidget({ open, onOpenChange }) {
     };
     const t = setInterval(tick, 3000);
     return () => clearInterval(t);
-  }, [open]);
+  }, [open, handoverState, humanTakeover]);
 
   const tryExecuteOrder = async (assistantText) => {
     const data = parseReady(assistantText);
@@ -141,15 +153,33 @@ export default function AIWidget({ open, onOpenChange }) {
         setMessages((prev) => [...prev, { role: "assistant", text: reply }]);
         const ready = parseReady(reply);
         if (ready) await tryExecuteOrder(reply);
+        // Handover flow
+        if (r.data.needs_handover) {
+          if (r.data.admin_online) {
+            setHandoverState("waiting");
+            setMessages((prev) => {
+              if (prev.some((m) => m._sys === "waiting")) return prev;
+              return [
+                ...prev,
+                {
+                  role: "system",
+                  text: "🔔 Notifying our team — please hold on.",
+                  _sys: "waiting",
+                },
+              ];
+            });
+          } else {
+            setHandoverState("offline_form");
+          }
+        }
       } else if (r.data.human_takeover) {
-        // No AI reply — show a small system note ONCE
         setMessages((prev) => {
           if (prev.some((m) => m._sys === "takeover")) return prev;
           return [
             ...prev,
             {
               role: "system",
-              text: "👋 A human team-member is now handling your chat.",
+              text: `👋 ${r.data.staff_display_name || staffName} is now handling your chat.`,
               _sys: "takeover",
             },
           ];
@@ -168,6 +198,49 @@ export default function AIWidget({ open, onOpenChange }) {
     }
   };
 
+  const submitOfflineMessage = async (e) => {
+    e?.preventDefault();
+    if (offlineSending) return;
+    const email = offlineEmail.trim();
+    const msg = offlineText.trim();
+    if (!email || !msg) return;
+    setOfflineSending(true);
+    try {
+      await api.post("/ai/offline-message", {
+        session_id: sessionIdRef.current,
+        email,
+        message: msg,
+      });
+      setHandoverState("submitted");
+      setOfflineEmail("");
+      setOfflineText("");
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "system",
+          text: "✅ Got it — we'll email you back as soon as a team-member is online.",
+          _sys: "offline_ok",
+        },
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: "⚠️ Couldn't send your message — please try again.",
+        },
+      ]);
+    } finally {
+      setOfflineSending(false);
+    }
+  };
+
+  const cancelOfflineForm = () => {
+    setHandoverState("none");
+    setOfflineEmail("");
+    setOfflineText("");
+  };
+
   const openLiveChat = () => {
     if (window.Tawk_API && typeof window.Tawk_API.maximize === "function") {
       window.Tawk_API.maximize();
@@ -180,6 +253,9 @@ export default function AIWidget({ open, onOpenChange }) {
     setMessages([GREETING]);
     setResult(null);
     setHumanTakeover(false);
+    setHandoverState("none");
+    setOfflineEmail("");
+    setOfflineText("");
     sessionIdRef.current = null;
     lastPollAtRef.current = null;
   };
@@ -208,10 +284,14 @@ export default function AIWidget({ open, onOpenChange }) {
             </div>
             <div className="min-w-0">
               <div className="font-bold text-sm truncate">
-                {humanTakeover ? "Better Social Support" : "Better Social AI"}
+                {humanTakeover ? `Better Social · ${staffName}` : "Better Social AI"}
               </div>
               <div className="text-[10px] text-white/50">
-                {humanTakeover ? "A team member is replying" : "Typically replies in seconds"}
+                {humanTakeover
+                  ? "A human is replying live"
+                  : handoverState === "waiting"
+                  ? "Connecting to staff…"
+                  : "Typically replies in seconds"}
               </div>
             </div>
           </div>
@@ -293,6 +373,60 @@ export default function AIWidget({ open, onOpenChange }) {
           </div>
         )}
 
+        {/* Offline contact form (shown when handover requested but no admin online) */}
+        {handoverState === "offline_form" && (
+          <form
+            onSubmit={submitOfflineMessage}
+            data-testid="ai-widget-offline-form"
+            className="mx-3 mb-2 p-3 rounded-sm border border-[#FF007F]/40 bg-[#FF007F]/10 space-y-2"
+          >
+            <div className="text-xs text-white/80 leading-snug">
+              No team-member is online right now. Leave your email + a message and we'll get back to you ASAP.
+            </div>
+            <input
+              type="email"
+              data-testid="offline-email"
+              placeholder="your@email.com"
+              value={offlineEmail}
+              onChange={(e) => setOfflineEmail(e.target.value)}
+              required
+              disabled={offlineSending}
+              className="w-full bg-[#0d0a14] border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-[#FF007F] text-white placeholder:text-white/30"
+            />
+            <textarea
+              data-testid="offline-message"
+              placeholder="Your message…"
+              value={offlineText}
+              onChange={(e) => setOfflineText(e.target.value)}
+              required
+              rows={3}
+              disabled={offlineSending}
+              maxLength={2000}
+              className="w-full bg-[#0d0a14] border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-[#FF007F] text-white placeholder:text-white/30 resize-none"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={cancelOfflineForm}
+                disabled={offlineSending}
+                data-testid="offline-cancel"
+                className="flex-1 py-2 text-[10px] uppercase tracking-wider border border-white/20 rounded-sm hover:bg-white/5 text-white/70"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={offlineSending || !offlineEmail.trim() || !offlineText.trim()}
+                data-testid="offline-send"
+                className="flex-1 py-2 text-[10px] uppercase tracking-wider gradient-pp rounded-sm font-bold disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+              >
+                {offlineSending ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                Send
+              </button>
+            </div>
+          </form>
+        )}
+
         {/* Input */}
         <form
           onSubmit={send}
@@ -300,7 +434,13 @@ export default function AIWidget({ open, onOpenChange }) {
         >
           <input
             data-testid="ai-widget-input"
-            placeholder="Type your message…"
+            placeholder={
+              humanTakeover
+                ? `Message ${staffName}…`
+                : handoverState === "waiting"
+                ? "Waiting for staff to join…"
+                : "Type your message…"
+            }
             value={text}
             onChange={(e) => setText(e.target.value)}
             disabled={sending}
