@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { Bot, Send, Loader2, X, Minus, CheckCircle2, XCircle, MessageCircle } from "lucide-react";
+import { Bot, Send, Loader2, X, Minus, CheckCircle2, XCircle, MessageCircle, Paperclip, Image as ImageIcon, FileText } from "lucide-react";
+
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_FILES = 4;
 
 const GREETING = {
   role: "assistant",
@@ -48,9 +51,69 @@ export default function AIWidget({ open, onOpenChange }) {
   const [offlineEmail, setOfflineEmail] = useState("");
   const [offlineText, setOfflineText] = useState("");
   const [offlineSending, setOfflineSending] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState([]); // [{id, url, filename, content_type, size_bytes, is_image}]
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
   const endRef = useRef(null);
   const sessionIdRef = useRef(null);
   const lastPollAtRef = useRef(null);
+
+  // Ensure a session_id exists before any upload
+  const ensureSession = () => {
+    if (!sessionIdRef.current) {
+      sessionIdRef.current = `ai-guest-${Math.random().toString(36).slice(2, 10)}`;
+    }
+    return sessionIdRef.current;
+  };
+
+  const openFilePicker = () => {
+    if (uploading || sending) return;
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelect = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ""; // reset so same file can be re-picked
+    if (!files.length) return;
+    if (pendingFiles.length + files.length > MAX_FILES) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "system", text: `⚠️ Max ${MAX_FILES} files at once.` },
+      ]);
+      return;
+    }
+    const sid = ensureSession();
+    setUploading(true);
+    for (const f of files) {
+      if (f.size > MAX_FILE_BYTES) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "system", text: `⚠️ "${f.name}" is too big (max 8 MB).` },
+        ]);
+        continue;
+      }
+      const fd = new FormData();
+      fd.append("session_id", sid);
+      fd.append("file", f);
+      try {
+        const r = await api.post("/ai/upload", fd, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        setPendingFiles((prev) => [...prev, r.data]);
+      } catch (err) {
+        const reason = err.response?.data?.detail || "Upload failed";
+        setMessages((prev) => [
+          ...prev,
+          { role: "system", text: `⚠️ ${f.name}: ${reason}` },
+        ]);
+      }
+    }
+    setUploading(false);
+  };
+
+  const removePendingFile = (id) => {
+    setPendingFiles((prev) => prev.filter((p) => p.id !== id));
+  };
 
   useEffect(() => {
     if (open) {
@@ -135,7 +198,44 @@ export default function AIWidget({ open, onOpenChange }) {
   const send = async (e) => {
     e?.preventDefault();
     const t = text.trim();
-    if (!t || sending) return;
+    const hasFiles = pendingFiles.length > 0;
+    if ((!t && !hasFiles) || sending) return;
+
+    // If user attached files: send via /attach-message (no LLM call) — admin sees in inbox
+    if (hasFiles) {
+      const sid = ensureSession();
+      const attached = pendingFiles;
+      const userMsg = {
+        role: "user",
+        text: t,
+        attachments: attached,
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      setText("");
+      setPendingFiles([]);
+      setSending(true);
+      try {
+        await api.post("/ai/attach-message", {
+          session_id: sid,
+          file_ids: attached.map((f) => f.id),
+          text: t,
+        });
+        // The backend auto-inserts an assistant ack — pollers will pick it up.
+      } catch (err) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            text: "⚠️ Couldn't attach the file — please try again.",
+          },
+        ]);
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
+    // Normal text-only chat path
     const userMsg = { role: "user", text: t };
     const history = [...messages, userMsg];
     setMessages(history);
@@ -242,11 +342,8 @@ export default function AIWidget({ open, onOpenChange }) {
   };
 
   const openLiveChat = () => {
-    if (window.Tawk_API && typeof window.Tawk_API.maximize === "function") {
-      window.Tawk_API.maximize();
-    } else {
-      window.location.href = "mailto:balkinstr@web.de";
-    }
+    // Trigger our built-in handover flow by sending a "talk to staff" message
+    setText((prev) => prev || "I want to talk to a staff member");
   };
 
   const reset = () => {
@@ -256,6 +353,7 @@ export default function AIWidget({ open, onOpenChange }) {
     setHandoverState("none");
     setOfflineEmail("");
     setOfflineText("");
+    setPendingFiles([]);
     sessionIdRef.current = null;
     lastPollAtRef.current = null;
   };
@@ -427,11 +525,72 @@ export default function AIWidget({ open, onOpenChange }) {
           </form>
         )}
 
+        {/* Pending files preview */}
+        {pendingFiles.length > 0 && (
+          <div
+            data-testid="ai-widget-pending-files"
+            className="border-t border-white/10 bg-[#0d0a14] px-2.5 py-2 flex flex-wrap gap-2"
+          >
+            {pendingFiles.map((f) => (
+              <div
+                key={f.id}
+                data-testid={`pending-file-${f.id}`}
+                className="relative group flex items-center gap-2 bg-[#1a1525] border border-white/10 rounded-sm pr-7 pl-2 py-1.5 max-w-[180px]"
+              >
+                {f.is_image ? (
+                  <ImageIcon className="w-3.5 h-3.5 text-[#00E5FF] shrink-0" />
+                ) : (
+                  <FileText className="w-3.5 h-3.5 text-[#FF007F] shrink-0" />
+                )}
+                <span className="text-[11px] text-white/80 truncate">{f.filename}</span>
+                <button
+                  type="button"
+                  onClick={() => removePendingFile(f.id)}
+                  data-testid={`remove-file-${f.id}`}
+                  aria-label="Remove"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded-sm flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+            {uploading && (
+              <div className="flex items-center gap-2 text-[11px] text-white/50 px-2 py-1.5">
+                <Loader2 className="w-3 h-3 animate-spin" /> Uploading…
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Input */}
         <form
           onSubmit={send}
           className="border-t border-white/10 p-2.5 flex items-center gap-2 bg-[#050505]"
         >
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileSelect}
+            accept="image/*,.pdf,.txt,.zip,.doc,.docx,.xls,.xlsx"
+            multiple
+            data-testid="ai-widget-file-input"
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={openFilePicker}
+            disabled={sending || uploading || pendingFiles.length >= MAX_FILES}
+            aria-label="Attach file"
+            title={pendingFiles.length >= MAX_FILES ? `Max ${MAX_FILES} files` : "Attach image or file"}
+            data-testid="ai-widget-attach"
+            className="w-9 h-9 rounded-sm flex items-center justify-center text-white/60 hover:text-[#00E5FF] hover:bg-white/5 disabled:opacity-40 shrink-0"
+          >
+            {uploading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Paperclip className="w-4 h-4" />
+            )}
+          </button>
           <input
             data-testid="ai-widget-input"
             placeholder={
@@ -448,7 +607,7 @@ export default function AIWidget({ open, onOpenChange }) {
           />
           <button
             type="submit"
-            disabled={sending || !text.trim()}
+            disabled={sending || (!text.trim() && pendingFiles.length === 0)}
             data-testid="ai-widget-send"
             className="w-10 h-10 gradient-pp rounded-sm flex items-center justify-center font-bold disabled:opacity-40 shrink-0"
           >
@@ -508,25 +667,67 @@ function Bubble({ m, typing }) {
             {m.admin_name || "Support"}
           </div>
         )}
-        <div
-          className={`px-3.5 py-2 rounded-sm text-sm leading-snug whitespace-pre-wrap ${
-            isUser
-              ? "bg-[#FF007F] text-white rounded-br-none"
-              : isAdmin
-              ? "bg-[#00E5FF] text-[#050505] rounded-bl-none font-medium"
-              : "bg-[#1a1525] border border-white/10 text-white/90 rounded-bl-none"
-          }`}
-        >
-          {typing ? (
-            <span className="inline-flex gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "0ms" }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "150ms" }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "300ms" }} />
-            </span>
-          ) : (
-            cleanText
-          )}
-        </div>
+        {/* Attachments */}
+        {Array.isArray(m.attachments) && m.attachments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-1.5 justify-end">
+            {m.attachments.map((a) => {
+              const url = a.url || `/api/ai/uploads/${a.id}`;
+              const isImg = a.is_image || (a.content_type || "").startsWith("image/");
+              if (isImg) {
+                return (
+                  <a
+                    key={a.id}
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-testid={`bubble-image-${a.id}`}
+                    className="block rounded-sm overflow-hidden border border-white/10 hover:border-[#00E5FF] transition"
+                  >
+                    <img
+                      src={url}
+                      alt={a.filename}
+                      className="max-w-[180px] max-h-[180px] object-cover block"
+                    />
+                  </a>
+                );
+              }
+              return (
+                <a
+                  key={a.id}
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-testid={`bubble-file-${a.id}`}
+                  className="inline-flex items-center gap-2 px-2 py-1.5 bg-white/10 hover:bg-white/15 rounded-sm border border-white/10 text-[11px] text-white max-w-[200px]"
+                >
+                  <FileText className="w-3 h-3 shrink-0" />
+                  <span className="truncate">{a.filename}</span>
+                </a>
+              );
+            })}
+          </div>
+        )}
+        {(cleanText || typing) && (
+          <div
+            className={`px-3.5 py-2 rounded-sm text-sm leading-snug whitespace-pre-wrap ${
+              isUser
+                ? "bg-[#FF007F] text-white rounded-br-none"
+                : isAdmin
+                ? "bg-[#00E5FF] text-[#050505] rounded-bl-none font-medium"
+                : "bg-[#1a1525] border border-white/10 text-white/90 rounded-bl-none"
+            }`}
+          >
+            {typing ? (
+              <span className="inline-flex gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "0ms" }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "150ms" }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "300ms" }} />
+              </span>
+            ) : (
+              cleanText
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

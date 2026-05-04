@@ -6,9 +6,12 @@ import bcrypt
 import jwt
 import httpx
 import logging
+import mimetypes
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, EmailStr, Field
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -16,6 +19,25 @@ logger = logging.getLogger(__name__)
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TTL = timedelta(days=7)
+
+# Upload config
+UPLOAD_ROOT = Path(os.environ.get("UPLOAD_DIR", "/app/backend/uploads"))
+AI_UPLOAD_DIR = UPLOAD_ROOT / "ai_chat"
+AI_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+ALLOWED_UPLOAD_MIME = {
+    # Images
+    "image/jpeg", "image/png", "image/webp", "image/gif",
+    # Documents
+    "application/pdf",
+    "text/plain",
+    "application/zip",
+    "application/x-zip-compressed",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MB
 
 auth_router = APIRouter(prefix="/api/auth")
 chat_router = APIRouter(prefix="/api/chat")
@@ -607,6 +629,172 @@ async def offline_message(body: OfflineContactRequest, request: Request):
     }
     await db.ai_offline_messages.insert_one(doc.copy())
     return {"ok": True, "id": doc["id"]}
+
+
+# ---------------- File / image upload (public, used inside AI chat) ----------------
+
+def _safe_ext(filename: str, content_type: str) -> str:
+    """Return a safe extension based on filename + content_type."""
+    ext = ""
+    if filename and "." in filename:
+        ext = "." + filename.rsplit(".", 1)[-1].lower()
+        # Only keep simple alnum extensions to avoid path tricks
+        if not re.fullmatch(r"\.[a-z0-9]{1,8}", ext):
+            ext = ""
+    if not ext:
+        guessed = mimetypes.guess_extension(content_type or "") or ""
+        ext = guessed.lower() if re.fullmatch(r"\.[a-z0-9]{1,8}", guessed) else ""
+    return ext or ".bin"
+
+
+@ai_router.post("/upload")
+async def ai_upload(
+    request: Request,
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Public — user attaches a file inside the chat widget. Persists to disk and DB.
+
+    Returns a file_id + URL the frontend can show in the bubble. The actual chat
+    message (text + attachment refs) is then sent via /ai/chat or /ai/upload-message.
+    """
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+
+    content_type = (file.content_type or "").lower()
+    if content_type not in ALLOWED_UPLOAD_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type ({content_type or 'unknown'})",
+        )
+
+    # Stream-read with size cap
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 8 MB)")
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    file_id = uuid.uuid4().hex
+    ext = _safe_ext(file.filename or "", content_type)
+    on_disk = AI_UPLOAD_DIR / f"{file_id}{ext}"
+    on_disk.write_bytes(data)
+
+    db: AsyncIOMotorDatabase = request.app.state.db
+    doc = {
+        "id": file_id,
+        "session_id": session_id,
+        "filename": (file.filename or f"file{ext}")[:200],
+        "content_type": content_type,
+        "size_bytes": len(data),
+        "stored_path": str(on_disk),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.ai_uploads.insert_one(doc.copy())
+    return {
+        "id": file_id,
+        "url": f"/api/ai/uploads/{file_id}",
+        "filename": doc["filename"],
+        "content_type": content_type,
+        "size_bytes": len(data),
+        "is_image": content_type.startswith("image/"),
+    }
+
+
+@ai_router.get("/uploads/{file_id}")
+async def ai_get_upload(file_id: str, request: Request):
+    """Public — fetch an uploaded file by id."""
+    if not re.fullmatch(r"[a-f0-9]{16,64}", file_id or ""):
+        raise HTTPException(status_code=400, detail="Bad id")
+    db: AsyncIOMotorDatabase = request.app.state.db
+    doc = await db.ai_uploads.find_one({"id": file_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    path = Path(doc.get("stored_path", ""))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="File missing")
+    return FileResponse(
+        str(path),
+        media_type=doc.get("content_type") or "application/octet-stream",
+        filename=doc.get("filename") or "file",
+    )
+
+
+class AttachMessageBody(BaseModel):
+    session_id: str
+    file_ids: List[str] = Field(default_factory=list, max_length=4)
+    text: Optional[str] = Field(default="", max_length=500)
+
+
+@ai_router.post("/attach-message")
+async def ai_attach_message(body: AttachMessageBody, request: Request):
+    """Public — user posts a chat message containing attachments (no LLM call).
+
+    The AI doesn't try to interpret images; it just acknowledges and admin sees them
+    in the inbox. Useful for sending screenshots while waiting for staff."""
+    if not body.session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+    if not body.file_ids and not (body.text or "").strip():
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    db: AsyncIOMotorDatabase = request.app.state.db
+    # Validate file ownership-by-session
+    valid_files = []
+    if body.file_ids:
+        async for f in db.ai_uploads.find(
+            {"id": {"$in": body.file_ids[:4]}, "session_id": body.session_id},
+            {"_id": 0, "id": 1, "filename": 1, "content_type": 1, "size_bytes": 1},
+        ):
+            valid_files.append(f)
+    if body.file_ids and not valid_files:
+        raise HTTPException(status_code=400, detail="No valid attachments for this session")
+
+    now = datetime.now(timezone.utc).isoformat()
+    msg = {
+        "id": str(uuid.uuid4()),
+        "session_id": body.session_id,
+        "role": "user",
+        "text": (body.text or "").strip()[:500],
+        "attachments": valid_files,
+        "created_at": now,
+    }
+    await db.ai_chat_messages.insert_one(msg.copy())
+    await db.ai_sessions.update_one(
+        {"session_id": body.session_id},
+        {
+            "$setOnInsert": {
+                "session_id": body.session_id,
+                "status": "ai",
+                "created_at": now,
+                "ip": (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or
+                       (request.client.host if request.client else "")),
+            },
+            "$set": {
+                "last_activity": now,
+                "last_user_text": (
+                    msg["text"] or f"📎 sent {len(valid_files)} attachment(s)"
+                )[:200],
+            },
+        },
+        upsert=True,
+    )
+
+    # Auto-friendly assistant ack so user sees the file landed
+    sess = await db.ai_sessions.find_one({"session_id": body.session_id}, {"_id": 0, "status": 1})
+    if not (sess and sess.get("status") == "human"):
+        ack_text = (
+            "Got your file — our team will review it. "
+            "Want me to also notify a staff member to take a look? Just say so."
+        )
+        await db.ai_chat_messages.insert_one({
+            "id": str(uuid.uuid4()),
+            "session_id": body.session_id,
+            "role": "assistant",
+            "text": ack_text,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    return {"ok": True, "message_id": msg["id"], "attachments": valid_files}
 
 
 def _admin_check(request: Request):
