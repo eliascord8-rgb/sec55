@@ -28,8 +28,9 @@ db = client[os.environ['DB_NAME']]
 SMM_API_URL_DEFAULT = "https://smmcost.com/api/v2"
 SMM_API_KEY_DEFAULT = os.environ.get("SMM_API_KEY", "47b5c3b01e4b5ecd1e53b39baef31a6e")
 
-ADMIN_USER = "Balkin99"
-ADMIN_PASS = "Armin1234"
+ADMIN_USER = os.environ.get("ADMIN_USER", "Balkin99")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "Armin1234")
+ADMIN_URL_SECRET = os.environ.get("ADMIN_URL_SECRET", "")  # set in .env for secret URL login
 ADMIN_SESSIONS = set()  # in-mem session tokens
 
 app = FastAPI()
@@ -419,8 +420,27 @@ async def cryptomus_webhook(request: Request):
 # ============ ADMIN ROUTES ============
 @api_router.post("/admin/login")
 async def admin_login(payload: AdminLogin):
-    if payload.username != ADMIN_USER or payload.password != ADMIN_PASS:
+    # Case-insensitive username + strip whitespace to forgive typos
+    if (payload.username or "").strip().lower() != ADMIN_USER.lower() or \
+       (payload.password or "") != ADMIN_PASS:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = secrets.token_urlsafe(24)
+    ADMIN_SESSIONS.add(token)
+    return {"token": token}
+
+
+class AdminSecretLogin(BaseModel):
+    secret: str
+
+
+@api_router.post("/admin/login-secret")
+async def admin_login_secret(payload: AdminSecretLogin):
+    """Bypass username/password by providing a pre-shared URL secret.
+    Configure by setting ADMIN_URL_SECRET in backend/.env."""
+    if not ADMIN_URL_SECRET:
+        raise HTTPException(status_code=404, detail="Not configured")
+    if not secrets.compare_digest((payload.secret or "").strip(), ADMIN_URL_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid secret")
     token = secrets.token_urlsafe(24)
     ADMIN_SESSIONS.add(token)
     return {"token": token}
