@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { adminApi, api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil, FileText } from "lucide-react";
+import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil, FileText, Bell, BellOff } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Admin() {
@@ -1559,6 +1559,95 @@ function AIInboxPanel({ token }) {
   const [savingName, setSavingName] = useState(false);
   const [offlineMsgs, setOfflineMsgs] = useState([]);
   const [showOffline, setShowOffline] = useState(false);
+  const [soundOn, setSoundOn] = useState(
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("bs_inbox_sound") !== "0"
+      : true
+  );
+  const prevWaitingRef = useRef(0);
+  const audioRef = useRef(null);
+  const originalTitleRef = useRef(typeof document !== "undefined" ? document.title : "Admin");
+  const titleFlashRef = useRef(null);
+
+  // Lazy-init the alert sound — short pleasant chime (data URI = no asset needed)
+  const playChime = () => {
+    if (!soundOn) return;
+    try {
+      // Web Audio API tone for reliability
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      const ctx = audioRef.current || new AC();
+      audioRef.current = ctx;
+      // Two-note chime (G5 → C6)
+      const playNote = (freq, start, dur) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = "sine";
+        o.frequency.setValueAtTime(freq, ctx.currentTime + start);
+        g.gain.setValueAtTime(0, ctx.currentTime + start);
+        g.gain.linearRampToValueAtTime(0.18, ctx.currentTime + start + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + dur);
+        o.connect(g);
+        g.connect(ctx.destination);
+        o.start(ctx.currentTime + start);
+        o.stop(ctx.currentTime + start + dur + 0.05);
+      };
+      playNote(784, 0, 0.22);     // G5
+      playNote(1047, 0.18, 0.32); // C6
+    } catch {
+      // browser blocked audio (no user gesture) — silently skip
+    }
+  };
+
+  const startTitleFlash = (count) => {
+    if (titleFlashRef.current) clearInterval(titleFlashRef.current);
+    const original = originalTitleRef.current;
+    let on = true;
+    titleFlashRef.current = setInterval(() => {
+      document.title = on ? `🔴 (${count}) waiting — ${original}` : original;
+      on = !on;
+    }, 1200);
+  };
+
+  const stopTitleFlash = () => {
+    if (titleFlashRef.current) {
+      clearInterval(titleFlashRef.current);
+      titleFlashRef.current = null;
+    }
+    document.title = originalTitleRef.current;
+  };
+
+  // Cleanup title on unmount
+  useEffect(() => {
+    return () => stopTitleFlash();
+  }, []);
+
+  // React to waiting count changes
+  useEffect(() => {
+    const prev = prevWaitingRef.current;
+    if (waiting > prev) {
+      playChime();
+    }
+    if (waiting > 0) {
+      startTitleFlash(waiting);
+    } else {
+      stopTitleFlash();
+    }
+    prevWaitingRef.current = waiting;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waiting]);
+
+  const toggleSound = () => {
+    const next = !soundOn;
+    setSoundOn(next);
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem("bs_inbox_sound", next ? "1" : "0");
+    }
+    if (next) {
+      // Play a small confirmation chime so user knows it works (also unlocks audio context on mobile)
+      setTimeout(() => playChime(), 50);
+    }
+  };
 
   const loadSessions = async () => {
     try {
@@ -1740,6 +1829,19 @@ function AIInboxPanel({ token }) {
               🔴 {waiting} waiting for staff
             </span>
           )}
+          <button
+            onClick={toggleSound}
+            data-testid="sound-toggle"
+            title={soundOn ? "Sound alerts ON — click to mute" : "Sound alerts OFF — click to enable"}
+            className={`w-9 h-9 rounded-sm border inline-flex items-center justify-center transition ${
+              soundOn
+                ? "border-[#00E5FF]/40 text-[#00E5FF] bg-[#00E5FF]/5 hover:bg-[#00E5FF]/10"
+                : "border-white/20 text-white/40 hover:bg-white/5"
+            }`}
+            aria-label={soundOn ? "Mute alerts" : "Enable sound alerts"}
+          >
+            {soundOn ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
+          </button>
           <button
             onClick={() => setShowOffline((v) => !v)}
             data-testid="offline-msgs-toggle"
