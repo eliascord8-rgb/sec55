@@ -12,13 +12,45 @@ export default function Admin() {
   const [u, setU] = useState("");
   const [p, setP] = useState("");
   const [loading, setLoading] = useState(false);
+  const [secretLoggingIn, setSecretLoggingIn] = useState(false);
   const navigate = useNavigate();
+
+  // Auto-login via secret URL (e.g. /admin?key=mysecret)
+  useEffect(() => {
+    if (token) return;
+    const params = new URLSearchParams(window.location.search);
+    // Accept ?key=X, ?secret=X, or bare ?X (with no value)
+    let secret = params.get("key") || params.get("secret");
+    if (!secret) {
+      // Bare query like /admin?haha123
+      const raw = window.location.search.replace(/^\?/, "");
+      if (raw && !raw.includes("=") && !raw.includes("&")) {
+        secret = decodeURIComponent(raw);
+      }
+    }
+    if (!secret) return;
+    setSecretLoggingIn(true);
+    api
+      .post("/admin/login-secret", { secret })
+      .then((r) => {
+        localStorage.setItem("bs_admin_token", r.data.token);
+        setToken(r.data.token);
+        toast.success("Logged in via secret URL");
+        // Clean the URL so the secret doesn't sit in history
+        window.history.replaceState({}, document.title, "/admin");
+      })
+      .catch((err) => {
+        toast.error(err.response?.data?.detail || "Secret login failed");
+      })
+      .finally(() => setSecretLoggingIn(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const login = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const r = await api.post("/admin/login", { username: u, password: p });
+      const r = await api.post("/admin/login", { username: u.trim(), password: p });
       localStorage.setItem("bs_admin_token", r.data.token);
       setToken(r.data.token);
       toast.success("Welcome, admin");
@@ -35,6 +67,16 @@ export default function Admin() {
   };
 
   if (!token) {
+    if (secretLoggingIn) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-[#050505] text-white">
+          <div className="flex items-center gap-3 text-sm">
+            <Loader2 className="w-4 h-4 animate-spin text-[#FF007F]" />
+            Authenticating via secret URL…
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#050505] p-6 relative overflow-hidden">
         <div
