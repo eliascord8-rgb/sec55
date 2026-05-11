@@ -20,10 +20,14 @@ logger = logging.getLogger(__name__)
 JWT_ALGORITHM = "HS256"
 ACCESS_TTL = timedelta(days=7)
 
-# Upload config
-UPLOAD_ROOT = Path(os.environ.get("UPLOAD_DIR", "/app/backend/uploads"))
+# Upload config — defaults next to this file so VPS deploys work without env tweaks
+_DEFAULT_UPLOAD_DIR = str(Path(__file__).parent / "uploads")
+UPLOAD_ROOT = Path(os.environ.get("UPLOAD_DIR", _DEFAULT_UPLOAD_DIR))
 AI_UPLOAD_DIR = UPLOAD_ROOT / "ai_chat"
-AI_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    AI_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+except PermissionError as _e:
+    logger.warning(f"Cannot create upload dir {AI_UPLOAD_DIR}: {_e}. Uploads will fail until the dir exists.")
 ALLOWED_UPLOAD_MIME = {
     # Images
     "image/jpeg", "image/png", "image/webp", "image/gif",
