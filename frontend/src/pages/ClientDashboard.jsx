@@ -770,6 +770,7 @@ function TicketsView({ authedApi }) {
             <button
               type="button"
               onClick={() => setShowNew(false)}
+              data-testid="ticket-cancel"
               className="flex-1 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5"
             >
               Cancel
@@ -777,7 +778,7 @@ function TicketsView({ authedApi }) {
             <button
               type="submit"
               disabled={creating}
-              data-testid="ticket-create"
+              data-testid="ticket-submit"
               className="flex-1 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-50 inline-flex items-center justify-center gap-2"
             >
               {creating ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
