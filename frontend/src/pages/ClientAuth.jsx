@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Sparkles, Loader2, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
+import MathCaptcha from "@/components/MathCaptcha";
 
 export default function ClientAuth() {
   const { user, setAuth } = useAuth();
@@ -46,7 +47,9 @@ export default function ClientAuth() {
             <span className="font-display font-black text-lg">
               Better<span className="text-[#FF007F]">Social</span>
             </span>
-            <span className="ml-auto text-xs uppercase tracking-[0.2em] text-white/40">Client Area</span>
+            <span className="ml-auto text-xs uppercase tracking-[0.2em] text-white/40">
+              Client Area
+            </span>
           </div>
 
           <Tabs defaultValue="login" className="w-full">
@@ -83,17 +86,30 @@ export default function ClientAuth() {
 function LoginForm({ onSuccess }) {
   const [ident, setIdent] = useState("");
   const [pw, setPw] = useState("");
+  const [captcha, setCaptcha] = useState({ captcha_id: "", captcha_answer: "" });
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
   const [loading, setLoading] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
+    if (!captcha.captcha_answer) {
+      toast.error("Please answer the captcha");
+      return;
+    }
     setLoading(true);
     try {
-      const r = await api.post("/auth/login", { identifier: ident, password: pw });
+      const r = await api.post("/auth/login", {
+        identifier: ident,
+        password: pw,
+        captcha_id: captcha.captcha_id,
+        captcha_answer: captcha.captcha_answer,
+      });
       onSuccess(r.data.token, r.data.user);
       toast.success(`Welcome back, ${r.data.user.username}`);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Login failed");
+      // Refresh captcha on failure so it can't be reused
+      setCaptchaResetKey((k) => k + 1);
     } finally {
       setLoading(false);
     }
@@ -102,14 +118,15 @@ function LoginForm({ onSuccess }) {
   return (
     <form onSubmit={submit} data-testid="login-form" className="space-y-4">
       <div>
-        <Label className="text-[11px] uppercase tracking-wider text-white/60">Username or email</Label>
+        <Label className="text-[11px] uppercase tracking-wider text-white/60">
+          Username or email
+        </Label>
         <Input
           data-testid="login-identifier"
           value={ident}
           onChange={(e) => setIdent(e.target.value)}
           required
           className="bg-[#1a1525] border-white/10 mt-1"
-          autoFocus
         />
       </div>
       <div>
@@ -123,6 +140,7 @@ function LoginForm({ onSuccess }) {
           className="bg-[#1a1525] border-white/10 mt-1"
         />
       </div>
+      <MathCaptcha key={`l-${captchaResetKey}`} onChange={setCaptcha} testId="login-captcha" />
       <button
         type="submit"
         disabled={loading}
@@ -139,52 +157,14 @@ function RegisterForm({ onSuccess }) {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
-  const [captcha, setCaptcha] = useState(null);
-  const [siteKey, setSiteKey] = useState(null);
+  const [captcha, setCaptcha] = useState({ captcha_id: "", captcha_answer: "" });
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    api.get("/auth/hcaptcha-site-key").then((r) => setSiteKey(r.data.site_key)).catch(() => {});
-  }, []);
-
-  // Load hCaptcha script
-  useEffect(() => {
-    if (!siteKey) return;
-    if (document.querySelector('script[src*="hcaptcha.com"]')) return;
-    const s = document.createElement("script");
-    s.src = "https://js.hcaptcha.com/1/api.js?render=explicit";
-    s.async = true;
-    document.head.appendChild(s);
-  }, [siteKey]);
-
-  useEffect(() => {
-    if (!siteKey) return;
-    const tryRender = () => {
-      if (window.hcaptcha && document.getElementById("bs-hcaptcha")) {
-        try {
-          window.hcaptcha.render("bs-hcaptcha", {
-            sitekey: siteKey,
-            theme: "dark",
-            callback: (tok) => setCaptcha(tok),
-            "expired-callback": () => setCaptcha(null),
-          });
-        } catch {}
-        return true;
-      }
-      return false;
-    };
-    if (!tryRender()) {
-      const interval = setInterval(() => {
-        if (tryRender()) clearInterval(interval);
-      }, 400);
-      return () => clearInterval(interval);
-    }
-  }, [siteKey]);
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!captcha) {
-      toast.error("Please complete the captcha");
+    if (!captcha.captcha_answer) {
+      toast.error("Please answer the captcha");
       return;
     }
     setLoading(true);
@@ -193,12 +173,14 @@ function RegisterForm({ onSuccess }) {
         username,
         email,
         password: pw,
-        captcha_token: captcha,
+        captcha_id: captcha.captcha_id,
+        captcha_answer: captcha.captcha_answer,
       });
       onSuccess(r.data.token, r.data.user);
       toast.success(`Welcome, ${r.data.user.username}`);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Registration failed");
+      setCaptchaResetKey((k) => k + 1);
     } finally {
       setLoading(false);
     }
@@ -218,7 +200,9 @@ function RegisterForm({ onSuccess }) {
           required
           className="bg-[#1a1525] border-white/10 mt-1"
         />
-        <p className="text-[10px] text-white/30 mt-1">3–24 chars · letters, numbers, underscore</p>
+        <p className="text-[10px] text-white/30 mt-1">
+          3–24 chars · letters, numbers, underscore
+        </p>
       </div>
       <div>
         <Label className="text-[11px] uppercase tracking-wider text-white/60">Email</Label>
@@ -244,7 +228,7 @@ function RegisterForm({ onSuccess }) {
         />
         <p className="text-[10px] text-white/30 mt-1">min 8 chars</p>
       </div>
-      <div id="bs-hcaptcha" className="flex justify-center" data-testid="hcaptcha-box" />
+      <MathCaptcha key={`r-${captchaResetKey}`} onChange={setCaptcha} testId="reg-captcha" />
       <button
         type="submit"
         disabled={loading}

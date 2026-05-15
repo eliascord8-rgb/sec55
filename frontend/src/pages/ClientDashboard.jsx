@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Input } from "@/components/ui/input";
+import AIWidget from "@/components/AIWidget";
 import {
   Sparkles,
   LogOut,
@@ -13,6 +14,7 @@ import {
   Crown,
   Shield,
   Loader2,
+  Bot,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -25,6 +27,7 @@ export default function ClientDashboard() {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
   const chatEndRef = useRef(null);
 
   useEffect(() => {
@@ -243,6 +246,28 @@ export default function ClientDashboard() {
           </aside>
         </div>
       </main>
+
+      {/* Better Social AI floating widget */}
+      <AIWidget open={aiOpen} onOpenChange={setAiOpen} />
+      {!aiOpen && (
+        <button
+          onClick={() => setAiOpen(true)}
+          data-testid="dashboard-ai-fab"
+          aria-label="Open AI assistant"
+          className="fixed bottom-5 right-5 z-50 group flex items-center gap-3"
+        >
+          <span className="hidden sm:inline-block px-3 py-1.5 rounded-full bg-[#1a1525]/95 backdrop-blur border border-white/10 text-xs font-medium text-white shadow-lg group-hover:border-[#FF007F]/50 transition">
+            Live Chat?
+          </span>
+          <div className="relative">
+            <span className="absolute inset-0 rounded-full gradient-pp blur-lg opacity-70 group-hover:opacity-100 transition animate-pulse" />
+            <div className="relative w-14 h-14 rounded-full gradient-pp flex items-center justify-center shadow-[0_10px_40px_-12px_rgba(255,0,127,0.8)] group-hover:scale-105 transition">
+              <Bot className="w-6 h-6 text-white" />
+            </div>
+            <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-[#00E5FF] border-2 border-[#050505] animate-pulse" />
+          </div>
+        </button>
+      )}
     </div>
   );
 }

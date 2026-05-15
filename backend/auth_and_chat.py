@@ -54,12 +54,17 @@ class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=24, pattern=r"^[a-zA-Z0-9_]+$")
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
+    captcha_id: Optional[str] = None
+    captcha_answer: Optional[str] = None
+    # legacy field kept so old clients don't error
     captcha_token: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
     identifier: str  # username OR email
     password: str
+    captcha_id: Optional[str] = None
+    captcha_answer: Optional[str] = None
 
 
 class ChatSendRequest(BaseModel):
@@ -120,19 +125,78 @@ def _get_token_from_request(request: Request) -> Optional[str]:
 
 
 async def verify_hcaptcha(token: Optional[str]) -> bool:
-    if not token:
+    """Legacy — kept so old clients passing captcha_token don't crash. Always True."""
+    return True
+
+
+# ---------------- Math Captcha (stateless, HMAC-signed) ----------------
+import hmac
+import hashlib
+import random
+import base64
+import time
+
+CAPTCHA_TTL_SEC = 300  # 5 minutes to solve
+
+def _captcha_secret() -> str:
+    return os.environ.get("JWT_SECRET", "bs-captcha-secret-fallback")
+
+def generate_math_captcha() -> dict:
+    """Create a new addition/subtraction challenge. Returns {id, question, expires_at}."""
+    op = random.choice(["+", "-"])
+    if op == "+":
+        a = random.randint(2, 12)
+        b = random.randint(2, 12)
+        answer = a + b
+    else:
+        a = random.randint(8, 19)
+        b = random.randint(1, a - 1)
+        answer = a - b
+    issued_at = int(time.time())
+    payload = f"{a}|{op}|{b}|{answer}|{issued_at}"
+    sig = hmac.new(
+        _captcha_secret().encode(),
+        payload.encode(),
+        hashlib.sha256,
+    ).hexdigest()[:24]
+    # captcha_id encodes everything we need to verify later (signed)
+    cid = base64.urlsafe_b64encode(f"{payload}|{sig}".encode()).decode().rstrip("=")
+    return {
+        "id": cid,
+        "question": f"What is {a} {op} {b}?",
+        "expires_in": CAPTCHA_TTL_SEC,
+    }
+
+
+def verify_math_captcha(cid: Optional[str], user_answer: Optional[str]) -> bool:
+    if not cid or user_answer is None:
         return False
-    secret = os.environ.get("HCAPTCHA_SECRET", "")
-    # Test secret always passes
-    if secret.startswith("0x0000000000000000000000000000000000000000"):
-        return True
-    async with httpx.AsyncClient(timeout=10.0) as c:
-        r = await c.post(
-            "https://api.hcaptcha.com/siteverify",
-            data={"response": token, "secret": secret},
-        )
-        data = r.json()
-        return bool(data.get("success"))
+    try:
+        # Re-pad base64
+        padded = cid + "=" * (-len(cid) % 4)
+        raw = base64.urlsafe_b64decode(padded).decode()
+        parts = raw.split("|")
+        if len(parts) != 6:
+            return False
+        a, op, b, expected, issued_at, sig = parts
+        # Verify signature
+        expected_sig = hmac.new(
+            _captcha_secret().encode(),
+            f"{a}|{op}|{b}|{expected}|{issued_at}".encode(),
+            hashlib.sha256,
+        ).hexdigest()[:24]
+        if not hmac.compare_digest(sig, expected_sig):
+            return False
+        # Check expiry
+        if int(time.time()) - int(issued_at) > CAPTCHA_TTL_SEC:
+            return False
+        # Compare answers
+        try:
+            return int(user_answer.strip()) == int(expected)
+        except (ValueError, AttributeError):
+            return False
+    except Exception:
+        return False
 
 
 def half_username(u: str) -> str:
@@ -219,9 +283,9 @@ async def seed_owner(db: AsyncIOMotorDatabase):
 async def register(req: RegisterRequest, request: Request):
     db: AsyncIOMotorDatabase = request.app.state.db
 
-    # hCaptcha (test keys always pass)
-    if not await verify_hcaptcha(req.captcha_token):
-        raise HTTPException(status_code=400, detail="Captcha failed")
+    # Math captcha
+    if not verify_math_captcha(req.captcha_id, req.captcha_answer):
+        raise HTTPException(status_code=400, detail="Wrong captcha answer — please try again")
 
     email = req.email.lower()
     if await db.users.find_one({"username": req.username}):
@@ -247,6 +311,9 @@ async def register(req: RegisterRequest, request: Request):
 @auth_router.post("/login")
 async def login(req: LoginRequest, request: Request):
     db: AsyncIOMotorDatabase = request.app.state.db
+    # Math captcha required on login too
+    if not verify_math_captcha(req.captcha_id, req.captcha_answer):
+        raise HTTPException(status_code=400, detail="Wrong captcha answer — please try again")
     ident = req.identifier.strip()
     query = {"email": ident.lower()} if "@" in ident else {"username": ident}
     doc = await db.users.find_one(query)
@@ -254,6 +321,12 @@ async def login(req: LoginRequest, request: Request):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_token(doc["id"], doc["username"], doc.get("role", "user"))
     return {"token": token, "user": _user_public(doc)}
+
+
+@auth_router.get("/captcha")
+async def get_captcha():
+    """Issue a fresh math captcha. Returns {id, question, expires_in}."""
+    return generate_math_captcha()
 
 
 @auth_router.get("/me")
@@ -936,6 +1009,17 @@ async def admin_ai_takeover(session_id: str, request: Request):
         {"$set": {"status": "human", "last_activity": now, "needs_handover": False}},
         upsert=True,
     )
+    # Insert a system-style assistant note so user sees who joined
+    settings = await get_ai_settings(db)
+    name = settings.get("staff_display_name") or STAFF_DISPLAY_NAME_DEFAULT
+    await db.ai_chat_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "role": "assistant",
+        "text": f"👋 @{name} joined the chat — you're now talking with a real person.",
+        "is_system_join": True,
+        "created_at": now,
+    })
     return {"ok": True, "matched": res.matched_count}
 
 
