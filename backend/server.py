@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Header
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Header, Depends
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -36,6 +36,18 @@ ADMIN_SESSIONS = set()  # in-mem session tokens
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
+
+
+# Import auth deps so we can build authenticated routes below
+from auth_and_chat import (  # noqa: E402
+    auth_router,
+    chat_router,
+    client_router,
+    ai_router,
+    seed_owner,
+    current_user_dep,
+    CurrentUser,
+)
 
 
 # ============ MODELS ============
@@ -647,6 +659,283 @@ async def admin_unmute_user(user_id: str, x_admin_token: Optional[str] = Header(
     return {"ok": True}
 
 
+# ============ PAYPAL CONFIG + ADD FUNDS ============
+
+class PaypalConfig(BaseModel):
+    paypal_email: str = Field(default="", max_length=120)
+    paypal_me_url: str = Field(default="", max_length=200)
+
+
+@api_router.get("/paypal-config")
+async def public_paypal_config():
+    """Public — frontend reads paypal.me URL to redirect users to."""
+    cfg = await db.paypal_config.find_one({}, {"_id": 0}) or {}
+    return {
+        "paypal_email": cfg.get("paypal_email", ""),
+        "paypal_me_url": cfg.get("paypal_me_url", ""),
+        "configured": bool(cfg.get("paypal_me_url") or cfg.get("paypal_email")),
+    }
+
+
+@api_router.post("/admin/paypal-config")
+async def admin_set_paypal_config(payload: PaypalConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    await db.paypal_config.update_one(
+        {},
+        {"$set": {
+            "paypal_email": payload.paypal_email.strip(),
+            "paypal_me_url": payload.paypal_me_url.strip(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+async def _get_user_balance(user_id: str) -> float:
+    cur = db.transactions.aggregate([
+        {"$match": {"user_id": user_id, "status": "approved"}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
+    ])
+    async for doc in cur:
+        return round(float(doc.get("total", 0)), 2)
+    return 0.0
+
+
+@client_router.get("/balance")
+async def get_my_balance(user: CurrentUser = Depends(current_user_dep)):
+    balance = await _get_user_balance(user.id)
+    return {"balance": balance}
+
+
+@client_router.get("/transactions")
+async def get_my_transactions(user: CurrentUser = Depends(current_user_dep)):
+    items = await db.transactions.find(
+        {"user_id": user.id},
+        {"_id": 0},
+    ).sort("created_at", -1).limit(100).to_list(100)
+    return {"transactions": items}
+
+
+class FundRequest(BaseModel):
+    amount: float = Field(..., gt=0, le=10000)
+    method: str = Field(default="paypal")  # paypal | crypto
+
+
+@client_router.post("/funds/request")
+async def request_funds(body: FundRequest, user: CurrentUser = Depends(current_user_dep)):
+    """User claims they've sent payment. Admin must approve."""
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "username": user.username,
+        "amount": round(float(body.amount), 2),
+        "method": body.method,
+        "status": "pending",  # pending | approved | rejected
+        "type": "deposit",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.transactions.insert_one(doc.copy())
+    return {"ok": True, "id": doc["id"], "status": "pending"}
+
+
+@api_router.get("/admin/transactions")
+async def admin_list_transactions(
+    x_admin_token: Optional[str] = Header(None),
+    status: Optional[str] = None,
+):
+    check_admin(x_admin_token)
+    q = {}
+    if status:
+        q["status"] = status
+    items = await db.transactions.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+    return {"transactions": items}
+
+
+class TxDecision(BaseModel):
+    note: Optional[str] = None
+
+
+@api_router.post("/admin/transactions/{tx_id}/approve")
+async def admin_approve_tx(tx_id: str, body: TxDecision, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    res = await db.transactions.find_one_and_update(
+        {"id": tx_id, "status": "pending"},
+        {"$set": {
+            "status": "approved",
+            "admin_note": (body.note or "").strip()[:300],
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        return_document=True,
+        projection={"_id": 0},
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="Not a pending transaction")
+    return {"ok": True, "transaction": res}
+
+
+@api_router.post("/admin/transactions/{tx_id}/reject")
+async def admin_reject_tx(tx_id: str, body: TxDecision, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    res = await db.transactions.find_one_and_update(
+        {"id": tx_id, "status": "pending"},
+        {"$set": {
+            "status": "rejected",
+            "admin_note": (body.note or "").strip()[:300],
+            "rejected_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        return_document=True,
+        projection={"_id": 0},
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="Not a pending transaction")
+    return {"ok": True, "transaction": res}
+
+
+# ============ SUPPORT TICKETS ============
+
+class TicketCreate(BaseModel):
+    subject: str = Field(..., min_length=2, max_length=120)
+    message: str = Field(..., min_length=2, max_length=4000)
+
+
+class TicketReply(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+
+
+@client_router.post("/tickets")
+async def create_ticket(body: TicketCreate, user: CurrentUser = Depends(current_user_dep)):
+    now = datetime.now(timezone.utc).isoformat()
+    ticket_id = str(uuid.uuid4())
+    doc = {
+        "id": ticket_id,
+        "user_id": user.id,
+        "username": user.username,
+        "subject": body.subject.strip()[:120],
+        "status": "open",  # open | answered | closed
+        "created_at": now,
+        "updated_at": now,
+        "last_reply_by": "user",
+    }
+    await db.tickets.insert_one(doc.copy())
+    await db.ticket_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "ticket_id": ticket_id,
+        "author_role": "user",
+        "author_name": user.username,
+        "message": body.message.strip()[:4000],
+        "created_at": now,
+    })
+    return {"ok": True, "id": ticket_id}
+
+
+@client_router.get("/tickets")
+async def list_my_tickets(user: CurrentUser = Depends(current_user_dep)):
+    items = await db.tickets.find(
+        {"user_id": user.id},
+        {"_id": 0},
+    ).sort("updated_at", -1).to_list(100)
+    return {"tickets": items}
+
+
+@client_router.get("/tickets/{ticket_id}")
+async def get_my_ticket(ticket_id: str, user: CurrentUser = Depends(current_user_dep)):
+    t = await db.tickets.find_one({"id": ticket_id, "user_id": user.id}, {"_id": 0})
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    msgs = await db.ticket_messages.find(
+        {"ticket_id": ticket_id},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(500)
+    return {"ticket": t, "messages": msgs}
+
+
+@client_router.post("/tickets/{ticket_id}/reply")
+async def reply_my_ticket(ticket_id: str, body: TicketReply, user: CurrentUser = Depends(current_user_dep)):
+    t = await db.tickets.find_one({"id": ticket_id, "user_id": user.id}, {"_id": 0, "status": 1})
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if t.get("status") == "closed":
+        raise HTTPException(status_code=400, detail="Ticket is closed")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.ticket_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "ticket_id": ticket_id,
+        "author_role": "user",
+        "author_name": user.username,
+        "message": body.message.strip()[:4000],
+        "created_at": now,
+    })
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {"status": "open", "updated_at": now, "last_reply_by": "user"}},
+    )
+    return {"ok": True}
+
+
+# ----- Admin ticket endpoints -----
+
+@api_router.get("/admin/tickets")
+async def admin_list_tickets(x_admin_token: Optional[str] = Header(None), status: Optional[str] = None):
+    check_admin(x_admin_token)
+    q = {}
+    if status:
+        q["status"] = status
+    items = await db.tickets.find(q, {"_id": 0}).sort("updated_at", -1).limit(200).to_list(200)
+    # waiting = tickets where last reply was by user
+    waiting = sum(1 for t in items if t.get("last_reply_by") == "user" and t.get("status") == "open")
+    return {"tickets": items, "waiting": waiting}
+
+
+@api_router.get("/admin/tickets/{ticket_id}")
+async def admin_get_ticket(ticket_id: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    t = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    msgs = await db.ticket_messages.find(
+        {"ticket_id": ticket_id},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(500)
+    return {"ticket": t, "messages": msgs}
+
+
+class AdminTicketReply(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+    staff_name: Optional[str] = "Support"
+
+
+@api_router.post("/admin/tickets/{ticket_id}/reply")
+async def admin_reply_ticket(ticket_id: str, body: AdminTicketReply, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    t = await db.tickets.find_one({"id": ticket_id}, {"_id": 0, "id": 1})
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    now = datetime.now(timezone.utc).isoformat()
+    await db.ticket_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "ticket_id": ticket_id,
+        "author_role": "staff",
+        "author_name": (body.staff_name or "Support").strip()[:40],
+        "message": body.message.strip()[:4000],
+        "created_at": now,
+    })
+    await db.tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {"status": "answered", "updated_at": now, "last_reply_by": "staff"}},
+    )
+    return {"ok": True}
+
+
+@api_router.post("/admin/tickets/{ticket_id}/close")
+async def admin_close_ticket(ticket_id: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    res = await db.tickets.update_one({"id": ticket_id}, {"$set": {"status": "closed"}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return {"ok": True}
+
+
 @api_router.get("/admin/cryptomus-config")
 async def get_cryptomus_admin_config(x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
@@ -1008,9 +1297,7 @@ async def bulk_update(payload: dict, x_admin_token: Optional[str] = Header(None)
 
 app.include_router(api_router)
 
-# Register auth, chat, client dashboard, AI buy routers
-from auth_and_chat import auth_router, chat_router, client_router, ai_router, seed_owner  # noqa: E402
-
+# Auth/chat/client/ai routers were imported at the top
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(client_router)

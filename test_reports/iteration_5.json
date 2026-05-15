@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 5 — PayPal config, Add Funds (deposit requests + admin approve/reject), Support tickets (user+admin threads), captcha-gated auth, and Client Dashboard sidebar. Backend: 25/25 pytest cases pass (paypal-config public+admin, balance/transactions auth-gated, fund-request validation, approve credits balance, reject does not, double-approve 404, admin filter+token guards, ticket create/list/thread/cross-user-404/reply/admin reply sets answered/close blocks reply, admin token enforcement). Frontend: registered fresh user via math captcha, /client/dashboard renders dashboard-sidebar with nav-home/nav-funds/nav-tickets/nav-catalog/nav-logout. Add Funds page renders balance, quick-amount-5/10/25/50/100, open-paypal, confirm-paid — clicking $25 then 'I've Paid' produced a PENDING row in Recent transactions and a success toast. Tickets page: 'New ticket' opens form with ticket-subject + ticket-message; submit (button label 'OPEN TICKET') succeeds. AI Live Chat? FAB visible in dashboard.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/client/funds/request", "issue": "Out-of-range amount returns 422 (Pydantic) instead of 400. Acceptable but consider normalising for friendlier client errors."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "TicketsView new-ticket form", "issue": "Submit button (label 'Open ticket') is missing a data-testid (e.g., 'ticket-submit'). Form still works via button-text selector, but adding the testid improves test stability.", "selector": "button:has-text('Open ticket')", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ClientDashboard sidebar", "issues": ["Sidebar shows balance '$0.00' next to Add Funds — nice. Consider auto-refreshing the badge after a confirm-paid + admin approval (currently requires nav-switch to refresh)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_5_funds_tickets.py",
+    "/app/test_reports/pytest/iteration_5_results.xml"
+  ],
+  "action_items": [
+    "(LOW) Add data-testid='ticket-submit' to the 'Open ticket' button in TicketsView for stable e2e selectors.",
+    "(LOW) Consider returning 400 (with a friendly message) instead of 422 for /api/client/funds/request out-of-range amount."
+  ],
+  "critical_code_review_comments": [
+    "server.py: _get_user_balance correctly excludes pending/rejected (only sums status=='approved'). Verified by approve→credits and reject→no-credit tests.",
+    "server.py: admin_approve_tx / admin_reject_tx use find_one_and_update filter on status='pending' — double-approve returns 404 cleanly. Good.",
+    "server.py: client_router GET /tickets/{id} filters by user_id, so cross-user access returns 404 (not 403, which is intentional information-leak prevention).",
+    "server.py: POST /admin/tickets/{id}/close uses update_one with no status precondition — re-closing an already-closed ticket returns 200 (idempotent). Fine.",
+    "server.py FundRequest has gt=0, le=10000 — Pydantic-validated, but admin path uses tx_id only (no per-user cap). For abuse prevention consider a daily-amount cap per user.",
+    "auth_and_chat.py: HMAC-signed math captcha is stateless and time-bounded (300s). Good. Both register and login enforce it — verified via test_register_wrong_captcha."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_5_funds_tickets.py (new)"
+  ],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "100% for exercised flows (sidebar render, funds confirm-paid creates pending tx, tickets create form submits)"},
+  "test_credentials": "Admin: Balkin99 / Armin1234. User: registered fresh tu_* / ui_* accounts via captcha during the test run; harmless TEST data left in db.tickets, db.transactions, db.users.",
+  "seed_data_creation": "Created ~3 test users (tu_*, ou_*, ui_*), several pending+approved+rejected transactions in db.transactions, and 1 ticket with thread/closed in db.tickets. All can be cleaned with `db.users.deleteMany({username: /^tu_|^ou_|^ui_/})` + cascade on user_id.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run `pytest backend/tests/test_iteration_5_funds_tickets.py -v` from /app for regression. Frontend register testids: reg-username/reg-email/reg-password/reg-captcha-answer. Sidebar testids: dashboard-sidebar + nav-home/nav-funds/nav-tickets/nav-catalog/nav-logout. Funds testids: quick-amount-{5,10,25,50,100}, open-paypal, confirm-paid. Tickets: new-ticket-btn, ticket-subject, ticket-message; submit button currently has NO testid (label='Open ticket'). Splash on /client takes ~5s before form is interactable.",
+  "rca of the issue": "N/A — no functional bugs. The 422-vs-400 deviation is standard Pydantic Field(gt/le) behaviour. The missing ticket-submit testid is a minor testability gap, not a runtime bug."
+}

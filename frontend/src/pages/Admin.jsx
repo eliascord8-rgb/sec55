@@ -4,7 +4,7 @@ import { adminApi, api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil, FileText, Bell, BellOff } from "lucide-react";
+import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil, FileText, Bell, BellOff, Send } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Admin() {
@@ -164,7 +164,7 @@ function Dashboard({ token, onLogout }) {
 
       <main className="max-w-7xl mx-auto px-6 md:px-10 py-10">
         <Tabs defaultValue="orders" className="w-full">
-          <TabsList className="grid grid-cols-8 max-w-6xl bg-[#1a1525] mb-6 rounded-sm">
+          <TabsList className="grid grid-cols-10 max-w-7xl bg-[#1a1525] mb-6 rounded-sm">
             <TabsTrigger
               value="orders"
               data-testid="tab-orders"
@@ -192,6 +192,20 @@ function Dashboard({ token, onLogout }) {
               className="data-[state=active]:bg-[#FF007F] rounded-sm"
             >
               Users
+            </TabsTrigger>
+            <TabsTrigger
+              value="funds"
+              data-testid="tab-funds"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Funds
+            </TabsTrigger>
+            <TabsTrigger
+              value="tickets"
+              data-testid="tab-tickets"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Tickets
             </TabsTrigger>
             <TabsTrigger
               value="ai"
@@ -234,6 +248,12 @@ function Dashboard({ token, onLogout }) {
           </TabsContent>
           <TabsContent value="users">
             <UsersPanel token={token} />
+          </TabsContent>
+          <TabsContent value="funds">
+            <FundsAdminPanel token={token} />
+          </TabsContent>
+          <TabsContent value="tickets">
+            <TicketsAdminPanel token={token} />
           </TabsContent>
           <TabsContent value="ai">
             <AIPanel token={token} />
@@ -2495,6 +2515,396 @@ function UsersPanel({ token }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+function FundsAdminPanel({ token }) {
+  const [paypal, setPaypal] = useState({ paypal_email: "", paypal_me_url: "" });
+  const [savingPaypal, setSavingPaypal] = useState(false);
+  const [tab, setTab] = useState("pending"); // pending | all
+  const [txns, setTxns] = useState([]);
+  const [note, setNote] = useState("");
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get(`/admin/transactions${tab === "pending" ? "?status=pending" : ""}`);
+      setTxns(r.data.transactions || []);
+    } catch {
+      toast.error("Failed to load transactions");
+    }
+  };
+
+  const loadPaypal = async () => {
+    try {
+      const r = await api.get("/paypal-config");
+      setPaypal({
+        paypal_email: r.data.paypal_email || "",
+        paypal_me_url: r.data.paypal_me_url || "",
+      });
+    } catch {}
+  };
+
+  useEffect(() => {
+    loadPaypal();
+    // eslint-disable-next-line
+  }, [token]);
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line
+  }, [tab, token]);
+
+  const savePaypal = async (e) => {
+    e?.preventDefault();
+    setSavingPaypal(true);
+    try {
+      await adminApi(token).post("/admin/paypal-config", paypal);
+      toast.success("PayPal settings saved");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    } finally {
+      setSavingPaypal(false);
+    }
+  };
+
+  const decide = async (tx, action) => {
+    try {
+      await adminApi(token).post(`/admin/transactions/${tx.id}/${action}`, { note });
+      toast.success(`${action === "approve" ? "Approved" : "Rejected"} ${tx.username}'s $${tx.amount}`);
+      setNote("");
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <form onSubmit={savePaypal} className="bg-[#1a1525] border border-white/5 rounded-sm p-5 space-y-3">
+        <h3 className="font-display font-bold text-sm">PayPal Settings</h3>
+        <div className="text-[11px] text-white/50">
+          Your business PayPal email + paypal.me link. Users will be redirected here to pay.
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">
+              Business PayPal email
+            </Label>
+            <Input
+              data-testid="paypal-email"
+              type="email"
+              placeholder="you@business.com"
+              value={paypal.paypal_email}
+              onChange={(e) => setPaypal({ ...paypal, paypal_email: e.target.value })}
+              className="bg-[#0d0a14] border-white/10 mt-1"
+            />
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">
+              paypal.me link
+            </Label>
+            <Input
+              data-testid="paypal-me"
+              placeholder="https://paypal.me/YourHandle"
+              value={paypal.paypal_me_url}
+              onChange={(e) => setPaypal({ ...paypal, paypal_me_url: e.target.value })}
+              className="bg-[#0d0a14] border-white/10 mt-1"
+            />
+          </div>
+        </div>
+        <button
+          type="submit"
+          disabled={savingPaypal}
+          data-testid="paypal-save"
+          className="px-4 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-50 inline-flex items-center gap-2"
+        >
+          {savingPaypal ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+          Save
+        </button>
+      </form>
+
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden">
+        <div className="px-4 py-3 border-b border-white/5 flex items-center gap-3">
+          <h3 className="font-display font-bold text-sm">Fund requests</h3>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setTab("pending")}
+              data-testid="tab-funds-pending"
+              className={`text-[10px] uppercase tracking-wider px-3 py-1 rounded-sm ${
+                tab === "pending" ? "bg-[#FF007F] text-white" : "border border-white/10 hover:bg-white/5"
+              }`}
+            >
+              Pending
+            </button>
+            <button
+              onClick={() => setTab("all")}
+              data-testid="tab-funds-all"
+              className={`text-[10px] uppercase tracking-wider px-3 py-1 rounded-sm ${
+                tab === "all" ? "bg-[#FF007F] text-white" : "border border-white/10 hover:bg-white/5"
+              }`}
+            >
+              All
+            </button>
+          </div>
+        </div>
+        <div className="px-4 py-3 border-b border-white/5">
+          <Input
+            data-testid="approval-note"
+            placeholder="Optional note for the approval/rejection (e.g. tx id)…"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            className="bg-[#0d0a14] border-white/10 text-sm"
+          />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-[10px] uppercase tracking-wider text-white/40">
+              <tr>
+                <th className="text-left px-6 py-2">When</th>
+                <th className="text-left px-6 py-2">User</th>
+                <th className="text-left px-6 py-2">Amount</th>
+                <th className="text-left px-6 py-2">Method</th>
+                <th className="text-left px-6 py-2">Status</th>
+                <th className="text-right px-6 py-2">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {txns.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-6 py-10 text-center text-white/30 text-xs">
+                    Nothing here.
+                  </td>
+                </tr>
+              )}
+              {txns.map((t) => (
+                <tr key={t.id} className="border-t border-white/5" data-testid={`admin-tx-${t.id}`}>
+                  <td className="px-6 py-2 text-white/60 text-xs font-mono">
+                    {new Date(t.created_at).toLocaleString()}
+                  </td>
+                  <td className="px-6 py-2 font-mono">{t.username}</td>
+                  <td className="px-6 py-2 font-mono text-[#FF007F]">${Number(t.amount).toFixed(2)}</td>
+                  <td className="px-6 py-2 text-white/60 text-xs uppercase">{t.method}</td>
+                  <td className="px-6 py-2 text-[10px] uppercase tracking-wider text-white/60">{t.status}</td>
+                  <td className="px-6 py-2 text-right">
+                    {t.status === "pending" && (
+                      <div className="inline-flex gap-2">
+                        <button
+                          onClick={() => decide(t, "approve")}
+                          data-testid={`approve-tx-${t.id}`}
+                          className="text-[10px] uppercase tracking-wider px-2 py-1 bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 rounded-sm hover:bg-emerald-500/25"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => decide(t, "reject")}
+                          data-testid={`reject-tx-${t.id}`}
+                          className="text-[10px] uppercase tracking-wider px-2 py-1 bg-red-500/15 border border-red-500/40 text-red-400 rounded-sm hover:bg-red-500/25"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TicketsAdminPanel({ token }) {
+  const [tickets, setTickets] = useState([]);
+  const [waiting, setWaiting] = useState(0);
+  const [open, setOpen] = useState(null);
+  const [reply, setReply] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/tickets");
+      setTickets(r.data.tickets || []);
+      setWaiting(r.data.waiting || 0);
+    } catch {}
+  };
+
+  const openTicket = async (id) => {
+    try {
+      const r = await adminApi(token).get(`/admin/tickets/${id}`);
+      setOpen(r.data);
+    } catch {
+      toast.error("Failed to load ticket");
+    }
+  };
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 8000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line
+  }, [token]);
+
+  useEffect(() => {
+    if (!open) return;
+    const t = setInterval(() => openTicket(open.ticket.id), 4000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line
+  }, [open?.ticket?.id]);
+
+  const send = async (e) => {
+    e?.preventDefault();
+    const r = reply.trim();
+    if (!r || !open) return;
+    setSending(true);
+    try {
+      await adminApi(token).post(`/admin/tickets/${open.ticket.id}/reply`, { message: r, staff_name: "Support" });
+      setReply("");
+      openTicket(open.ticket.id);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const close = async () => {
+    if (!open) return;
+    if (!window.confirm("Close this ticket? User won't be able to reply.")) return;
+    try {
+      await adminApi(token).post(`/admin/tickets/${open.ticket.id}/close`);
+      toast.success("Closed");
+      openTicket(open.ticket.id);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    }
+  };
+
+  return (
+    <div className="grid lg:grid-cols-[340px_1fr] gap-6 h-[calc(100vh-220px)] min-h-[480px]">
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden flex flex-col">
+        <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+          <h3 className="font-display font-bold text-sm">Tickets</h3>
+          <div className="flex items-center gap-2">
+            {waiting > 0 && (
+              <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-[#FF007F]/20 text-[#FF007F] font-bold animate-pulse">
+                {waiting} waiting
+              </span>
+            )}
+            <span className="text-[10px] uppercase tracking-wider text-white/40">{tickets.length}</span>
+          </div>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          {tickets.length === 0 && (
+            <div className="p-4 text-xs text-white/40">No tickets yet.</div>
+          )}
+          {tickets.map((t) => {
+            const active = open?.ticket?.id === t.id;
+            const isWaiting = t.last_reply_by === "user" && t.status === "open";
+            return (
+              <button
+                key={t.id}
+                onClick={() => openTicket(t.id)}
+                data-testid={`admin-ticket-${t.id}`}
+                className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/[0.03] transition ${
+                  active ? "bg-[#FF007F]/10 border-l-2 border-l-[#FF007F]" : ""
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="font-bold text-xs truncate">{t.subject}</span>
+                  {isWaiting && (
+                    <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[#FF007F]/20 text-[#FF007F] font-bold shrink-0">
+                      New
+                    </span>
+                  )}
+                </div>
+                <div className="text-[11px] text-white/50 font-mono">@{t.username}</div>
+                <div className="text-[10px] text-white/30 mt-0.5 font-mono">
+                  {new Date(t.updated_at).toLocaleString()}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm flex flex-col overflow-hidden">
+        {!open ? (
+          <div className="flex-1 flex items-center justify-center text-sm text-white/40">
+            Pick a ticket on the left.
+          </div>
+        ) : (
+          <>
+            <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="font-display font-bold text-sm truncate">{open.ticket.subject}</div>
+                <div className="text-[10px] uppercase tracking-wider text-white/40">
+                  @{open.ticket.username} · status: {open.ticket.status}
+                </div>
+              </div>
+              {open.ticket.status !== "closed" && (
+                <button
+                  onClick={close}
+                  data-testid="ticket-close"
+                  className="text-[10px] uppercase tracking-wider px-3 py-1.5 border border-white/20 rounded-sm hover:bg-white/5"
+                >
+                  Close
+                </button>
+              )}
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#0d0a14]">
+              {open.messages.map((m) => {
+                const isStaff = m.author_role === "staff";
+                return (
+                  <div key={m.id} className={`flex ${isStaff ? "justify-end" : "justify-start"}`}>
+                    <div className="max-w-[78%]">
+                      <div className={`text-[10px] uppercase tracking-wider mb-1 ${isStaff ? "text-[#00E5FF]" : "text-[#FF007F]"}`}>
+                        {isStaff ? `Staff · ${m.author_name}` : `User · ${m.author_name}`}
+                      </div>
+                      <div
+                        className={`px-3 py-2 rounded-sm text-sm whitespace-pre-wrap leading-snug ${
+                          isStaff
+                            ? "bg-[#00E5FF] text-[#050505] font-medium"
+                            : "bg-[#1a1525] border border-white/10 text-white/90"
+                        }`}
+                      >
+                        {m.message}
+                      </div>
+                      <div className="text-[10px] text-white/30 font-mono mt-1">
+                        {new Date(m.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {open.ticket.status !== "closed" && (
+              <form onSubmit={send} className="border-t border-white/5 p-3 flex gap-2 bg-[#050505]">
+                <Input
+                  data-testid="admin-ticket-reply-input"
+                  placeholder="Your reply…"
+                  value={reply}
+                  onChange={(e) => setReply(e.target.value)}
+                  className="bg-[#1a1525] border-white/10 flex-1"
+                />
+                <button
+                  type="submit"
+                  disabled={sending || !reply.trim()}
+                  data-testid="admin-ticket-send"
+                  className="px-4 gradient-pp rounded-sm font-bold disabled:opacity-40 inline-flex items-center"
+                >
+                  {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                </button>
+              </form>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
