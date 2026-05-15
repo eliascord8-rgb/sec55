@@ -13,9 +13,9 @@ import secrets
 import string
 import httpx
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlencode
 
 ROOT_DIR = Path(__file__).parent
@@ -548,6 +548,103 @@ async def public_orders_feed():
             "created_at": o.get("created_at"),
         })
     return {"feed": feed}
+
+
+# ============ ADMIN USER MANAGEMENT ============
+
+@api_router.get("/admin/users")
+async def admin_list_users(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    items = await db.users.find(
+        {},
+        {"_id": 0, "password_hash": 0},
+    ).sort("created_at", -1).to_list(500)
+    return {"users": items, "count": len(items)}
+
+
+class AdminUserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    role: Optional[str] = None  # 'user' | 'admin' | 'owner'
+    muted_until: Optional[str] = None
+    new_password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+
+
+@api_router.put("/admin/users/{user_id}")
+async def admin_update_user(
+    user_id: str,
+    payload: AdminUserUpdate,
+    x_admin_token: Optional[str] = Header(None),
+):
+    check_admin(x_admin_token)
+    update = {}
+    if payload.email is not None:
+        # uniqueness check
+        existing = await db.users.find_one(
+            {"email": payload.email.lower(), "id": {"$ne": user_id}},
+            {"_id": 0, "id": 1},
+        )
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already used by another user")
+        update["email"] = payload.email.lower()
+    if payload.role is not None:
+        if payload.role not in {"user", "admin", "owner"}:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        update["role"] = payload.role
+    if payload.muted_until is not None:
+        update["muted_until"] = payload.muted_until or None
+    if payload.new_password:
+        from auth_and_chat import hash_password
+        update["password_hash"] = hash_password(payload.new_password)
+    if not update:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    res = await db.users.find_one_and_update(
+        {"id": user_id},
+        {"$set": update},
+        return_document=True,
+        projection={"_id": 0, "password_hash": 0},
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"user": res}
+
+
+@api_router.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    doc = await db.users.find_one({"id": user_id}, {"_id": 0, "role": 1, "username": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    if doc.get("role") == "owner":
+        raise HTTPException(status_code=400, detail="Cannot delete owner account")
+    await db.users.delete_one({"id": user_id})
+    return {"deleted": True, "username": doc.get("username")}
+
+
+class MuteRequest(BaseModel):
+    minutes: int = Field(default=60, ge=1, le=43200)  # 1 min to 30 days
+
+
+@api_router.post("/admin/users/{user_id}/mute")
+async def admin_mute_user(
+    user_id: str,
+    body: MuteRequest,
+    x_admin_token: Optional[str] = Header(None),
+):
+    check_admin(x_admin_token)
+    until = (datetime.now(timezone.utc) + timedelta(minutes=body.minutes)).isoformat()
+    res = await db.users.update_one({"id": user_id}, {"$set": {"muted_until": until}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True, "muted_until": until}
+
+
+@api_router.post("/admin/users/{user_id}/unmute")
+async def admin_unmute_user(user_id: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    res = await db.users.update_one({"id": user_id}, {"$set": {"muted_until": None}})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True}
 
 
 @api_router.get("/admin/cryptomus-config")

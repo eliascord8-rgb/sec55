@@ -53,6 +53,13 @@
 - **Security fix**: added `_admin_check(request)` to `/api/ai/admin/orders`, `/api/ai/admin/service-map` (GET+POST) — these were missing auth in iter 3
 - Backend tests: 24/24 new tests pass (total 43+ passing)
 
+### Iteration 6 — Math Captcha + Admin Users + Inline @StaffName Join (May 15, 2026)
+- **Math captcha** replaces hCaptcha everywhere. Stateless (HMAC-signed in base64 token, 5-min TTL). Endpoint `GET /api/auth/captcha` issues a fresh `What is 11 - 7?` style question. Required on both register and login.
+- **Tawk.to removed earlier (iter 5); no captcha library scripts loaded anymore** — site loads faster.
+- **Admin Users tab** in `/admin`: list every registered user with role, join date, mute status. Edit email/role/password, mute 24h, unmute, delete. Owner protected from deletion. Endpoints: `GET /api/admin/users`, `PUT /api/admin/users/{id}`, `DELETE /api/admin/users/{id}`, `POST /api/admin/users/{id}/mute|unmute`. All require `x-admin-token`.
+- **Inline staff join message**: when admin clicks "Take Over" on an AI chat, the user instantly sees `👋 @Balkin joined the chat — you're now talking with a real person.` in their widget (polled every 3s).
+- **AI Widget embedded in Client Dashboard**: floating chat circle now also appears inside `/client/dashboard` with the "Live Chat?" label — logged-in users can reach the AI/staff without going back to homepage.
+
 ### Iteration 5 — Smart AI Handover (May 4, 2026)
 - **AI Knowledge Base**: AI now knows enabled services + prices and the **24-hour money-back guarantee** (only IPTV / Followers / Likes — explicitly NOT Views/Comments). System prompt is built dynamically from the curated services collection so price changes auto-propagate.
 - **Multilingual Handover Detection**: when user asks for "staff/agent/support/admin/operator" or any equivalent in **any language** (verified: English, German, Spanish, French, Russian, Chinese, Japanese), AI replies with a transfer message in the user's language ("Please wait, I'm transferring you to our team…") and emits `HANDOVER_REQUEST` token. Backend strips the token, flags `session.needs_handover=true`, returns `admin_online` based on heartbeat.

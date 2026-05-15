@@ -164,7 +164,7 @@ function Dashboard({ token, onLogout }) {
 
       <main className="max-w-7xl mx-auto px-6 md:px-10 py-10">
         <Tabs defaultValue="orders" className="w-full">
-          <TabsList className="grid grid-cols-7 max-w-5xl bg-[#1a1525] mb-6 rounded-sm">
+          <TabsList className="grid grid-cols-8 max-w-6xl bg-[#1a1525] mb-6 rounded-sm">
             <TabsTrigger
               value="orders"
               data-testid="tab-orders"
@@ -185,6 +185,13 @@ function Dashboard({ token, onLogout }) {
               className="data-[state=active]:bg-[#FF007F] rounded-sm"
             >
               Coupons
+            </TabsTrigger>
+            <TabsTrigger
+              value="users"
+              data-testid="tab-users"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Users
             </TabsTrigger>
             <TabsTrigger
               value="ai"
@@ -224,6 +231,9 @@ function Dashboard({ token, onLogout }) {
           </TabsContent>
           <TabsContent value="coupons">
             <CouponsPanel token={token} />
+          </TabsContent>
+          <TabsContent value="users">
+            <UsersPanel token={token} />
           </TabsContent>
           <TabsContent value="ai">
             <AIPanel token={token} />
@@ -2171,3 +2181,321 @@ function AIInboxPanel({ token }) {
     </div>
   );
 }
+
+function UsersPanel({ token }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState(null); // user doc
+  const [edit, setEdit] = useState({ email: "", role: "user", new_password: "" });
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await adminApi(token).get("/admin/users");
+      setUsers(r.data.users || []);
+    } catch {
+      toast.error("Failed to load users");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  const filtered = users.filter((u) => {
+    const s = search.trim().toLowerCase();
+    if (!s) return true;
+    return (
+      (u.username || "").toLowerCase().includes(s) ||
+      (u.email || "").toLowerCase().includes(s)
+    );
+  });
+
+  const startEdit = (u) => {
+    setEditing(u);
+    setEdit({
+      email: u.email || "",
+      role: u.role || "user",
+      new_password: "",
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    setSaving(true);
+    try {
+      const payload = {};
+      if (edit.email && edit.email !== editing.email) payload.email = edit.email;
+      if (edit.role && edit.role !== editing.role) payload.role = edit.role;
+      if (edit.new_password) payload.new_password = edit.new_password;
+      if (Object.keys(payload).length === 0) {
+        toast.error("Nothing changed");
+        setSaving(false);
+        return;
+      }
+      await adminApi(token).put(`/admin/users/${editing.id}`, payload);
+      toast.success("User updated");
+      setEditing(null);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to update");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const mute = async (u, minutes) => {
+    try {
+      await adminApi(token).post(`/admin/users/${u.id}/mute`, { minutes });
+      toast.success(`${u.username} muted for ${minutes} min`);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    }
+  };
+
+  const unmute = async (u) => {
+    try {
+      await adminApi(token).post(`/admin/users/${u.id}/unmute`);
+      toast.success(`${u.username} unmuted`);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    }
+  };
+
+  const remove = async (u) => {
+    if (!window.confirm(`Delete user "${u.username}"? This cannot be undone.`)) return;
+    try {
+      await adminApi(token).delete(`/admin/users/${u.id}`);
+      toast.success(`Deleted ${u.username}`);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    }
+  };
+
+  const fmtDate = (iso) => {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleDateString();
+  };
+
+  const isMuted = (u) => {
+    if (!u.muted_until) return false;
+    return new Date(u.muted_until) > new Date();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3 bg-[#1a1525] border border-white/5 rounded-sm p-4">
+        <div>
+          <h3 className="font-display font-bold text-sm">All Registered Users</h3>
+          <div className="text-[11px] text-white/40 mt-0.5">{users.length} total</div>
+        </div>
+        <Input
+          data-testid="users-search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search username or email…"
+          className="bg-[#0d0a14] border-white/10 max-w-xs text-sm"
+        />
+      </div>
+
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-[#0d0a14] text-[10px] uppercase tracking-wider text-white/50">
+              <tr>
+                <th className="text-left px-6 py-3">User</th>
+                <th className="text-left px-6 py-3">Email</th>
+                <th className="text-left px-6 py-3">Role</th>
+                <th className="text-left px-6 py-3">Joined</th>
+                <th className="text-left px-6 py-3">Status</th>
+                <th className="text-right px-6 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-white/40 text-xs">
+                    Loading…
+                  </td>
+                </tr>
+              )}
+              {!loading && filtered.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-white/40 text-xs">
+                    No users.
+                  </td>
+                </tr>
+              )}
+              {filtered.map((u) => {
+                const muted = isMuted(u);
+                return (
+                  <tr
+                    key={u.id}
+                    data-testid={`user-row-${u.id}`}
+                    className="border-t border-white/5 hover:bg-white/[0.02]"
+                  >
+                    <td className="px-6 py-3 font-mono text-white/90">{u.username}</td>
+                    <td className="px-6 py-3 text-white/60">{u.email}</td>
+                    <td className="px-6 py-3">
+                      <span
+                        className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm ${
+                          u.role === "owner"
+                            ? "bg-[#FF007F]/20 text-[#FF007F]"
+                            : u.role === "admin"
+                            ? "bg-[#00E5FF]/20 text-[#00E5FF]"
+                            : "bg-white/10 text-white/60"
+                        }`}
+                      >
+                        {u.role}
+                      </span>
+                    </td>
+                    <td className="px-6 py-3 text-white/50 text-xs">{fmtDate(u.created_at)}</td>
+                    <td className="px-6 py-3">
+                      {muted ? (
+                        <span className="text-[10px] uppercase tracking-wider text-[#FF3B30] font-bold">
+                          Muted
+                        </span>
+                      ) : (
+                        <span className="text-[10px] uppercase tracking-wider text-white/40">
+                          Active
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-3">
+                      <div className="flex items-center gap-2 justify-end">
+                        <button
+                          onClick={() => startEdit(u)}
+                          data-testid={`edit-user-${u.id}`}
+                          title="Edit user"
+                          className="text-white/60 hover:text-[#00E5FF]"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        {muted ? (
+                          <button
+                            onClick={() => unmute(u)}
+                            data-testid={`unmute-user-${u.id}`}
+                            title="Unmute"
+                            className="text-[10px] uppercase tracking-wider px-2 py-1 border border-white/10 rounded-sm hover:bg-white/5"
+                          >
+                            Unmute
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => mute(u, 1440)}
+                            data-testid={`mute-user-${u.id}`}
+                            title="Mute for 24h"
+                            className="text-[10px] uppercase tracking-wider px-2 py-1 border border-white/10 rounded-sm hover:bg-white/5"
+                          >
+                            Mute 24h
+                          </button>
+                        )}
+                        {u.role !== "owner" && (
+                          <button
+                            onClick={() => remove(u)}
+                            data-testid={`delete-user-${u.id}`}
+                            title="Delete user"
+                            className="text-white/60 hover:text-[#FF3B30]"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {editing && (
+        <div
+          data-testid="edit-user-modal"
+          className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => !saving && setEditing(null)}
+        >
+          <div
+            className="w-full max-w-md bg-[#1a1525] border border-white/10 rounded-sm p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display font-bold text-lg mb-1">Edit User</h3>
+            <div className="text-xs text-white/50 font-mono mb-4">{editing.username}</div>
+            <div className="space-y-3">
+              <div>
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">
+                  Email
+                </Label>
+                <Input
+                  data-testid="edit-user-email"
+                  type="email"
+                  value={edit.email}
+                  onChange={(e) => setEdit({ ...edit, email: e.target.value })}
+                  className="bg-[#0d0a14] border-white/10 mt-1"
+                />
+              </div>
+              <div>
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">
+                  Role
+                </Label>
+                <select
+                  data-testid="edit-user-role"
+                  value={edit.role}
+                  onChange={(e) => setEdit({ ...edit, role: e.target.value })}
+                  disabled={editing.role === "owner"}
+                  className="w-full bg-[#0d0a14] border border-white/10 rounded-sm px-3 py-2 text-sm mt-1 disabled:opacity-50"
+                >
+                  <option value="user">User</option>
+                  <option value="admin">Admin</option>
+                  {editing.role === "owner" && <option value="owner">Owner</option>}
+                </select>
+              </div>
+              <div>
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">
+                  New password (optional)
+                </Label>
+                <Input
+                  data-testid="edit-user-password"
+                  type="text"
+                  placeholder="leave empty to keep current"
+                  value={edit.new_password}
+                  onChange={(e) => setEdit({ ...edit, new_password: e.target.value })}
+                  className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-sm"
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button
+                onClick={() => setEditing(null)}
+                disabled={saving}
+                data-testid="edit-user-cancel"
+                className="flex-1 py-2.5 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveEdit}
+                disabled={saving}
+                data-testid="edit-user-save"
+                className="flex-1 py-2.5 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
