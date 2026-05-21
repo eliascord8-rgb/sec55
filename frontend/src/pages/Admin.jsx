@@ -2014,7 +2014,7 @@ function AIInboxPanel({ token }) {
                 >
                   <div className="flex items-center justify-between gap-2 mb-1">
                     <span className="font-mono text-[11px] text-white/80 truncate">
-                      {s.session_id}
+                      {s.identified_as || s.session_id}
                     </span>
                     <div className="flex items-center gap-1 shrink-0">
                       {handover && (
@@ -2032,8 +2032,13 @@ function AIInboxPanel({ token }) {
                   <div className="text-xs text-white/50 truncate">
                     {s.last_user_text || "—"}
                   </div>
-                  <div className="text-[10px] text-white/30 mt-1 font-mono">
-                    {fmtTime(s.last_activity)}
+                  <div className="text-[10px] text-white/30 mt-1 font-mono flex items-center justify-between">
+                    <span>{fmtTime(s.last_activity)}</span>
+                    {s.identified_kind && (
+                      <span className="uppercase tracking-wider opacity-70">
+                        {s.identified_kind}
+                      </span>
+                    )}
                   </div>
                 </button>
               );
@@ -2055,14 +2060,17 @@ function AIInboxPanel({ token }) {
               <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="font-display font-bold text-sm truncate flex items-center gap-2">
-                    {activeId}
+                    {activeSess?.identified_as || activeId}
                     {needsHandover && !isHuman && (
                       <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[#FF007F]/20 text-[#FF007F] font-bold animate-pulse">
                         Wants Staff
                       </span>
                     )}
                   </div>
-                  <div className="text-[10px] uppercase tracking-wider text-white/40">
+                  <div className="text-[10px] uppercase tracking-wider text-white/40 truncate">
+                    {activeSess?.identified_kind && (
+                      <span className="mr-2">{activeSess.identified_kind}</span>
+                    )}
                     {isHuman
                       ? `You're handling this as "${staffName}"`
                       : needsHandover

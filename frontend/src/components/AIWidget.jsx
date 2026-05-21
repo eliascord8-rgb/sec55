@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { Bot, Send, Loader2, X, Minus, CheckCircle2, XCircle, MessageCircle, Paperclip, Image as ImageIcon, FileText } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
+import { Bot, Send, Loader2, X, Minus, CheckCircle2, XCircle, MessageCircle, Paperclip, Image as ImageIcon, FileText, User } from "lucide-react";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_FILES = 4;
@@ -41,6 +42,12 @@ function parseReady(text) {
 }
 
 export default function AIWidget({ open, onOpenChange }) {
+  const auth = useAuth() || {};
+  const { user, authedApi } = auth;
+
+  // Helper — uses authedApi when logged in (so backend can auto-identify), else plain api
+  const aiApi = () => (user && authedApi ? authedApi() : api);
+
   const [messages, setMessages] = useState([GREETING]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -51,12 +58,23 @@ export default function AIWidget({ open, onOpenChange }) {
   const [offlineEmail, setOfflineEmail] = useState("");
   const [offlineText, setOfflineText] = useState("");
   const [offlineSending, setOfflineSending] = useState(false);
-  const [pendingFiles, setPendingFiles] = useState([]); // [{id, url, filename, content_type, size_bytes, is_image}]
+  const [pendingFiles, setPendingFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
+  // Identification state
+  const [identified, setIdentified] = useState(false);
+  const [identifyValue, setIdentifyValue] = useState("");
+  const [identifying, setIdentifying] = useState(false);
   const fileInputRef = useRef(null);
   const endRef = useRef(null);
   const sessionIdRef = useRef(null);
   const lastPollAtRef = useRef(null);
+
+  // Auto-identify if user is logged in (token sent via Authorization header in api client)
+  useEffect(() => {
+    if (user && !identified) {
+      setIdentified(true);
+    }
+  }, [user, identified]);
 
   // Ensure a session_id exists before any upload
   const ensureSession = () => {
@@ -242,7 +260,7 @@ export default function AIWidget({ open, onOpenChange }) {
     setText("");
     setSending(true);
     try {
-      const r = await api.post("/ai/chat", {
+      const r = await aiApi().post("/ai/chat", {
         messages: history,
         session_id: sessionIdRef.current,
       });
@@ -341,6 +359,39 @@ export default function AIWidget({ open, onOpenChange }) {
     setOfflineText("");
   };
 
+  const submitIdentify = async (e) => {
+    e?.preventDefault();
+    const v = identifyValue.trim();
+    if (!v || identifying) return;
+    setIdentifying(true);
+    try {
+      const r = await api.post("/ai/identify", {
+        session_id: ensureSession(),
+        identifier: v,
+      });
+      sessionIdRef.current = r.data.session_id;
+      setIdentified(true);
+      setIdentifyValue("");
+      // Replace greeting with personalized one
+      const name = r.data.identified_as.split("@")[0];
+      setMessages([
+        {
+          role: "assistant",
+          text: `Hey ${name} 👋 — I'm Better Social AI. What can I do for you today?`,
+        },
+      ]);
+    } catch (err) {
+      const reason = err.response?.data?.detail || "Failed";
+      const msg = typeof reason === "string" ? reason : reason?.message || "Failed";
+      setMessages((prev) => [
+        ...prev,
+        { role: "system", text: `⚠️ ${msg}`, _sys: "identify-err" },
+      ]);
+    } finally {
+      setIdentifying(false);
+    }
+  };
+
   const openLiveChat = () => {
     // Trigger our built-in handover flow by sending a "talk to staff" message
     setText((prev) => prev || "I want to talk to a staff member");
@@ -354,6 +405,11 @@ export default function AIWidget({ open, onOpenChange }) {
     setOfflineEmail("");
     setOfflineText("");
     setPendingFiles([]);
+    // Only require re-identify if user is NOT signed-in (signed-in users stay identified)
+    if (!user) {
+      setIdentified(false);
+      setIdentifyValue("");
+    }
     sessionIdRef.current = null;
     lastPollAtRef.current = null;
   };
@@ -471,6 +527,52 @@ export default function AIWidget({ open, onOpenChange }) {
           </div>
         )}
 
+        {/* Identification gate — shown until guest enters email/username (or user is signed in) */}
+        {!identified && (
+          <form
+            onSubmit={submitIdentify}
+            data-testid="ai-widget-identify-form"
+            className="mx-3 mb-2 p-3 rounded-sm border border-[#FF007F]/40 bg-[#FF007F]/10 space-y-2"
+          >
+            <div className="flex items-center gap-2 text-xs text-white/90">
+              <User className="w-4 h-4 text-[#FF007F]" />
+              <span className="font-bold">Before we start chatting</span>
+            </div>
+            <div className="text-[11px] text-white/60 leading-snug">
+              Please enter your <span className="text-white">email</span> or{" "}
+              <span className="text-white">username</span> so we can serve you better. If you
+              already have an account, just{" "}
+              <a href="/client" className="underline hover:text-[#00E5FF]">
+                sign in
+              </a>{" "}
+              and we'll recognize you automatically.
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                data-testid="ai-widget-identify-input"
+                placeholder="you@email.com or username"
+                value={identifyValue}
+                onChange={(e) => setIdentifyValue(e.target.value)}
+                required
+                minLength={2}
+                maxLength={80}
+                disabled={identifying}
+                className="flex-1 bg-[#0d0a14] border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-[#FF007F] text-white placeholder:text-white/30"
+              />
+              <button
+                type="submit"
+                disabled={identifying || !identifyValue.trim()}
+                data-testid="ai-widget-identify-submit"
+                className="px-4 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-50 inline-flex items-center gap-1.5"
+              >
+                {identifying ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                Continue
+              </button>
+            </div>
+          </form>
+        )}
+
         {/* Offline contact form (shown when handover requested but no admin online) */}
         {handoverState === "offline_form" && (
           <form
@@ -579,9 +681,15 @@ export default function AIWidget({ open, onOpenChange }) {
           <button
             type="button"
             onClick={openFilePicker}
-            disabled={sending || uploading || pendingFiles.length >= MAX_FILES}
+            disabled={!identified || sending || uploading || pendingFiles.length >= MAX_FILES}
             aria-label="Attach file"
-            title={pendingFiles.length >= MAX_FILES ? `Max ${MAX_FILES} files` : "Attach image or file"}
+            title={
+              !identified
+                ? "Identify first"
+                : pendingFiles.length >= MAX_FILES
+                ? `Max ${MAX_FILES} files`
+                : "Attach image or file"
+            }
             data-testid="ai-widget-attach"
             className="w-9 h-9 rounded-sm flex items-center justify-center text-white/60 hover:text-[#00E5FF] hover:bg-white/5 disabled:opacity-40 shrink-0"
           >
@@ -594,7 +702,9 @@ export default function AIWidget({ open, onOpenChange }) {
           <input
             data-testid="ai-widget-input"
             placeholder={
-              humanTakeover
+              !identified
+                ? "Enter email/username above first…"
+                : humanTakeover
                 ? `Message ${staffName}…`
                 : handoverState === "waiting"
                 ? "Waiting for staff to join…"
@@ -602,12 +712,12 @@ export default function AIWidget({ open, onOpenChange }) {
             }
             value={text}
             onChange={(e) => setText(e.target.value)}
-            disabled={sending}
-            className="flex-1 bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2.5 text-sm outline-none focus:border-[#FF007F] text-white placeholder:text-white/40"
+            disabled={!identified || sending}
+            className="flex-1 bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2.5 text-sm outline-none focus:border-[#FF007F] text-white placeholder:text-white/40 disabled:opacity-60"
           />
           <button
             type="submit"
-            disabled={sending || (!text.trim() && pendingFiles.length === 0)}
+            disabled={!identified || sending || (!text.trim() && pendingFiles.length === 0)}
             data-testid="ai-widget-send"
             className="w-10 h-10 gradient-pp rounded-sm flex items-center justify-center font-bold disabled:opacity-40 shrink-0"
           >
