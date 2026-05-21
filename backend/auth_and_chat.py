@@ -81,6 +81,16 @@ class AIChatRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+class AIIdentifyRequest(BaseModel):
+    session_id: Optional[str] = None
+    identifier: str = Field(..., min_length=2, max_length=80)
+
+
+def _identifier_kind(s: str) -> str:
+    """email | username — based on presence of '@'."""
+    return "email" if "@" in s else "username"
+
+
 # ================= HELPERS =================
 
 def _jwt_secret() -> str:
@@ -557,11 +567,93 @@ async def get_ai_service_map(db) -> dict:
     }
 
 
+def _read_bearer_user(request: Request) -> Optional[dict]:
+    """Decode Authorization: Bearer JWT and return basic user info, or None."""
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+    token = auth.split(" ", 1)[1].strip()
+    try:
+        payload = jwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGORITHM])
+        return {
+            "id": payload.get("sub"),
+            "username": payload.get("username"),
+            "role": payload.get("role", "user"),
+        }
+    except Exception:
+        return None
+
+
+async def _auto_identify_from_token(db: AsyncIOMotorDatabase, request: Request, session_id: str):
+    """If the request carries a valid auth token, mark the session as identified by that user."""
+    u = _read_bearer_user(request)
+    if not u or not u.get("username"):
+        return None
+    # Find user doc for email
+    doc = await db.users.find_one({"id": u["id"]}, {"_id": 0, "email": 1, "username": 1})
+    if not doc:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    update = {
+        "identified": True,
+        "identified_as": doc["username"],
+        "identified_kind": "user",
+        "identified_email": doc.get("email"),
+        "identified_user_id": u["id"],
+        "identified_at": now,
+    }
+    await db.ai_sessions.update_one({"session_id": session_id}, {"$set": update}, upsert=True)
+    return update
+
+
+@ai_router.post("/identify")
+async def ai_identify(body: AIIdentifyRequest, request: Request):
+    """Identify a guest chat session by email or username. Required before sending messages."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    session_id = body.session_id or f"ai-guest-{uuid.uuid4().hex[:8]}"
+    ident = body.identifier.strip()
+    kind = _identifier_kind(ident)
+    if kind == "email":
+        # very light email validation
+        if "@" not in ident or "." not in ident.split("@")[-1]:
+            raise HTTPException(status_code=400, detail="Please enter a valid email")
+        ident = ident.lower()
+    else:
+        if not re.fullmatch(r"[A-Za-z0-9_.\-]+", ident):
+            raise HTTPException(status_code=400, detail="Username has invalid characters")
+    now = datetime.now(timezone.utc).isoformat()
+    ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or
+          (request.client.host if request.client else ""))
+    await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {
+            "$setOnInsert": {
+                "session_id": session_id,
+                "status": "ai",
+                "created_at": now,
+                "ip": ip,
+            },
+            "$set": {
+                "identified": True,
+                "identified_as": ident,
+                "identified_kind": kind,
+                "identified_at": now,
+                "last_activity": now,
+            },
+        },
+        upsert=True,
+    )
+    return {"ok": True, "session_id": session_id, "identified_as": ident, "kind": kind}
+
+
 @ai_router.post("/chat")
 async def ai_chat(req: AIChatRequest, request: Request):
-    """Public AI chat — no login required. If admin has taken over, returns no AI reply."""
+    """Public AI chat. Requires session to be identified (email/username or signed-in user)."""
     db: AsyncIOMotorDatabase = request.app.state.db
     session_id = req.session_id or f"ai-guest-{uuid.uuid4().hex[:8]}"
+
+    # Try auto-identify from Authorization header (logged-in dashboard users)
+    await _auto_identify_from_token(db, request, session_id)
 
     last_user = None
     for m in req.messages:
@@ -569,6 +661,22 @@ async def ai_chat(req: AIChatRequest, request: Request):
             last_user = m.text
     if not last_user:
         raise HTTPException(status_code=400, detail="No user message")
+
+    # Enforce identification
+    sess_check = await db.ai_sessions.find_one(
+        {"session_id": session_id},
+        {"_id": 0, "identified": 1, "status": 1, "identified_as": 1},
+    )
+    if not (sess_check and sess_check.get("identified")):
+        # Tell client to show the identify form
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "identification_required",
+                "message": "Please tell us your email or username to start chatting.",
+                "session_id": session_id,
+            },
+        )
 
     # Persist user message + ensure session exists
     now = datetime.now(timezone.utc).isoformat()
@@ -677,6 +785,8 @@ async def ai_poll(request: Request, session_id: str, since: Optional[str] = None
         "needs_handover": bool(sess and sess.get("needs_handover")),
         "admin_online": admin_online,
         "staff_display_name": settings.get("staff_display_name"),
+        "identified": bool(sess and sess.get("identified")),
+        "identified_as": sess.get("identified_as") if sess else None,
     }
 
 
