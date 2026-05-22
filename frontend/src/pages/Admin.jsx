@@ -1827,6 +1827,46 @@ function AIInboxPanel({ token }) {
       loadSessions();
     } catch {
       toast.error("Failed");
+    }  };
+
+  const muteChat = async () => {
+    if (!activeId) return;
+    const mins = window.prompt("Mute for how many minutes?", "60");
+    if (!mins) return;
+    const m = parseInt(mins, 10);
+    if (!m || m < 1) return;
+    try {
+      await adminApi(token).post(`/ai/admin/sessions/${activeId}/mute`, { minutes: m });
+      toast.success(`Muted for ${m} min`);
+      loadMessages(activeId);
+      loadSessions();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    }
+  };
+
+  const unmuteChat = async () => {
+    if (!activeId) return;
+    try {
+      await adminApi(token).post(`/ai/admin/sessions/${activeId}/unmute`);
+      toast.success("Unmuted");
+      loadMessages(activeId);
+      loadSessions();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    }
+  };
+
+  const banChat = async () => {
+    if (!activeId) return;
+    if (!window.confirm("Permanently ban this identifier from the AI chat?")) return;
+    try {
+      const r = await adminApi(token).post(`/ai/admin/sessions/${activeId}/ban`);
+      toast.success(`Banned ${r.data.banned}`);
+      loadMessages(activeId);
+      loadSessions();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
     }
   };
 
@@ -2098,6 +2138,32 @@ function AIInboxPanel({ token }) {
                       Leave Chat
                     </button>
                   )}
+                  {activeSess?.muted_until ? (
+                    <button
+                      onClick={unmuteChat}
+                      data-testid="inbox-unmute"
+                      title={`Muted until ${activeSess.muted_until}`}
+                      className="px-3 py-1.5 text-[10px] uppercase tracking-wider border border-amber-500/40 text-amber-300 rounded-sm hover:bg-amber-500/10"
+                    >
+                      Unmute
+                    </button>
+                  ) : (
+                    <button
+                      onClick={muteChat}
+                      data-testid="inbox-mute"
+                      className="px-3 py-1.5 text-[10px] uppercase tracking-wider border border-white/20 text-white/70 rounded-sm hover:bg-white/5"
+                    >
+                      Mute
+                    </button>
+                  )}
+                  <button
+                    onClick={banChat}
+                    data-testid="inbox-ban"
+                    disabled={!activeSess?.identified_as}
+                    className="px-3 py-1.5 text-[10px] uppercase tracking-wider border border-red-500/40 text-red-400 rounded-sm hover:bg-red-500/10 disabled:opacity-30"
+                  >
+                    Ban
+                  </button>
                 </div>
               </div>
 

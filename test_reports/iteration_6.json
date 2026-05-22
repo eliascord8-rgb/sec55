@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 6 — Tested new endpoints (redeem-coupon, order-with-balance, AI mute/unmute/ban) and new ClientDashboard sidebar entries (nav-buy / nav-redeem). Backend pytest: 9/9 passing. Verified: (a) Redeem $15 coupon credits user balance (+15.0) and deletes coupon, (b) Second redeem of same code returns 404, (c) Invalid code returns 404, (d) order-with-balance unauth = 401, unknown service = 404, (e) mute returns 200 with muted_until, mute blocks /api/ai/chat with detail.code='muted', (f) unmute returns 200, (g) ban returns 200 with banned identifier, (h) ban blocks /api/ai/identify with 403, (i) all admin endpoints require x-admin-token (401 without). FRONTEND testing was blocked: the live preview Sign-in form refused our captcha-based register submission via UI click, and direct localStorage token injection (tried 'bs_token' and 'access_token') redirected back to the login page — the actual storage key used by ClientDashboard.jsx for auth is something else. Manual visual confirmation pending; new sidebar testids nav-buy / nav-redeem and view testids (redeem-balance/code-input/submit/success, buy-search/category/svc-XXXX/confirm) could NOT be exercised in this run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/ai/chat (when session muted)", "issue": "Returns HTTP 429 instead of HTTP 403 as the spec states ('mute blocks chat with HTTP 403 {code:\"muted\",...}'). Body shape is correct (detail.code='muted', detail.muted_until present), but status code is 429. Either tighten code to 403 or update spec/frontend to accept 429."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Test harness could not bootstrap an authenticated session on /client/dashboard via localStorage token injection", "issue": "Tried localStorage keys 'bs_token' and 'access_token' after registering via /api/auth/register; on reload the app redirected to the Sign-in form. The actual key name used by ClientDashboard.jsx is unknown. Recommend exposing the token storage key consistently (or supporting an HttpOnly cookie set on register so tests can drive a real flow).", "affected_selectors": ["dashboard-sidebar","nav-buy","nav-redeem"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_6_redeem_buy_mute_ban.py",
+    "/app/test_reports/pytest/iteration_6_results.xml"
+  ],
+  "action_items": [
+    "(LOW) Change /api/ai/chat mute response status from 429 → 403 to match spec (body already carries detail.code='muted').",
+    "(INFO) Confirm what localStorage key ClientDashboard uses for the JWT (so test agents can inject a token to skip the captcha-gated UI flow). If using only React state, expose a small dev hook or rely on cookies.",
+    "(P0 RETEST — frontend) UI flows for nav-buy / nav-redeem, redeem-success card, buy-confirm validation (Not enough balance + disabled) still need a manual or fresh-agent verification pass — backend contract is solid, but the new testids were not exercised live in this iteration."
+  ],
+  "critical_code_review_comments": [
+    "auth_and_chat.py L696-707: muted check raises HTTPException 429 with detail dict containing code='muted'. Review request explicitly asked for 403. Two-line fix: change status_code=429 → 403.",
+    "auth_and_chat.py L1245-1268 admin_chat_ban: correctly persists ban by identifier (and ip) AND sets session.banned=true. ai_identify L631-633 then blocks future identifies with 403 'You are banned…'. Verified.",
+    "server.py L715-743 redeem_coupon: auto-approved transaction (status='approved') correctly bumps balance via the aggregate in _get_user_balance. Coupon deleted post-credit — good. No race window in this flow because find_one() is followed by insert then delete; if two concurrent redeems hit, both would currently succeed and credit twice. Consider a find_one_and_delete on the coupon BEFORE inserting the transaction for true atomicity.",
+    "server.py L752-822 order-with-balance: balance pre-check uses an aggregate which is NOT atomic vs concurrent orders. A user with $5 balance issuing two concurrent $4 orders could overdraft. Consider using a $inc-based virtual-wallet doc with a balance>=charge condition for atomic debit.",
+    "client_router endpoints use `db: AsyncIOMotorDatabase = request.app.state.db` shadowing the module-level db — fine, but inconsistent (other client routes use module db). Cosmetic."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_6_redeem_buy_mute_ban.py (new, 9 tests, all passing)"
+  ],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "0% — UI flows not exercised; auth bootstrap blocked"},
+  "test_credentials": "Admin: Balkin99 / Armin1234. Test users created with username pattern TESTu* and emails TEST_*@x.com (safe to purge: db.users.deleteMany({username:/^TESTu/})).",
+  "seed_data_creation": "Created ~3 TESTu* users via /api/auth/register (captcha-bypassed), 2 BS-* coupons via /api/admin/coupons (one redeemed → deleted, one used for the FE flow → deleted), 2 AI sessions via /api/ai/identify (one muted+unmuted, one banned). Chat ban list now contains 1 TEST_*@x.com entry.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend is solid — only the 429-vs-403 mute status code deviates from spec; everything else matches iteration_5 contract. For frontend: registration via UI in the preview environment was flaky in my run (form filled, captcha answer '3' for 13-10, but submit click didn't navigate); main agent should manually verify the new sidebar entries nav-buy / nav-redeem and their views. Suggested manual smoke: (1) register via UI; (2) sidebar should show 5 entries including Buy Services & Redeem Coupon; (3) Redeem view shows balance card + code input + submit, paste a coupon created via `curl -X POST $BACKEND/api/admin/coupons -H 'x-admin-token: <tok>' -H 'Content-Type: application/json' -d '{\"amount\":15}'`, success card appears, balance bumps +$15; (4) Buy view shows catalog, click any service, enter qty=999999999 → 'Not enough balance' warning + disabled buy-confirm; (5) Admin AI Inbox toolbar shows inbox-mute next to Take Over → after Mute, swaps to inbox-unmute, then Ban → toast 'Banned <identifier>'.",
+  "rca of the issue": "Mute status code 429: server raises HTTPException(status_code=429, detail={code:'muted',...}) in auth_and_chat.py around line 700. Spec said 403. Mitigation: single-line change `status_code=429` → `status_code=403`. No data-shape change required; frontend handler should be updated in lockstep to treat 403-with-code=muted the same as the previous 429."
+}

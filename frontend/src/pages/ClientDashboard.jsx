@@ -25,6 +25,9 @@ import {
   CheckCircle2,
   XCircle,
   Clock,
+  Ticket,
+  Search,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -38,7 +41,7 @@ export default function ClientDashboard() {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [view, setView] = useState("home"); // home | funds | tickets
+  const [view, setView] = useState("home"); // home | funds | tickets | buy
   const [balance, setBalance] = useState(0);
   const chatEndRef = useRef(null);
 
@@ -168,6 +171,20 @@ export default function ClientDashboard() {
               badge={`$${balance.toFixed(2)}`}
             />
             <SideLink
+              icon={ShoppingBag}
+              label="Buy Services"
+              active={view === "buy"}
+              onClick={() => setView("buy")}
+              testId="nav-buy"
+            />
+            <SideLink
+              icon={Ticket}
+              label="Redeem Coupon"
+              active={view === "redeem"}
+              onClick={() => setView("redeem")}
+              testId="nav-redeem"
+            />
+            <SideLink
               icon={LifeBuoy}
               label="Tickets"
               active={view === "tickets"}
@@ -179,8 +196,8 @@ export default function ClientDashboard() {
               className="flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm text-white/60 hover:text-white hover:bg-white/5 transition"
               data-testid="nav-catalog"
             >
-              <ShoppingBag className="w-4 h-4" />
-              <span>Service Catalog</span>
+              <ExternalLink className="w-4 h-4" />
+              <span>Public Landing</span>
               <ExternalLink className="w-3 h-3 ml-auto opacity-50" />
             </Link>
             <button
@@ -212,6 +229,12 @@ export default function ClientDashboard() {
             )}
             {view === "funds" && (
               <FundsView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
+            )}
+            {view === "buy" && (
+              <BuyView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
+            )}
+            {view === "redeem" && (
+              <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
             )}
             {view === "tickets" && <TicketsView authedApi={authedApi} />}
           </div>
@@ -827,3 +850,334 @@ function StatusPill({ status }) {
   );
 }
 
+
+
+function RedeemView({ authedApi, balance, reloadBalance }) {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [last, setLast] = useState(null);
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    const c = code.trim().toUpperCase();
+    if (c.length < 4) {
+      toast.error("Enter a valid code");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await authedApi().post("/client/redeem-coupon", { code: c });
+      toast.success(`Credited $${r.data.amount.toFixed(2)} to your balance`);
+      setLast({ amount: r.data.amount, code: c, balance: r.data.balance });
+      setCode("");
+      reloadBalance();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to redeem");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="font-display text-2xl md:text-4xl font-black tracking-tight">Redeem Coupon</h1>
+        <p className="text-white/50 text-sm mt-1">
+          Got a gift code? Cash it into your wallet — usable on any service afterwards.
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="bg-[#0d0a14] border border-white/5 rounded-sm p-5">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">Current balance</div>
+          <div className="font-display font-black text-3xl md:text-4xl text-[#FF007F] mt-2" data-testid="redeem-balance">
+            ${balance.toFixed(2)}
+          </div>
+        </div>
+        <div className="bg-[#0d0a14] border border-white/5 rounded-sm p-5">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">How it works</div>
+          <ul className="text-xs text-white/70 mt-2 space-y-1 leading-relaxed">
+            <li>1. Paste your <span className="text-[#FF007F] font-mono">BS-XXXX-XXXX-XXXX</span> code.</li>
+            <li>2. The full coupon balance is credited instantly.</li>
+            <li>3. Buy any service from <em>Buy Services</em>.</li>
+          </ul>
+        </div>
+      </div>
+
+      <form onSubmit={submit} className="bg-[#0d0a14] border border-white/5 rounded-sm p-5 md:p-6 space-y-4">
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">Coupon code</Label>
+          <Input
+            data-testid="redeem-code-input"
+            value={code}
+            onChange={(e) => setCode(e.target.value.toUpperCase())}
+            placeholder="BS-XXXX-XXXX-XXXX"
+            className="bg-[#1a1525] border-white/10 mt-1 font-mono tracking-wider"
+            autoComplete="off"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={busy || code.trim().length < 4}
+          data-testid="redeem-submit"
+          className="w-full py-3 gradient-pp rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40"
+        >
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+          Redeem to balance
+        </button>
+      </form>
+
+      {last && (
+        <div
+          data-testid="redeem-success"
+          className="bg-[#0d0a14] border border-emerald-500/40 rounded-sm p-5"
+        >
+          <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+            <CheckCircle2 className="w-4 h-4" /> Coupon redeemed
+          </div>
+          <div className="text-xs text-white/60 mt-1">
+            Code <span className="font-mono text-white/80">{last.code}</span> credited{" "}
+            <span className="text-[#FF007F] font-bold">${last.amount.toFixed(2)}</span> to your balance
+            (now ${last.balance.toFixed(2)}).
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BuyView({ authedApi, balance, reloadBalance }) {
+  const [services, setServices] = useState([]);
+  const [loadingSvc, setLoadingSvc] = useState(true);
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("all");
+  const [selected, setSelected] = useState(null);
+  const [link, setLink] = useState("");
+  const [qty, setQty] = useState(0);
+  const [placing, setPlacing] = useState(false);
+  const [last, setLast] = useState(null);
+
+  const loadServices = async () => {
+    setLoadingSvc(true);
+    try {
+      const r = await api.get("/services");
+      setServices(r.data.services || []);
+    } catch {
+      toast.error("Failed to load catalog");
+    } finally {
+      setLoadingSvc(false);
+    }
+  };
+
+  useEffect(() => {
+    loadServices();
+  }, []);
+
+  const categories = ["all", ...Array.from(new Set(services.map((s) => s.category))).slice(0, 30)];
+
+  const filtered = services.filter((s) => {
+    if (category !== "all" && s.category !== category) return false;
+    if (search && !s.name.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const total = selected && qty ? (Number(selected.rate) * Number(qty)) / 1000 : 0;
+  const canBuy = selected && qty >= (selected.min || 1) && qty <= (selected.max || 1e9) && link.trim().length > 4 && total <= balance;
+
+  const place = async () => {
+    if (!selected) return;
+    setPlacing(true);
+    try {
+      const r = await authedApi().post("/client/order-with-balance", {
+        service_id: selected.service,
+        link: link.trim(),
+        quantity: Number(qty),
+      });
+      toast.success(`Order placed! ID #${r.data.smm_order_id}`);
+      setLast({ id: r.data.smm_order_id, charge: r.data.charge });
+      setSelected(null);
+      setLink("");
+      setQty(0);
+      reloadBalance();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Order failed");
+    } finally {
+      setPlacing(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-end justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="font-display text-2xl md:text-4xl font-black tracking-tight">Buy Services</h1>
+          <p className="text-white/50 text-sm mt-1">
+            Pay instantly with your account balance — no checkout, no waiting.
+          </p>
+        </div>
+        <div className="bg-[#0d0a14] border border-white/5 rounded-sm px-4 py-2">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">Balance</div>
+          <div
+            className="font-display font-black text-xl text-[#FF007F]"
+            data-testid="buy-balance"
+          >
+            ${balance.toFixed(2)}
+          </div>
+        </div>
+      </div>
+
+      {last && (
+        <div className="bg-[#0d0a14] border border-emerald-500/40 rounded-sm p-4 flex items-center justify-between gap-3">
+          <div className="text-xs">
+            <span className="text-emerald-400 font-bold">Last order placed</span>{" "}
+            — SMM ID <span className="font-mono">#{last.id}</span> · charged{" "}
+            <span className="text-[#FF007F] font-bold">${last.charge.toFixed(2)}</span>
+          </div>
+          <button
+            onClick={() => setLast(null)}
+            className="text-[10px] uppercase tracking-wider text-white/50 hover:text-white"
+          >
+            dismiss
+          </button>
+        </div>
+      )}
+
+      {selected ? (
+        <div className="bg-[#0d0a14] border border-[#FF007F]/40 rounded-sm p-5 md:p-6 space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">{selected.category}</div>
+              <div className="font-bold text-base mt-0.5 break-words">{selected.name}</div>
+              <div className="text-xs text-white/50 mt-1">
+                ${Number(selected.rate).toFixed(3)} / 1000 · Min {selected.min} · Max {selected.max}
+              </div>
+            </div>
+            <button
+              onClick={() => setSelected(null)}
+              data-testid="buy-deselect"
+              className="text-xs uppercase tracking-wider text-white/50 hover:text-white"
+            >
+              ← Change
+            </button>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div>
+              <Label className="text-[11px] uppercase tracking-wider text-white/60">Target link</Label>
+              <Input
+                data-testid="buy-link"
+                value={link}
+                onChange={(e) => setLink(e.target.value)}
+                placeholder="https://…"
+                className="bg-[#1a1525] border-white/10 mt-1"
+              />
+            </div>
+            <div>
+              <Label className="text-[11px] uppercase tracking-wider text-white/60">
+                Quantity ({selected.min}–{selected.max})
+              </Label>
+              <Input
+                data-testid="buy-qty"
+                type="number"
+                value={qty || ""}
+                onChange={(e) => setQty(e.target.value)}
+                min={selected.min}
+                max={selected.max}
+                className="bg-[#1a1525] border-white/10 mt-1"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between bg-[#1a1525]/60 border border-white/5 rounded-sm px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-white/50">Total</div>
+            <div className="font-display font-black text-2xl text-[#FF007F]" data-testid="buy-total">
+              ${total.toFixed(4)}
+            </div>
+          </div>
+
+          {total > balance && qty > 0 && (
+            <div className="text-xs text-amber-400">
+              Not enough balance. Top up via Add Funds or redeem a coupon.
+            </div>
+          )}
+
+          <button
+            disabled={!canBuy || placing}
+            onClick={place}
+            data-testid="buy-confirm"
+            className="w-full py-3 gradient-pp rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40"
+          >
+            {placing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+            Place order — ${total.toFixed(2)}
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40" />
+              <Input
+                data-testid="buy-search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search services…"
+                className="bg-[#1a1525] border-white/10 pl-9"
+              />
+            </div>
+            <select
+              data-testid="buy-category"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm text-white outline-none"
+            >
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c === "all" ? "All categories" : c}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="bg-[#0d0a14] border border-white/5 rounded-sm overflow-hidden">
+            {loadingSvc && (
+              <div className="px-6 py-12 text-center text-white/30 text-xs">
+                <Loader2 className="w-5 h-5 animate-spin mx-auto" />
+              </div>
+            )}
+            {!loadingSvc && filtered.length === 0 && (
+              <div className="px-6 py-12 text-center text-white/30 text-xs">No services match.</div>
+            )}
+            <div className="max-h-[60vh] overflow-y-auto divide-y divide-white/5">
+              {filtered.slice(0, 80).map((s) => (
+                <button
+                  key={s.service}
+                  onClick={() => setSelected(s)}
+                  data-testid={`buy-svc-${s.service}`}
+                  className="w-full text-left px-5 py-3 hover:bg-white/[0.03] transition flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10px] uppercase tracking-wider text-white/40 truncate">
+                      {s.category}
+                    </div>
+                    <div className="text-sm font-medium text-white/90 truncate">{s.name}</div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="font-display font-bold text-[#FF007F] text-sm">
+                      ${Number(s.rate).toFixed(3)}
+                    </div>
+                    <div className="text-[10px] uppercase tracking-wider text-white/40">/ 1000</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+            {filtered.length > 80 && (
+              <div className="px-6 py-3 text-center text-[10px] uppercase tracking-wider text-white/40 border-t border-white/5">
+                Showing 80 of {filtered.length} — refine your search.
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
