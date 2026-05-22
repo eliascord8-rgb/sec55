@@ -60,6 +60,7 @@
 - **Inline staff join message**: when admin clicks "Take Over" on an AI chat, the user instantly sees `👋 @Balkin joined the chat — you're now talking with a real person.` in their widget (polled every 3s).
 - **AI Widget embedded in Client Dashboard**: floating chat circle now also appears inside `/client/dashboard` with the "Live Chat?" label — logged-in users can reach the AI/staff without going back to homepage.
 
+## Backlog
 ### Iteration 5 — Smart AI Handover (May 4, 2026)
 - **AI Knowledge Base**: AI now knows enabled services + prices and the **24-hour money-back guarantee** (only IPTV / Followers / Likes — explicitly NOT Views/Comments). System prompt is built dynamically from the curated services collection so price changes auto-propagate.
 - **Multilingual Handover Detection**: when user asks for "staff/agent/support/admin/operator" or any equivalent in **any language** (verified: English, German, Spanish, French, Russian, Chinese, Japanese), AI replies with a transfer message in the user's language ("Please wait, I'm transferring you to our team…") and emits `HANDOVER_REQUEST` token. Backend strips the token, flags `session.needs_handover=true`, returns `admin_online` based on heartbeat.
@@ -70,6 +71,17 @@
 - **"Leave Chat" button** (renamed from "Return to AI"): when admin presses it, AI rejoins and inserts a system note `"({StaffName} has left the chat — I'm back to help.)"` so the user is never confused.
 - **"Wants Staff" badge** in admin Inbox highlights sessions awaiting handover (pink, pulsing). Header counter `🔴 X waiting for staff`.
 - Backend tests: 25/25 pass (iter 5). Total test coverage: ~70 tests.
+
+### Iteration 7 — Dashboard Buy + Coupon Redeem + Chat Mute/Ban (May 22, 2026)
+- **Buy Services from Dashboard** (`POST /api/client/order-with-balance`): logged-in users browse the curated catalog, pick a service, enter link+quantity, and pay with their account balance. Atomic balance precheck, validates min/max, debits as a negative transaction, records order with `source='dashboard'`, payment_method='balance'. Sidebar entry **Buy Services** (testid=nav-buy).
+- **Coupon to Balance** (`POST /api/client/redeem-coupon`): users paste a BS-XXXX coupon code → full coupon balance is credited as an auto-approved deposit transaction → coupon is deleted. Sidebar entry **Redeem Coupon** (testid=nav-redeem). Success card + toast.
+- **AI Chat Mute / Ban** (admin only):
+  - `POST /api/ai/admin/sessions/{id}/mute` (body: `{minutes:int}`) — sets `ai_sessions.muted_until`, inserts a system message in the user's chat. `/api/ai/chat` returns 429 `{code:'muted',muted_until}` while active.
+  - `POST /api/ai/admin/sessions/{id}/unmute` — clears mute.
+  - `POST /api/ai/admin/sessions/{id}/ban` — upserts entry in `chat_bans` keyed by identifier, flags `ai_sessions.banned=true`. Future `/api/ai/identify` calls with same identifier return 403.
+  - `GET /api/ai/admin/chat-bans` + `POST /api/ai/admin/chat-bans/unban`.
+  - Admin Inbox toolbar: **MUTE / UNMUTE / BAN** buttons next to Take Over (testid=inbox-mute, inbox-unmute, inbox-ban).
+- Backend tests: 9/9 pass (iter 6 test_iteration_6_redeem_buy_mute_ban.py). Frontend smoke verified live: nav-buy + nav-redeem + redeem-success + Not-enough-balance disabling buy-confirm + admin inbox-mute/ban buttons all visible.
 
 ## Backlog
 ### P1
