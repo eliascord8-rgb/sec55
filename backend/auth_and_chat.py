@@ -624,6 +624,13 @@ async def ai_identify(body: AIIdentifyRequest, request: Request):
     now = datetime.now(timezone.utc).isoformat()
     ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or
           (request.client.host if request.client else ""))
+    # Check ban list (by identifier OR ip)
+    or_q = [{"identifier": ident}]
+    if ip:
+        or_q.append({"ip": ip})
+    ban = await db.chat_bans.find_one({"$or": or_q}, {"_id": 0, "identifier": 1})
+    if ban:
+        raise HTTPException(status_code=403, detail="You are banned from the chat. Contact support if this is a mistake.")
     await db.ai_sessions.update_one(
         {"session_id": session_id},
         {
@@ -665,7 +672,7 @@ async def ai_chat(req: AIChatRequest, request: Request):
     # Enforce identification
     sess_check = await db.ai_sessions.find_one(
         {"session_id": session_id},
-        {"_id": 0, "identified": 1, "status": 1, "identified_as": 1},
+        {"_id": 0, "identified": 1, "status": 1, "identified_as": 1, "muted_until": 1, "banned": 1, "ip": 1},
     )
     if not (sess_check and sess_check.get("identified")):
         # Tell client to show the identify form
@@ -677,6 +684,29 @@ async def ai_chat(req: AIChatRequest, request: Request):
                 "session_id": session_id,
             },
         )
+    # Banned?
+    ident_now = sess_check.get("identified_as")
+    if sess_check.get("banned"):
+        raise HTTPException(status_code=403, detail="You are banned from the chat.")
+    if ident_now:
+        ban = await db.chat_bans.find_one({"identifier": ident_now}, {"_id": 0, "identifier": 1})
+        if ban:
+            raise HTTPException(status_code=403, detail="You are banned from the chat.")
+    # Muted?
+    if sess_check.get("muted_until"):
+        try:
+            until_dt = datetime.fromisoformat(sess_check["muted_until"])
+            if until_dt > datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "muted",
+                        "message": f"You're temporarily muted. Try again later.",
+                        "muted_until": sess_check["muted_until"],
+                    },
+                )
+        except (ValueError, TypeError):
+            pass
 
     # Persist user message + ensure session exists
     now = datetime.now(timezone.utc).isoformat()
@@ -779,6 +809,17 @@ async def ai_poll(request: Request, session_id: str, since: Optional[str] = None
     sess = await db.ai_sessions.find_one({"session_id": session_id}, {"_id": 0})
     settings = await get_ai_settings(db)
     admin_online = await is_admin_online(db)
+    # Resolve mute status (expire if past)
+    muted = False
+    muted_until = None
+    if sess and sess.get("muted_until"):
+        try:
+            mu = datetime.fromisoformat(sess["muted_until"])
+            if mu > datetime.now(timezone.utc):
+                muted = True
+                muted_until = sess["muted_until"]
+        except (ValueError, TypeError):
+            pass
     return {
         "messages": items,
         "human_takeover": bool(sess and sess.get("status") == "human"),
@@ -787,6 +828,9 @@ async def ai_poll(request: Request, session_id: str, since: Optional[str] = None
         "staff_display_name": settings.get("staff_display_name"),
         "identified": bool(sess and sess.get("identified")),
         "identified_as": sess.get("identified_as") if sess else None,
+        "muted": muted,
+        "muted_until": muted_until,
+        "banned": bool(sess and sess.get("banned")),
     }
 
 
@@ -1154,6 +1198,100 @@ async def admin_ai_release(session_id: str, request: Request):
         "created_at": now,
     })
     return {"ok": True}
+
+
+# ---------------- Chat mute / ban ----------------
+
+class ChatModerateRequest(BaseModel):
+    minutes: Optional[int] = Field(default=None, ge=1, le=43200)
+
+
+async def _resolve_identifier_from_session(db: AsyncIOMotorDatabase, session_id: str) -> Optional[str]:
+    s = await db.ai_sessions.find_one({"session_id": session_id}, {"_id": 0, "identified_as": 1})
+    return s.get("identified_as") if s else None
+
+
+@ai_router.post("/admin/sessions/{session_id}/mute")
+async def admin_chat_mute(session_id: str, body: ChatModerateRequest, request: Request):
+    """Mute this chat session for N minutes. User can read but cannot send."""
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    minutes = body.minutes or 60
+    until = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+    await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {"$set": {"muted_until": until}},
+        upsert=True,
+    )
+    # Insert system message visible to user
+    await db.ai_chat_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "role": "assistant",
+        "text": f"🔇 You've been temporarily muted by support for {minutes} min.",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"ok": True, "muted_until": until}
+
+
+@ai_router.post("/admin/sessions/{session_id}/unmute")
+async def admin_chat_unmute(session_id: str, request: Request):
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    await db.ai_sessions.update_one({"session_id": session_id}, {"$set": {"muted_until": None}})
+    return {"ok": True}
+
+
+@ai_router.post("/admin/sessions/{session_id}/ban")
+async def admin_chat_ban(session_id: str, request: Request):
+    """Permanently ban this session's identifier from the AI chat."""
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    ident = await _resolve_identifier_from_session(db, session_id)
+    if not ident:
+        raise HTTPException(status_code=400, detail="Session has no identifier yet")
+    now = datetime.now(timezone.utc).isoformat()
+    sess = await db.ai_sessions.find_one({"session_id": session_id}, {"_id": 0, "ip": 1})
+    await db.chat_bans.update_one(
+        {"identifier": ident},
+        {"$set": {
+            "identifier": ident,
+            "ip": (sess or {}).get("ip", ""),
+            "banned_at": now,
+        }},
+        upsert=True,
+    )
+    await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {"$set": {"banned": True, "banned_at": now}},
+    )
+    return {"ok": True, "banned": ident}
+
+
+@ai_router.get("/admin/chat-bans")
+async def admin_chat_bans_list(request: Request):
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    items = await db.chat_bans.find({}, {"_id": 0}).sort("banned_at", -1).to_list(500)
+    return {"bans": items}
+
+
+class UnbanRequest(BaseModel):
+    identifier: str
+
+
+@ai_router.post("/admin/chat-bans/unban")
+async def admin_chat_unban(body: UnbanRequest, request: Request):
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    ident = body.identifier.strip().lower() if "@" in body.identifier else body.identifier.strip()
+    res = await db.chat_bans.delete_one({"identifier": ident})
+    # also clear session-level banned flag
+    await db.ai_sessions.update_many(
+        {"identified_as": ident},
+        {"$set": {"banned": False}},
+    )
+    return {"ok": True, "removed": res.deleted_count}
 
 
 class AIConfirmRequest(BaseModel):

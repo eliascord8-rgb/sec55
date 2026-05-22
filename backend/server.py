@@ -708,6 +708,120 @@ async def get_my_balance(user: CurrentUser = Depends(current_user_dep)):
     return {"balance": balance}
 
 
+class RedeemCouponRequest(BaseModel):
+    code: str = Field(..., min_length=4, max_length=40)
+
+
+@client_router.post("/redeem-coupon")
+async def redeem_coupon(body: RedeemCouponRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """User enters a coupon code → its full balance is added to their wallet, coupon deleted."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    code = body.code.strip().upper()
+    coupon = await db.coupons.find_one({"code": code}, {"_id": 0})
+    if not coupon:
+        raise HTTPException(status_code=404, detail="Coupon not found")
+    bal = float(coupon.get("balance", 0))
+    if bal <= 0:
+        raise HTTPException(status_code=400, detail="Coupon is empty")
+    # Credit the user
+    now = datetime.now(timezone.utc).isoformat()
+    tx = {
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "username": user.username,
+        "amount": round(bal, 2),
+        "method": "coupon",
+        "status": "approved",  # auto-approved
+        "type": "deposit",
+        "coupon_code": code,
+        "created_at": now,
+        "approved_at": now,
+    }
+    await db.transactions.insert_one(tx.copy())
+    await db.coupons.delete_one({"code": code})
+    new_balance = await _get_user_balance(user.id)
+    return {"ok": True, "amount": round(bal, 2), "balance": new_balance, "code": code}
+
+
+class BuyWithBalanceRequest(BaseModel):
+    service_id: int
+    link: str = Field(..., min_length=4, max_length=400)
+    quantity: int = Field(..., gt=0)
+
+
+@client_router.post("/order-with-balance")
+async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Place an SMM order paying with the user's account balance."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    # Look up curated service
+    svc = await db.curated_services.find_one({"service_id": body.service_id, "enabled": True}, {"_id": 0})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not available")
+    rate = float(svc.get("custom_rate", 0))
+    if rate <= 0:
+        raise HTTPException(status_code=400, detail="Service price not set")
+    if body.quantity < int(svc.get("min", 1) or 1) or body.quantity > int(svc.get("max", 100000) or 100000):
+        raise HTTPException(status_code=400, detail=f"Quantity must be between {svc.get('min')} and {svc.get('max')}")
+    charge = round((rate * body.quantity) / 1000.0, 4)
+    balance = await _get_user_balance(user.id)
+    if balance < charge:
+        raise HTTPException(status_code=402, detail=f"Not enough balance — needs ${charge:.2f}, you have ${balance:.2f}")
+
+    # Place order via SMM provider through the helper exposed on app.state
+    place_smm_order = request.app.state.place_smm_order
+    try:
+        smm_resp = await place_smm_order(body.service_id, body.link, body.quantity)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Order failed: {e}")
+
+    smm_order_id = smm_resp.get("order")
+    if not smm_order_id:
+        raise HTTPException(status_code=502, detail=f"Provider error: {smm_resp.get('error') or smm_resp}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    # Debit balance via negative transaction
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "username": user.username,
+        "amount": -charge,
+        "method": "balance",
+        "status": "approved",
+        "type": "order",
+        "service_id": body.service_id,
+        "smm_order_id": smm_order_id,
+        "created_at": now,
+        "approved_at": now,
+    })
+    # Save order record (same collection as guest orders, but tagged)
+    order_doc = {
+        "id": str(uuid.uuid4()),
+        "smm_order_id": smm_order_id,
+        "service_id": body.service_id,
+        "service_name": svc.get("name", ""),
+        "link": body.link,
+        "quantity": body.quantity,
+        "charge": charge,
+        "customer_email": "",
+        "user_id": user.id,
+        "username": user.username,
+        "payment_method": "balance",
+        "source": "dashboard",
+        "status": "Pending",
+        "created_at": now,
+    }
+    await db.orders.insert_one(order_doc.copy())
+    new_balance = await _get_user_balance(user.id)
+    return {
+        "ok": True,
+        "smm_order_id": smm_order_id,
+        "charge": charge,
+        "balance": new_balance,
+    }
+
+
 @client_router.get("/transactions")
 async def get_my_transactions(user: CurrentUser = Depends(current_user_dep)):
     items = await db.transactions.find(
