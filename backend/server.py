@@ -93,6 +93,7 @@ class ServiceUpdate(BaseModel):
     custom_rate: Optional[float] = None
     enabled: Optional[bool] = None
     name: Optional[str] = None
+    custom_name: Optional[str] = None
 
 
 class AdminLogin(BaseModel):
@@ -155,7 +156,7 @@ async def list_services():
     services = [
         {
             "service": s["service_id"],
-            "name": s.get("name", ""),
+            "name": (s.get("custom_name") or s.get("name") or ""),
             "category": s.get("category", "Other"),
             "rate": s.get("custom_rate", 0),
             "min": s.get("min", 1),
@@ -800,7 +801,7 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
         "id": str(uuid.uuid4()),
         "smm_order_id": smm_order_id,
         "service_id": body.service_id,
-        "service_name": svc.get("name", ""),
+        "service_name": (svc.get("custom_name") or svc.get("name") or ""),
         "link": body.link,
         "quantity": body.quantity,
         "charge": charge,
@@ -1369,10 +1370,26 @@ async def list_curated(x_admin_token: Optional[str] = Header(None)):
 @api_router.patch("/admin/services/{service_id}")
 async def update_curated(service_id: int, payload: ServiceUpdate, x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
-    update_doc = {k: v for k, v in payload.model_dump().items() if v is not None}
-    if not update_doc:
+    raw = payload.model_dump(exclude_unset=True)
+    update_doc = {}
+    unset_doc = {}
+    for k, v in raw.items():
+        if k == "custom_name":
+            # empty string => clear the override
+            if v is None or str(v).strip() == "":
+                unset_doc["custom_name"] = ""
+            else:
+                update_doc["custom_name"] = str(v).strip()[:200]
+        elif v is not None:
+            update_doc[k] = v
+    if not update_doc and not unset_doc:
         return {"updated": False}
-    res = await db.curated_services.update_one({"service_id": service_id}, {"$set": update_doc})
+    ops = {}
+    if update_doc:
+        ops["$set"] = update_doc
+    if unset_doc:
+        ops["$unset"] = unset_doc
+    res = await db.curated_services.update_one({"service_id": service_id}, ops)
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Service not found")
     return {"updated": True}
