@@ -708,7 +708,7 @@ function ServicesPanel({ token }) {
     .filter((s) => {
       const q = search.trim().toLowerCase();
       if (!q) return true;
-      return `${s.name} ${s.category} ${s.service_id}`.toLowerCase().includes(q);
+      return `${s.name} ${s.custom_name || ""} ${s.category} ${s.service_id}`.toLowerCase().includes(q);
     })
     .slice(0, 300);
 
@@ -829,7 +829,7 @@ function ServicesPanel({ token }) {
             <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14]">
               <tr>
                 <th className="text-left px-4 py-3">ID</th>
-                <th className="text-left px-4 py-3">Name</th>
+                <th className="text-left px-4 py-3">Provider name / Your label</th>
                 <th className="text-left px-4 py-3">Category</th>
                 <th className="text-right px-4 py-3">Provider $/k</th>
                 <th className="text-right px-4 py-3">Your $/k</th>
@@ -855,11 +855,27 @@ function ServicesPanel({ token }) {
               {filtered.map((s) => {
                 const dirty = edits[s.service_id];
                 const customRate = dirty?.custom_rate ?? s.custom_rate;
+                const customName = dirty?.custom_name ?? (s.custom_name ?? "");
                 return (
                   <tr key={s.service_id} className="border-t border-white/5 hover:bg-white/[0.02]">
                     <td className="px-4 py-2 font-mono text-xs text-[#00E5FF]">#{s.service_id}</td>
                     <td className="px-4 py-2 max-w-md">
-                      <div className="text-xs truncate">{s.name}</div>
+                      <div
+                        className="text-xs truncate text-white/40"
+                        title={`Provider: ${s.name}`}
+                      >
+                        {s.name}
+                      </div>
+                      <Input
+                        value={customName}
+                        onChange={(e) =>
+                          setEdit(s.service_id, { custom_name: e.target.value })
+                        }
+                        placeholder="Custom display name (optional)"
+                        data-testid={`custom-name-${s.service_id}`}
+                        maxLength={200}
+                        className="mt-1 h-7 bg-[#0d0a14] border-white/10 text-xs"
+                      />
                     </td>
                     <td className="px-4 py-2 text-xs text-white/60">{s.category}</td>
                     <td className="px-4 py-2 text-right font-mono text-xs text-white/50">
