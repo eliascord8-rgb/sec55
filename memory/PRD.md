@@ -83,6 +83,14 @@
   - Admin Inbox toolbar: **MUTE / UNMUTE / BAN** buttons next to Take Over (testid=inbox-mute, inbox-unmute, inbox-ban).
 - Backend tests: 9/9 pass (iter 6 test_iteration_6_redeem_buy_mute_ban.py). Frontend smoke verified live: nav-buy + nav-redeem + redeem-success + Not-enough-balance disabling buy-confirm + admin inbox-mute/ban buttons all visible.
 
+### Iteration 8 — Try Chance casino game + Custom service-name override (Jun 8, 2026)
+- **Custom service-name override** (Admin → Services): each row has a "Custom display name (optional)" input. Setting it overlays the provider's name on the public catalog (`/api/services`). Sync All never overwrites it.
+- **Try Chance** mini-casino in the Client Dashboard:
+  - Header button `TRY CHANCE` (testid=header-try-chance) + sidebar entry (testid=nav-casino).
+  - `POST /api/client/casino/spin` body `{stake: 1..100}` deducts stake from balance, rolls a multiplier from a weighted table (server-side, `secrets.randbelow`), credits any winnings, returns `{multiplier, win, net, balance}`. Logs each roll in `casino_rolls` collection.
+  - Prize table: 0x (92%), 0.5x (4%), 2x (2.5%), 5x (0.9%), 10x (0.4%), 50x (0.15%), 100x (0.03%), 1000x (0.015%), **10000x (0.005% — 1 in 20,000)**. RTP ≈ 91% (house edge ~9%).
+  - UI: animated reel (1.5s spin), prize table card with all 9 tiers, last-30-spins history (`GET /api/client/casino/history`). Validates stake range and balance before allowing spin.
+
 ## Backlog
 ### P1
 - hCaptcha: swap test keys for production keys in backend `.env` on VPS
