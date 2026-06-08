@@ -990,6 +990,7 @@ function BuyView({ authedApi, balance, reloadBalance }) {
   const [selected, setSelected] = useState(null);
   const [link, setLink] = useState("");
   const [qty, setQty] = useState(0);
+  const [comments, setComments] = useState("");
   const [placing, setPlacing] = useState(false);
   const [last, setLast] = useState(null);
 
@@ -1018,7 +1019,9 @@ function BuyView({ authedApi, balance, reloadBalance }) {
   });
 
   const total = selected && qty ? (Number(selected.rate) * Number(qty)) / 1000 : 0;
-  const canBuy = selected && qty >= (selected.min || 1) && qty <= (selected.max || 1e9) && link.trim().length > 4 && total <= balance;
+  const needsComments = selected && selected.needs_custom_text;
+  const commentsOk = !needsComments || comments.trim().length > 0;
+  const canBuy = selected && qty >= (selected.min || 1) && qty <= (selected.max || 1e9) && link.trim().length > 4 && total <= balance && commentsOk;
 
   const place = async () => {
     if (!selected) return;
@@ -1028,12 +1031,14 @@ function BuyView({ authedApi, balance, reloadBalance }) {
         service_id: selected.service,
         link: link.trim(),
         quantity: Number(qty),
+        comments: needsComments ? comments.trim() : undefined,
       });
       toast.success(`Order placed! ID #${r.data.smm_order_id}`);
       setLast({ id: r.data.smm_order_id, charge: r.data.charge });
       setSelected(null);
       setLink("");
       setQty(0);
+      setComments("");
       reloadBalance();
     } catch (err) {
       toast.error(err.response?.data?.detail || "Order failed");
@@ -1123,6 +1128,28 @@ function BuyView({ authedApi, balance, reloadBalance }) {
               />
             </div>
           </div>
+
+          {needsComments && (
+            <div data-testid="buy-comments-block" className="bg-amber-500/10 border border-amber-500/40 rounded-sm p-4 space-y-2">
+              <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-amber-300 font-bold">
+                Custom comments required
+              </div>
+              <Label className="text-[11px] text-white/70">
+                Enter your comments — one per line. We'll post {qty || 0} comment{qty !== 1 ? "s" : ""}, picking from this list.
+              </Label>
+              <textarea
+                data-testid="buy-comments"
+                value={comments}
+                onChange={(e) => setComments(e.target.value.slice(0, 5000))}
+                rows={5}
+                placeholder={"great post!\nlove this 🔥\nawesome content"}
+                className="w-full bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm font-mono text-white outline-none focus:border-[#FF007F]"
+              />
+              <div className="text-[10px] text-white/40">
+                {comments.split("\n").filter((l) => l.trim()).length} non-empty line(s) · {comments.length}/5000 chars
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center justify-between bg-[#1a1525]/60 border border-white/5 rounded-sm px-4 py-3">
             <div className="text-xs uppercase tracking-wider text-white/50">Total</div>

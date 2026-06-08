@@ -23,6 +23,7 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
   const [method, setMethod] = useState("coupon");
   const [submitting, setSubmitting] = useState(false);
   const [pendingTx, setPendingTx] = useState(null);
+  const [comments, setComments] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -100,6 +101,18 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
 
   const submit = async () => {
     if (!selected || !link || !validQty) return;
+    if (selected.needs_custom_text && !comments.trim()) {
+      Swal.fire({
+        title: "Comments required",
+        text: "This service needs custom comments — please enter your comment text first.",
+        icon: "warning",
+        background: "#1a1525",
+        color: "#fff",
+        confirmButtonText: "OK",
+        customClass: { popup: "bs-swal" },
+      });
+      return;
+    }
     setSubmitting(true);
     try {
       const r = await api.post("/checkout", {
@@ -110,6 +123,7 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
         coupon_code: method === "coupon" ? coupon : null,
         customer_email: email || null,
         price_usd: Number(price.toFixed(4)),
+        comments: selected.needs_custom_text ? comments.trim() : null,
       });
       if (r.data.status === "success") {
         showSuccess(r.data.smm_order_id);
@@ -329,6 +343,28 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                   />
                 </div>
 
+                {selected.needs_custom_text && (
+                  <div data-testid="checkout-comments-block" className="bg-amber-500/10 border border-amber-500/40 rounded-sm p-3 space-y-2">
+                    <div className="text-[10px] uppercase tracking-wider text-amber-300 font-bold">
+                      Custom comments required
+                    </div>
+                    <Label className="text-[11px] text-white/70">
+                      Enter the comment text — one per line. We'll cycle through these for {qty || 0} comment{qty !== 1 ? "s" : ""}.
+                    </Label>
+                    <textarea
+                      data-testid="checkout-comments"
+                      value={comments}
+                      onChange={(e) => setComments(e.target.value.slice(0, 5000))}
+                      rows={4}
+                      placeholder={"great post!\nlove this 🔥\nawesome content"}
+                      className="w-full bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-xs font-mono text-white outline-none focus:border-[#FF007F]"
+                    />
+                    <div className="text-[10px] text-white/40">
+                      {comments.split("\n").filter((l) => l.trim()).length} non-empty line(s)
+                    </div>
+                  </div>
+                )}
+
                 <Tabs value={method} onValueChange={setMethod} className="w-full">
                   <TabsList className="grid grid-cols-2 bg-[#1a1525] rounded-sm">
                     <TabsTrigger
@@ -391,7 +427,7 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                   </div>
                   <button
                     onClick={submit}
-                    disabled={submitting || !validQty || !link || (method === "coupon" && !coupon)}
+                    disabled={submitting || !validQty || !link || (method === "coupon" && !coupon) || (selected.needs_custom_text && !comments.trim())}
                     data-testid="place-order-btn"
                     className="w-full py-3 gradient-pp rounded-sm font-bold tracking-wide disabled:opacity-40 hover:opacity-90 transition"
                   >
