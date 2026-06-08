@@ -59,6 +59,7 @@ class CheckoutRequest(BaseModel):
     coupon_code: Optional[str] = None
     customer_email: str = Field(..., min_length=3)
     price_usd: float
+    comments: Optional[str] = None  # For custom-comments services — newline-separated list
 
 
 class CouponCreate(BaseModel):
@@ -94,6 +95,8 @@ class ServiceUpdate(BaseModel):
     enabled: Optional[bool] = None
     name: Optional[str] = None
     custom_name: Optional[str] = None
+    needs_custom_text: Optional[bool] = None
+    provider_id: Optional[str] = None
 
 
 class AdminLogin(BaseModel):
@@ -124,23 +127,43 @@ def gen_coupon_code() -> str:
 
 
 async def get_smm_config() -> dict:
+    """Legacy single-config — kept for backwards compat (Settings tab still uses it)."""
     cfg = await db.smm_config.find_one({}, {"_id": 0})
     if cfg and cfg.get("api_url") and cfg.get("api_key"):
         return cfg
     return {"api_url": SMM_API_URL_DEFAULT, "api_key": SMM_API_KEY_DEFAULT}
 
 
-async def smm_request(payload: dict) -> dict:
+async def get_provider(provider_id: Optional[str] = None) -> dict:
+    """Return the SMM provider. If provider_id given, look it up; else first enabled provider; else legacy config."""
+    if provider_id:
+        p = await db.smm_providers.find_one({"id": provider_id, "enabled": True}, {"_id": 0})
+        if p:
+            return p
+        raise HTTPException(status_code=502, detail=f"Provider {provider_id} not found or disabled")
+    # First enabled
+    p = await db.smm_providers.find_one({"enabled": True}, {"_id": 0})
+    if p:
+        return p
+    # Fallback to legacy smm_config
     cfg = await get_smm_config()
-    payload["key"] = cfg["api_key"]
+    return {"id": "_legacy", "name": "Default", "api_url": cfg["api_url"], "api_key": cfg["api_key"]}
+
+
+async def smm_request(payload: dict, provider_id: Optional[str] = None) -> dict:
+    p = await get_provider(provider_id)
+    payload["key"] = p["api_key"]
     async with httpx.AsyncClient(timeout=30.0) as c:
-        r = await c.post(cfg["api_url"], data=payload)
+        r = await c.post(p["api_url"], data=payload)
         r.raise_for_status()
         return r.json()
 
 
-async def place_smm_order(service_id: int, link: str, quantity: int) -> dict:
-    return await smm_request({"action": "add", "service": service_id, "link": link, "quantity": quantity})
+async def place_smm_order(service_id: int, link: str, quantity: int, comments: Optional[str] = None, provider_id: Optional[str] = None) -> dict:
+    payload = {"action": "add", "service": service_id, "link": link, "quantity": quantity}
+    if comments:
+        payload["comments"] = comments
+    return await smm_request(payload, provider_id=provider_id)
 
 
 # ============ PUBLIC ROUTES ============
@@ -162,6 +185,9 @@ async def list_services():
             "min": s.get("min", 1),
             "max": s.get("max", 1000000),
             "type": s.get("type", "Default"),
+            "needs_custom_text": bool(s.get("needs_custom_text", False)),
+            "provider_id": s.get("provider_id"),
+            "provider_name": s.get("provider_name", ""),
         }
         for s in items
     ]
@@ -185,6 +211,20 @@ async def checkout(req: CheckoutRequest, request: Request):
     order_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
+    # Look up service to get provider_id and check comment requirement
+    svc = await db.curated_services.find_one(
+        {"service_id": req.service_id, "enabled": True},
+        {"_id": 0, "provider_id": 1, "needs_custom_text": 1, "name": 1},
+    )
+    provider_id = svc.get("provider_id") if svc else None
+    needs_custom = bool(svc.get("needs_custom_text")) if svc else False
+    comments = (req.comments or "").strip() or None
+    if needs_custom and not comments:
+        raise HTTPException(
+            status_code=400,
+            detail="This service requires custom comments — please enter your comment text.",
+        )
+
     base_doc = {
         "id": order_id,
         "service_id": req.service_id,
@@ -197,6 +237,8 @@ async def checkout(req: CheckoutRequest, request: Request):
         "created_at": now,
         "smm_order_id": None,
         "smm_response": None,
+        "comments": comments,
+        "provider_id": provider_id,
     }
 
     # ----- Coupon flow -----
@@ -216,7 +258,7 @@ async def checkout(req: CheckoutRequest, request: Request):
 
         # Place SMM order; refund on failure
         try:
-            smm_resp = await place_smm_order(req.service_id, req.link, req.quantity)
+            smm_resp = await place_smm_order(req.service_id, req.link, req.quantity, comments=comments, provider_id=provider_id)
         except Exception as e:
             await db.coupons.update_one({"code": code}, {"$inc": {"balance": req.price_usd}})
             raise HTTPException(status_code=502, detail=f"SMM API error: {e}")
@@ -333,7 +375,13 @@ async def _finalize_order(order_id: str) -> dict:
     if order.get("status") == "completed":
         return {"status": "completed", "smm_order_id": order.get("smm_order_id")}
     try:
-        smm_resp = await place_smm_order(order["service_id"], order["link"], order["quantity"])
+        smm_resp = await place_smm_order(
+            order["service_id"],
+            order["link"],
+            order["quantity"],
+            comments=order.get("comments"),
+            provider_id=order.get("provider_id"),
+        )
     except Exception as e:
         await db.orders.update_one({"id": order_id}, {"$set": {"status": "failed", "failure_reason": str(e)}})
         return {"status": "failed", "reason": str(e)}
@@ -762,6 +810,7 @@ class BuyWithBalanceRequest(BaseModel):
     service_id: int
     link: str = Field(..., min_length=4, max_length=400)
     quantity: int = Field(..., gt=0)
+    comments: Optional[str] = None  # Required for custom-text services
 
 
 @client_router.post("/order-with-balance")
@@ -777,6 +826,10 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
         raise HTTPException(status_code=400, detail="Service price not set")
     if body.quantity < int(svc.get("min", 1) or 1) or body.quantity > int(svc.get("max", 100000) or 100000):
         raise HTTPException(status_code=400, detail=f"Quantity must be between {svc.get('min')} and {svc.get('max')}")
+    needs_custom = bool(svc.get("needs_custom_text"))
+    comments = (body.comments or "").strip() or None
+    if needs_custom and not comments:
+        raise HTTPException(status_code=400, detail="This service requires custom comments — please enter them.")
     charge = round((rate * body.quantity) / 1000.0, 4)
     balance = await _get_user_balance(user.id)
     if balance < charge:
@@ -785,7 +838,13 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
     # Place order via SMM provider through the helper exposed on app.state
     place_smm_order = request.app.state.place_smm_order
     try:
-        smm_resp = await place_smm_order(body.service_id, body.link, body.quantity)
+        smm_resp = await place_smm_order(
+            body.service_id,
+            body.link,
+            body.quantity,
+            comments=comments,
+            provider_id=svc.get("provider_id"),
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -826,6 +885,8 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
         "source": "dashboard",
         "status": "Pending",
         "created_at": now,
+        "comments": comments,
+        "provider_id": svc.get("provider_id"),
     }
     await db.orders.insert_one(order_doc.copy())
     new_balance = await _get_user_balance(user.id)
@@ -1515,6 +1576,138 @@ async def set_smm_admin_config(payload: SmmConfig, x_admin_token: Optional[str] 
     doc["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.smm_config.update_one({}, {"$set": doc}, upsert=True)
     return {"configured": True}
+
+
+# ===== Multiple SMM Providers =====
+
+class SmmProviderCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=60)
+    api_url: str = Field(..., min_length=10, max_length=300)
+    api_key: str = Field(..., min_length=4, max_length=200)
+    enabled: bool = True
+
+
+class SmmProviderUpdate(BaseModel):
+    name: Optional[str] = None
+    api_url: Optional[str] = None
+    api_key: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+def _mask_key(k: str) -> str:
+    return ("*" * 8 + k[-4:]) if k else ""
+
+
+@api_router.get("/admin/smm-providers")
+async def list_providers(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    items = await db.smm_providers.find({}, {"_id": 0}).sort("created_at", 1).to_list(50)
+    # Mask keys in the listing
+    for it in items:
+        it["api_key_masked"] = _mask_key(it.get("api_key", ""))
+        it.pop("api_key", None)
+    return {"providers": items}
+
+
+@api_router.post("/admin/smm-providers")
+async def create_provider(payload: SmmProviderCreate, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": payload.name.strip(),
+        "api_url": payload.api_url.strip(),
+        "api_key": payload.api_key.strip(),
+        "enabled": payload.enabled,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.smm_providers.insert_one(doc.copy())
+    return {"id": doc["id"], "name": doc["name"]}
+
+
+@api_router.patch("/admin/smm-providers/{pid}")
+async def update_provider(pid: str, payload: SmmProviderUpdate, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    upd = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if not upd:
+        return {"updated": False}
+    res = await db.smm_providers.update_one({"id": pid}, {"$set": upd})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    return {"updated": True}
+
+
+@api_router.delete("/admin/smm-providers/{pid}")
+async def delete_provider(pid: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    used = await db.curated_services.count_documents({"provider_id": pid})
+    if used > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete — {used} services still use this provider. Reassign or delete them first.",
+        )
+    res = await db.smm_providers.delete_one({"id": pid})
+    return {"deleted": res.deleted_count}
+
+
+@api_router.post("/admin/smm-providers/{pid}/sync")
+async def sync_provider_services(pid: str, x_admin_token: Optional[str] = Header(None)):
+    """Pull catalog from this specific provider and upsert into curated_services tagged with provider_id."""
+    check_admin(x_admin_token)
+    p = await db.smm_providers.find_one({"id": pid}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    try:
+        data = await smm_request({"action": "services"}, provider_id=pid)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch from {p['name']}: {e}")
+    if not isinstance(data, list):
+        raise HTTPException(status_code=502, detail="Provider returned unexpected format")
+
+    added = 0
+    updated = 0
+    for s in data:
+        try:
+            sid = int(s.get("service"))
+        except (TypeError, ValueError):
+            continue
+        provider_rate = float(s.get("rate") or 0)
+        name_lower = (s.get("name") or "").lower()
+        # Auto-detect "needs custom text" (custom comments / mentions etc.)
+        # Heuristic: contains "custom" AND NOT "random" / "emoji"
+        needs_custom = ("custom" in name_lower) and ("random" not in name_lower) and ("emoji" not in name_lower)
+        # Composite key: (provider_id, service_id) — but since service_ids can collide across providers we namespace
+        existing = await db.curated_services.find_one({"provider_id": pid, "service_id": sid})
+        update_doc = {
+            "provider_id": pid,
+            "provider_name": p["name"],
+            "name": s.get("name", ""),
+            "category": s.get("category", "Other"),
+            "provider_rate": provider_rate,
+            "min": int(s.get("min", 1)),
+            "max": int(s.get("max", 1000000)),
+            "type": s.get("type", "Default"),
+            "synced_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not existing:
+            new_doc = {
+                "service_id": sid,
+                "enabled": False,
+                "custom_rate": provider_rate,
+                "needs_custom_text": needs_custom,
+                **update_doc,
+            }
+            await db.curated_services.insert_one(new_doc.copy())
+            added += 1
+        else:
+            # Only auto-set needs_custom_text on first sync — admin can override later
+            if "needs_custom_text" not in existing:
+                update_doc["needs_custom_text"] = needs_custom
+            await db.curated_services.update_one(
+                {"provider_id": pid, "service_id": sid},
+                {"$set": update_doc},
+            )
+            updated += 1
+    return {"added": added, "updated": updated, "provider": p["name"]}
 
 
 # ===== Curated services =====

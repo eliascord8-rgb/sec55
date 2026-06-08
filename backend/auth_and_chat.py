@@ -474,9 +474,9 @@ Your job has TWO modes:
 == MODE A — ORDERING (default) ==
 Help the user place exactly ONE order via structured conversation.
 1. DETECT the user's language from their first message and respond in THAT language for the whole conversation.
-2. Ask for, in order: (a) what service — TikTok Live Likes, Live Views, or Live Comments; (b) the TikTok link / username; (c) quantity; (d) their Better Social coupon code.
-3. When you have all 4 pieces of info, output EXACTLY this JSON on a single line and nothing else:
-READY_TO_ORDER: {"service_type":"likes|views|comments","link":"...","quantity":123,"coupon_code":"BS-..."}
+2. Ask for, in order: (a) what service — TikTok Live Likes, Live Views, or Live Comments; (b) the TikTok link / username; (c) quantity; (d) IF the service is "comments" AND it is a custom-comment service, also ask: "Which comments do you want? Send them one per line." then store the user's exact reply; (e) their Better Social coupon code.
+3. When you have all required pieces of info, output EXACTLY this JSON on a single line and nothing else:
+READY_TO_ORDER: {"service_type":"likes|views|comments","link":"...","quantity":123,"coupon_code":"BS-...","comments":"line1\nline2 (only when comments service)"}
 4. Before READY_TO_ORDER, chat naturally — confirm details, ask one thing at a time.
 5. Keep messages short (1-2 sentences). Be warm but efficient.
 
@@ -1299,6 +1299,7 @@ class AIConfirmRequest(BaseModel):
     link: str
     quantity: int
     coupon_code: str
+    comments: Optional[str] = None  # Required when the configured "comments" service has needs_custom_text
 
 
 @ai_router.post("/confirm-order")
@@ -1328,6 +1329,14 @@ async def ai_confirm_order(body: AIConfirmRequest, request: Request):
             detail=f"Quantity must be {svc.get('min')}–{svc.get('max')}",
         )
 
+    needs_custom = bool(svc.get("needs_custom_text"))
+    comments_text = (body.comments or "").strip() or None
+    if needs_custom and not comments_text:
+        raise HTTPException(
+            status_code=400,
+            detail="NEEDS_COMMENTS",  # Sentinel for widget to render comment input
+        )
+
     code = body.coupon_code.strip().upper()
     deducted = await db.coupons.find_one_and_update(
         {"code": code, "balance": {"$gte": price}},
@@ -1342,7 +1351,7 @@ async def ai_confirm_order(body: AIConfirmRequest, request: Request):
 
     place_smm = request.app.state.place_smm_order
     try:
-        smm_resp = await place_smm(sid, body.link, body.quantity)
+        smm_resp = await place_smm(sid, body.link, body.quantity, comments=comments_text, provider_id=svc.get("provider_id"))
     except Exception as e:
         await db.coupons.update_one({"code": code}, {"$inc": {"balance": price}})
         raise HTTPException(status_code=502, detail=f"SMM error: {e}")
@@ -1370,6 +1379,8 @@ async def ai_confirm_order(body: AIConfirmRequest, request: Request):
         "status": "completed",
         "smm_order_id": smm_resp.get("order"),
         "smm_response": smm_resp,
+        "comments": comments_text,
+        "provider_id": svc.get("provider_id"),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.orders.insert_one(order_doc.copy())

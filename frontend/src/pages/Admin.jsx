@@ -4,7 +4,7 @@ import { adminApi, api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil, FileText, Bell, BellOff, Send } from "lucide-react";
+import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil, FileText, Bell, BellOff, Send, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Admin() {
@@ -242,6 +242,13 @@ function Dashboard({ token, onLogout }) {
             >
               Settings
             </TabsTrigger>
+            <TabsTrigger
+              value="providers"
+              data-testid="tab-providers"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Providers
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="orders">
@@ -276,6 +283,9 @@ function Dashboard({ token, onLogout }) {
           </TabsContent>
           <TabsContent value="settings">
             <SettingsPanel token={token} />
+          </TabsContent>
+          <TabsContent value="providers">
+            <ProvidersPanel token={token} />
           </TabsContent>
         </Tabs>
       </main>
@@ -844,20 +854,23 @@ function ServicesPanel({ token }) {
                 <th className="text-right px-4 py-3">Provider $/k</th>
                 <th className="text-right px-4 py-3">Your $/k</th>
                 <th className="text-center px-4 py-3">Live</th>
+                <th className="text-center px-4 py-3" title="Service requires user to enter custom comment text">
+                  Custom?
+                </th>
                 <th className="text-right px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={7} className="text-center py-12 text-white/40">
+                  <td colSpan={8} className="text-center py-12 text-white/40">
                     <Loader2 className="w-5 h-5 animate-spin inline mr-2" /> Loading…
                   </td>
                 </tr>
               )}
               {!loading && items.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="text-center py-12 text-white/40 text-xs">
+                  <td colSpan={8} className="text-center py-12 text-white/40 text-xs">
                     No services. Click "Sync from provider" to import.
                   </td>
                 </tr>
@@ -914,6 +927,25 @@ function ServicesPanel({ token }) {
                         }`}
                       >
                         {s.enabled ? "On" : "Off"}
+                      </button>
+                    </td>
+                    <td className="px-4 py-2 text-center">
+                      <button
+                        onClick={async () => {
+                          try {
+                            await adminApi(token).patch(`/admin/services/${s.service_id}`, { needs_custom_text: !s.needs_custom_text });
+                            setItems((prev) => prev.map((x) => (x.service_id === s.service_id ? { ...x, needs_custom_text: !s.needs_custom_text } : x)));
+                          } catch { toast.error("Failed"); }
+                        }}
+                        data-testid={`custom-toggle-${s.service_id}`}
+                        title={s.needs_custom_text ? "User must enter comment text" : "No comment text needed"}
+                        className={`px-2 py-1 rounded-sm text-[10px] uppercase tracking-wider font-bold ${
+                          s.needs_custom_text
+                            ? "bg-amber-500/20 text-amber-300"
+                            : "bg-white/5 text-white/30"
+                        }`}
+                      >
+                        {s.needs_custom_text ? "Yes" : "No"}
                       </button>
                     </td>
                     <td className="px-4 py-2 text-right">
@@ -3183,6 +3215,224 @@ function TicketsAdminPanel({ token }) {
             )}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+
+function ProvidersPanel({ token }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await adminApi(token).get("/admin/smm-providers");
+      setItems(r.data.providers || []);
+    } catch (e) {
+      toast.error("Failed to load providers");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line
+  }, []);
+
+  const create = async (e) => {
+    e.preventDefault();
+    if (!name.trim() || !url.trim() || !key.trim()) return;
+    setBusy(true);
+    try {
+      await adminApi(token).post("/admin/smm-providers", { name: name.trim(), api_url: url.trim(), api_key: key.trim() });
+      toast.success(`Added ${name}`);
+      setName(""); setUrl(""); setKey(""); setShowAdd(false);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const syncProvider = async (id, providerName) => {
+    setSyncing(id);
+    try {
+      const r = await adminApi(token).post(`/admin/smm-providers/${id}/sync`);
+      toast.success(`${providerName}: +${r.data.added} added · ${r.data.updated} updated`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Sync failed");
+    } finally {
+      setSyncing(null);
+    }
+  };
+
+  const toggle = async (p) => {
+    try {
+      await adminApi(token).patch(`/admin/smm-providers/${p.id}`, { enabled: !p.enabled });
+      load();
+    } catch {
+      toast.error("Failed");
+    }
+  };
+
+  const remove = async (p) => {
+    if (!window.confirm(`Delete provider "${p.name}"? Services using it must be reassigned first.`)) return;
+    try {
+      await adminApi(token).delete(`/admin/smm-providers/${p.id}`);
+      toast.success("Deleted");
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-display font-black text-xl">SMM Providers</h2>
+          <p className="text-xs text-white/40 mt-1">
+            Add multiple panel APIs. Each service is bound to one provider — orders auto-route to the correct API.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowAdd((v) => !v)}
+          data-testid="provider-add-btn"
+          className="px-4 py-2 gradient-pp rounded-sm font-bold text-xs uppercase tracking-wider inline-flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" /> Add provider
+        </button>
+      </div>
+
+      {showAdd && (
+        <form onSubmit={create} className="bg-[#1a1525] border border-[#FF007F]/40 rounded-sm p-5 space-y-3" data-testid="provider-add-form">
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div>
+              <Label className="text-[11px] uppercase tracking-wider text-white/60">Display name</Label>
+              <Input
+                data-testid="provider-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. SmmCost"
+                maxLength={60}
+                className="bg-[#0d0a14] border-white/10 mt-1"
+              />
+            </div>
+            <div>
+              <Label className="text-[11px] uppercase tracking-wider text-white/60">API URL</Label>
+              <Input
+                data-testid="provider-url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://smmcost.com/api/v2"
+                className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+              />
+            </div>
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">API key</Label>
+            <Input
+              data-testid="provider-key"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder="Your panel API key"
+              className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+              autoComplete="off"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAdd(false)}
+              className="flex-1 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              data-testid="provider-create"
+              className="flex-1 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-50"
+            >
+              {busy ? <Loader2 className="w-3 h-3 animate-spin inline" /> : "Save & Add"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden">
+        <table className="w-full text-sm" data-testid="providers-table">
+          <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14]">
+            <tr>
+              <th className="text-left px-4 py-3">Name</th>
+              <th className="text-left px-4 py-3">URL</th>
+              <th className="text-left px-4 py-3">Key</th>
+              <th className="text-center px-4 py-3">Enabled</th>
+              <th className="text-right px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={5} className="text-center py-10 text-white/40">
+                  <Loader2 className="w-5 h-5 animate-spin inline mr-2" /> Loading…
+                </td>
+              </tr>
+            )}
+            {!loading && items.length === 0 && (
+              <tr>
+                <td colSpan={5} className="text-center py-10 text-white/40 text-xs">
+                  No providers yet. Click "Add provider" to register your first SMM panel API.
+                </td>
+              </tr>
+            )}
+            {items.map((p) => (
+              <tr key={p.id} className="border-t border-white/5" data-testid={`provider-row-${p.id}`}>
+                <td className="px-4 py-3 font-bold">{p.name}</td>
+                <td className="px-4 py-3 font-mono text-xs text-white/60 truncate max-w-[280px]">{p.api_url}</td>
+                <td className="px-4 py-3 font-mono text-xs text-white/40">{p.api_key_masked}</td>
+                <td className="px-4 py-3 text-center">
+                  <button
+                    onClick={() => toggle(p)}
+                    className={`px-2 py-1 rounded-sm text-[10px] uppercase tracking-wider font-bold ${
+                      p.enabled ? "bg-[#00E5FF]/20 text-[#00E5FF]" : "bg-white/5 text-white/40"
+                    }`}
+                  >
+                    {p.enabled ? "On" : "Off"}
+                  </button>
+                </td>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <button
+                    onClick={() => syncProvider(p.id, p.name)}
+                    disabled={syncing === p.id}
+                    data-testid={`provider-sync-${p.id}`}
+                    className="px-3 py-1 bg-[#00E5FF]/20 text-[#00E5FF] rounded-sm text-[10px] uppercase tracking-wider font-bold mr-2 hover:bg-[#00E5FF]/30 disabled:opacity-40 inline-flex items-center gap-1"
+                  >
+                    {syncing === p.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCw className="w-3 h-3" />}
+                    Sync
+                  </button>
+                  <button
+                    onClick={() => remove(p)}
+                    data-testid={`provider-delete-${p.id}`}
+                    className="px-3 py-1 bg-red-500/20 text-red-300 rounded-sm text-[10px] uppercase tracking-wider font-bold hover:bg-red-500/30"
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

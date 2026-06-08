@@ -105,6 +105,15 @@
 - **Admin Withdrawals tab** with filter pills (Pending/Approved/Rejected/All) + per-row Approve / Reject buttons. Approve prompts for TX hash (optional); Reject prompts for reason.
 - Verified live: $80 win → submit withdrawal → admin sees row → reject refunds correctly; approve permanently debits.
 
+### Iteration 10 — Multi-provider APIs + Custom-comments dialog (Jun 8, 2026)
+- **Multiple SMM Providers**: new collection `smm_providers` (name/api_url/api_key/enabled). Admin UI: "Providers" tab with Add, Sync, Toggle (On/Off), Delete. API key masked in listing (only last 4 chars shown). Each provider has its own Sync button (`POST /api/admin/smm-providers/{pid}/sync`) — pulls catalog from THAT provider's API and tags every service with `provider_id` + `provider_name`. `smm_request()` and `place_smm_order()` now accept a `provider_id` arg and route to the correct API key.
+- **Custom comments support**: new field `needs_custom_text` on each curated service. Auto-detected on sync (heuristic: name contains "custom" AND NOT "random"/"emoji"). Admin can override in Services tab via the new "Custom?" toggle column.
+  - Backend: `/api/checkout`, `/api/client/order-with-balance`, and AI `/api/ai/confirm-order` all enforce that the user provides `comments` text when `needs_custom_text=true`, and pass them to the SMM API as the standard `comments` field.
+  - Dashboard Buy view: amber "Custom comments required" box with textarea (one per line, live line counter, 5000 char cap) — Place Order disabled until filled.
+  - Landing checkout dialog: same amber box appears for custom services before payment selection.
+  - AI Widget: system prompt updated to ask "Which comments?" before READY_TO_ORDER; READY_TO_ORDER JSON now includes optional `comments` field; widget passes it through to `/confirm-order`.
+- Public `/api/services` payload now includes `needs_custom_text`, `provider_id`, `provider_name`.
+
 ## Backlog
 ### P1
 - hCaptcha: swap test keys for production keys in backend `.env` on VPS

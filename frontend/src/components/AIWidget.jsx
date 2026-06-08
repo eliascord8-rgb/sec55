@@ -33,6 +33,7 @@ function parseReady(text) {
         link: String(data.link),
         quantity: Number(data.quantity),
         coupon_code: String(data.coupon_code).toUpperCase(),
+        comments: data.comments ? String(data.comments) : null,
       };
     }
   } catch (e) {
