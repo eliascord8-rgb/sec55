@@ -28,6 +28,7 @@ import {
   Ticket,
   Search,
   Zap,
+  Dices,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -41,7 +42,7 @@ export default function ClientDashboard() {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [view, setView] = useState("home"); // home | funds | tickets | buy
+  const [view, setView] = useState("home"); // home | funds | tickets | buy | redeem | casino
   const [balance, setBalance] = useState(0);
   const chatEndRef = useRef(null);
 
@@ -130,6 +131,14 @@ export default function ClientDashboard() {
             </span>
           </Link>
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setView("casino")}
+              data-testid="header-try-chance"
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[#FFB800]/40 text-[#FFB800] text-[11px] uppercase tracking-wider font-bold hover:bg-[#FFB800]/10 transition group"
+            >
+              <Dices className="w-3.5 h-3.5 group-hover:rotate-12 transition" />
+              Try Chance
+            </button>
             <RoleBadge role={user.role} />
             <span className="text-sm text-white/80 hidden sm:inline" data-testid="client-username">
               @{user.username}
@@ -185,6 +194,13 @@ export default function ClientDashboard() {
               testId="nav-redeem"
             />
             <SideLink
+              icon={Dices}
+              label="Try Chance"
+              active={view === "casino"}
+              onClick={() => setView("casino")}
+              testId="nav-casino"
+            />
+            <SideLink
               icon={LifeBuoy}
               label="Tickets"
               active={view === "tickets"}
@@ -235,6 +251,9 @@ export default function ClientDashboard() {
             )}
             {view === "redeem" && (
               <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
+            )}
+            {view === "casino" && (
+              <CasinoView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
             )}
             {view === "tickets" && <TicketsView authedApi={authedApi} />}
           </div>
@@ -1181,3 +1200,300 @@ function BuyView({ authedApi, balance, reloadBalance }) {
     </div>
   );
 }
+
+const PRIZE_TABLE = [
+  { mult: 10000, label: "10,000x", chance: "1 in 20,000", color: "#FFD700" },
+  { mult: 1000, label: "1,000x", chance: "1 in 6,666", color: "#FF007F" },
+  { mult: 100, label: "100x", chance: "1 in 3,333", color: "#FF6B6B" },
+  { mult: 50, label: "50x", chance: "1 in 666", color: "#FFB800" },
+  { mult: 10, label: "10x", chance: "1 in 250", color: "#00E5FF" },
+  { mult: 5, label: "5x", chance: "~1 in 111", color: "#7000FF" },
+  { mult: 2, label: "2x", chance: "~1 in 40", color: "#A78BFA" },
+  { mult: 0.5, label: "0.5x", chance: "~1 in 25", color: "#94A3B8" },
+  { mult: 0, label: "0x (lose)", chance: "~92%", color: "#475569" },
+];
+
+function CasinoView({ authedApi, balance, reloadBalance }) {
+  const [stake, setStake] = useState(5);
+  const [spinning, setSpinning] = useState(false);
+  const [result, setResult] = useState(null); // {multiplier, win, stake}
+  const [history, setHistory] = useState([]);
+  const [reelText, setReelText] = useState("?");
+  const reelInterval = useRef(null);
+
+  const loadHistory = async () => {
+    try {
+      const r = await authedApi().get("/client/casino/history");
+      setHistory(r.data.rolls || []);
+    } catch {}
+  };
+
+  useEffect(() => {
+    loadHistory();
+    // eslint-disable-next-line
+  }, []);
+
+  useEffect(() => () => {
+    if (reelInterval.current) clearInterval(reelInterval.current);
+  }, []);
+
+  const spin = async () => {
+    const s = Number(stake);
+    if (!s || s < 1 || s > 100) {
+      toast.error("Stake must be between $1 and $100");
+      return;
+    }
+    if (s > balance) {
+      toast.error("Not enough balance");
+      return;
+    }
+    setSpinning(true);
+    setResult(null);
+    // Animate reel — cycle random multipliers for ~1.8s
+    const samples = ["0x", "0.5x", "2x", "5x", "10x", "50x", "100x", "1000x", "10000x"];
+    let i = 0;
+    reelInterval.current = setInterval(() => {
+      i = (i + 1) % samples.length;
+      setReelText(samples[Math.floor(Math.random() * samples.length)]);
+    }, 70);
+
+    try {
+      // Slight delay so the reel actually visibly spins
+      const spinPromise = authedApi().post("/client/casino/spin", { stake: s });
+      await new Promise((res) => setTimeout(res, 1500));
+      const r = await spinPromise;
+      clearInterval(reelInterval.current);
+      const m = r.data.multiplier;
+      setReelText(m === 0 ? "💥" : `${m}x`);
+      setResult({
+        multiplier: m,
+        win: r.data.win,
+        stake: r.data.stake,
+        net: r.data.net,
+      });
+      if (m >= 100) {
+        toast.success(`🎰 JACKPOT! ${m}x — you won $${r.data.win.toFixed(2)}!`, { duration: 8000 });
+      } else if (m > 0) {
+        toast.success(`x${m} · won $${r.data.win.toFixed(2)}`);
+      } else {
+        toast(`No win this time — try again!`);
+      }
+      reloadBalance();
+      loadHistory();
+    } catch (err) {
+      if (reelInterval.current) clearInterval(reelInterval.current);
+      setReelText("?");
+      toast.error(err.response?.data?.detail || "Spin failed");
+    } finally {
+      setSpinning(false);
+    }
+  };
+
+  const resultColor =
+    result?.multiplier >= 100
+      ? "#FFD700"
+      : result?.multiplier >= 5
+      ? "#FF007F"
+      : result?.multiplier > 0
+      ? "#00E5FF"
+      : "#94A3B8";
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="font-display text-2xl md:text-4xl font-black tracking-tight flex items-center gap-3">
+          <Dices className="w-7 h-7 text-[#FFB800]" /> Try Chance
+        </h1>
+        <p className="text-white/50 text-sm mt-1">
+          Bet $1 – $100 from your balance. Multipliers up to <span className="text-[#FFD700] font-bold">10,000x</span> — but hard to hit. Play responsibly.
+        </p>
+      </div>
+
+      {/* MAIN GAME PANEL */}
+      <div className="relative bg-gradient-to-br from-[#0d0a14] via-[#1a0a22] to-[#0d0a14] border border-[#FFB800]/30 rounded-sm p-6 md:p-8 overflow-hidden">
+        <div
+          className="absolute -top-20 -right-20 w-72 h-72 rounded-full blur-3xl opacity-20"
+          style={{ background: "#FFB800" }}
+        />
+        <div
+          className="absolute -bottom-20 -left-20 w-72 h-72 rounded-full blur-3xl opacity-20"
+          style={{ background: "#FF007F" }}
+        />
+
+        <div className="relative">
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">Current balance</div>
+            <div className="font-display font-black text-xl text-[#FF007F]" data-testid="casino-balance">
+              ${balance.toFixed(2)}
+            </div>
+          </div>
+
+          {/* REEL */}
+          <div
+            data-testid="casino-reel"
+            className={`relative mx-auto w-full max-w-md h-44 md:h-56 bg-[#050505] border-2 rounded-sm flex items-center justify-center mb-6 overflow-hidden transition-colors ${
+              spinning ? "border-[#FFB800] animate-pulse" : result ? "border-[#FF007F]" : "border-white/10"
+            }`}
+            style={{
+              boxShadow: result?.multiplier >= 100 ? `0 0 80px ${resultColor}` : undefined,
+            }}
+          >
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,184,0,0.08),transparent_70%)] pointer-events-none" />
+            <div
+              data-testid="casino-reel-text"
+              className={`font-display font-black tracking-tight transition-all ${
+                spinning ? "text-5xl md:text-7xl text-white/80" : result?.multiplier >= 100 ? "text-6xl md:text-8xl" : "text-5xl md:text-7xl"
+              }`}
+              style={{ color: result ? resultColor : "white" }}
+            >
+              {result ? (result.multiplier === 0 ? "💥 0x" : `${result.multiplier}x`) : reelText}
+            </div>
+          </div>
+
+          {result && (
+            <div
+              data-testid="casino-result"
+              className={`text-center mb-6 ${result.multiplier > 0 ? "text-emerald-400" : "text-red-400"}`}
+            >
+              <div className="text-xs uppercase tracking-[0.2em] text-white/40">
+                {result.multiplier > 0 ? "You won" : "Better luck next time"}
+              </div>
+              <div className="font-display font-black text-3xl md:text-4xl mt-1">
+                {result.multiplier > 0 ? "+" : ""}${result.net.toFixed(2)}
+              </div>
+            </div>
+          )}
+
+          {/* STAKE + SPIN */}
+          <div className="grid sm:grid-cols-[1fr_auto] gap-3 items-end max-w-md mx-auto">
+            <div>
+              <Label className="text-[11px] uppercase tracking-wider text-white/60">Stake (USD)</Label>
+              <Input
+                data-testid="casino-stake"
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                value={stake}
+                onChange={(e) => setStake(e.target.value)}
+                disabled={spinning}
+                className="bg-[#1a1525] border-white/10 mt-1 font-mono text-lg"
+              />
+            </div>
+            <button
+              onClick={spin}
+              disabled={spinning || Number(stake) < 1 || Number(stake) > 100 || Number(stake) > balance}
+              data-testid="casino-spin"
+              className="h-[42px] mt-5 sm:mt-0 px-6 rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40 bg-gradient-to-r from-[#FFB800] to-[#FF007F] text-black hover:scale-[1.02] transition"
+            >
+              {spinning ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" /> Spinning…
+                </>
+              ) : (
+                <>
+                  <Dices className="w-4 h-4" /> SPIN
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="flex flex-wrap justify-center gap-2 mt-3 max-w-md mx-auto">
+            {[1, 5, 10, 25, 50, 100].map((q) => (
+              <button
+                key={q}
+                onClick={() => setStake(q)}
+                disabled={spinning}
+                data-testid={`casino-stake-${q}`}
+                className="px-3 py-1 border border-white/10 rounded-sm text-xs hover:bg-white/5 disabled:opacity-40"
+              >
+                ${q}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* PRIZE TABLE */}
+      <div className="bg-[#0d0a14] border border-white/5 rounded-sm overflow-hidden">
+        <div className="px-5 py-3 border-b border-white/5">
+          <h3 className="font-display font-bold text-sm">Prize table</h3>
+          <p className="text-[10px] uppercase tracking-wider text-white/40">
+            Higher payouts are rarer. Provably randomized server-side.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-px bg-white/5">
+          {PRIZE_TABLE.map((p) => (
+            <div
+              key={p.mult}
+              className="bg-[#0d0a14] px-4 py-3 flex items-center justify-between gap-3"
+              data-testid={`prize-${p.mult}`}
+            >
+              <div>
+                <div className="font-display font-black text-lg" style={{ color: p.color }}>
+                  {p.label}
+                </div>
+                <div className="text-[10px] uppercase tracking-wider text-white/40">{p.chance}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* HISTORY */}
+      <div className="bg-[#0d0a14] border border-white/5 rounded-sm overflow-hidden">
+        <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">
+          <h3 className="font-display font-bold text-sm">Your last spins</h3>
+          <span className="text-[10px] uppercase tracking-wider text-white/40">{history.length}</span>
+        </div>
+        {history.length === 0 ? (
+          <div className="px-5 py-10 text-center text-white/30 text-xs">No spins yet — try your luck!</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-[10px] uppercase tracking-wider text-white/40">
+                <tr>
+                  <th className="text-left px-5 py-2">When</th>
+                  <th className="text-left px-5 py-2">Stake</th>
+                  <th className="text-left px-5 py-2">Roll</th>
+                  <th className="text-right px-5 py-2">Net</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((h) => (
+                  <tr key={h.id} className="border-t border-white/5" data-testid={`casino-roll-${h.id}`}>
+                    <td className="px-5 py-2 text-white/50 text-xs font-mono">
+                      {new Date(h.created_at).toLocaleTimeString()}
+                    </td>
+                    <td className="px-5 py-2 font-mono text-xs">${Number(h.stake).toFixed(2)}</td>
+                    <td className="px-5 py-2 font-mono text-xs">
+                      <span
+                        className={`px-2 py-0.5 rounded-sm font-bold ${
+                          h.multiplier >= 100
+                            ? "bg-[#FFD700]/20 text-[#FFD700]"
+                            : h.multiplier > 0
+                            ? "bg-[#00E5FF]/20 text-[#00E5FF]"
+                            : "bg-white/5 text-white/40"
+                        }`}
+                      >
+                        {h.multiplier}x
+                      </span>
+                    </td>
+                    <td
+                      className={`px-5 py-2 text-right font-mono text-xs ${
+                        h.net > 0 ? "text-emerald-400" : "text-red-400"
+                      }`}
+                    >
+                      {h.net > 0 ? "+" : ""}${Number(h.net).toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+

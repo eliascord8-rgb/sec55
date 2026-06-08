@@ -1,7 +1,7 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Header, Depends
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 import os
 import logging
 import uuid
@@ -830,6 +830,111 @@ async def get_my_transactions(user: CurrentUser = Depends(current_user_dep)):
         {"_id": 0},
     ).sort("created_at", -1).limit(100).to_list(100)
     return {"transactions": items}
+
+
+class CasinoSpinRequest(BaseModel):
+    stake: float = Field(..., ge=1, le=100)
+
+
+# Multiplier weight table (weight is per 100,000 rolls)
+# Total weight = 100,000. RTP ≈ 91% (9% house edge).
+CASINO_TABLE = [
+    (0.0, 92000),     # 92.000% — lose
+    (0.5, 4000),      #  4.000% — half back
+    (2.0, 2500),      #  2.500%
+    (5.0, 900),       #  0.900%
+    (10.0, 400),      #  0.400%
+    (50.0, 150),      #  0.150%
+    (100.0, 30),      #  0.030%
+    (1000.0, 15),     #  0.015%
+    (10000.0, 5),     #  0.005% — JACKPOT
+]
+CASINO_TOTAL_WEIGHT = sum(w for _, w in CASINO_TABLE)
+
+
+def _roll_multiplier() -> float:
+    """Cryptographically secure RNG drawing from CASINO_TABLE."""
+    pick = secrets.randbelow(CASINO_TOTAL_WEIGHT)
+    cum = 0
+    for mult, w in CASINO_TABLE:
+        cum += w
+        if pick < cum:
+            return mult
+    return 0.0
+
+
+@client_router.post("/casino/spin")
+async def casino_spin(body: CasinoSpinRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Try Chance — bet 1-100 USD from balance, win up to 10,000x."""
+    db_: AsyncIOMotorDatabase = request.app.state.db
+    stake = round(float(body.stake), 2)
+    balance = await _get_user_balance(user.id)
+    if balance < stake:
+        raise HTTPException(status_code=402, detail=f"Not enough balance — need ${stake:.2f}, you have ${balance:.2f}")
+
+    roll_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    multiplier = _roll_multiplier()
+    win_amount = round(stake * multiplier, 4)
+
+    # Debit stake
+    await db_.transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "username": user.username,
+        "amount": -stake,
+        "method": "casino",
+        "status": "approved",
+        "type": "casino_bet",
+        "roll_id": roll_id,
+        "multiplier": multiplier,
+        "created_at": now,
+        "approved_at": now,
+    })
+    # Credit win (if any)
+    if win_amount > 0:
+        await db_.transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user.id,
+            "username": user.username,
+            "amount": win_amount,
+            "method": "casino",
+            "status": "approved",
+            "type": "casino_win",
+            "roll_id": roll_id,
+            "multiplier": multiplier,
+            "created_at": now,
+            "approved_at": now,
+        })
+
+    # Log into casino_rolls for admin / history
+    await db_.casino_rolls.insert_one({
+        "id": roll_id,
+        "user_id": user.id,
+        "username": user.username,
+        "stake": stake,
+        "multiplier": multiplier,
+        "win": win_amount,
+        "net": round(win_amount - stake, 4),
+        "created_at": now,
+    })
+
+    new_balance = await _get_user_balance(user.id)
+    return {
+        "roll_id": roll_id,
+        "multiplier": multiplier,
+        "stake": stake,
+        "win": win_amount,
+        "net": round(win_amount - stake, 4),
+        "balance": new_balance,
+    }
+
+
+@client_router.get("/casino/history")
+async def casino_history(user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    db_: AsyncIOMotorDatabase = request.app.state.db
+    items = await db_.casino_rolls.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).limit(30).to_list(30)
+    return {"rolls": items}
 
 
 class FundRequest(BaseModel):
