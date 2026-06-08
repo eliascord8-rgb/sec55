@@ -201,6 +201,13 @@ function Dashboard({ token, onLogout }) {
               Funds
             </TabsTrigger>
             <TabsTrigger
+              value="withdrawals"
+              data-testid="tab-withdrawals"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Withdrawals
+            </TabsTrigger>
+            <TabsTrigger
               value="tickets"
               data-testid="tab-tickets"
               className="data-[state=active]:bg-[#FF007F] rounded-sm"
@@ -251,6 +258,9 @@ function Dashboard({ token, onLogout }) {
           </TabsContent>
           <TabsContent value="funds">
             <FundsAdminPanel token={token} />
+          </TabsContent>
+          <TabsContent value="withdrawals">
+            <WithdrawalsAdminPanel token={token} />
           </TabsContent>
           <TabsContent value="tickets">
             <TicketsAdminPanel token={token} />
@@ -2806,6 +2816,185 @@ function FundsAdminPanel({ token }) {
     </div>
   );
 }
+
+function WithdrawalsAdminPanel({ token }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("pending");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const q = filter === "all" ? "" : `?status=${filter}`;
+      const r = await adminApi(token).get(`/admin/withdrawals${q}`);
+      setItems(r.data.withdrawals || []);
+    } catch (e) {
+      toast.error("Failed to load withdrawals");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 12000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line
+  }, [filter]);
+
+  const approve = async (id) => {
+    const hash = window.prompt(
+      "Enter the blockchain TX hash (optional — leave blank to approve without proof)",
+      "",
+    );
+    if (hash === null) return;
+    try {
+      await adminApi(token).post(`/admin/withdrawals/${id}/approve`, { tx_hash: hash || null });
+      toast.success("Withdrawal approved");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    }
+  };
+
+  const reject = async (id) => {
+    const note = window.prompt("Reason for rejection (shown to user)", "");
+    if (note === null) return;
+    if (!window.confirm("Reject this withdrawal? Funds will be refunded to the user's withdrawable balance.")) return;
+    try {
+      await adminApi(token).post(`/admin/withdrawals/${id}/reject`, { note });
+      toast.success("Withdrawal rejected & refunded");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    }
+  };
+
+  const pendingCount = items.filter((w) => w.status === "pending").length;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="text-sm text-white/60">
+          <span className="font-display font-black text-2xl text-white">{items.length}</span>{" "}
+          <span className="text-[10px] uppercase tracking-wider">in view</span>
+          {filter !== "pending" && pendingCount > 0 && (
+            <span className="ml-3 inline-flex items-center gap-1 px-2 py-1 bg-amber-500/15 text-amber-300 text-[10px] uppercase tracking-wider rounded-sm">
+              {pendingCount} pending
+            </span>
+          )}
+        </div>
+        <div className="ml-auto flex gap-1">
+          {["pending", "approved", "rejected", "all"].map((s) => (
+            <button
+              key={s}
+              data-testid={`withdraw-filter-${s}`}
+              onClick={() => setFilter(s)}
+              className={`px-3 py-1.5 text-[10px] uppercase tracking-wider rounded-sm ${
+                filter === s ? "bg-[#FF007F] text-white" : "border border-white/10 text-white/60 hover:bg-white/5"
+              }`}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm" data-testid="withdrawals-table">
+            <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14]">
+              <tr>
+                <th className="text-left px-5 py-3">Date</th>
+                <th className="text-left px-5 py-3">User</th>
+                <th className="text-right px-5 py-3">Amount</th>
+                <th className="text-left px-5 py-3">Currency</th>
+                <th className="text-left px-5 py-3">Address</th>
+                <th className="text-left px-5 py-3">Status</th>
+                <th className="text-right px-5 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={7} className="text-center py-12 text-white/40">
+                    <Loader2 className="w-5 h-5 animate-spin inline mr-2" /> Loading…
+                  </td>
+                </tr>
+              )}
+              {!loading && items.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="text-center py-12 text-white/40 text-xs">
+                    No withdrawals in this filter.
+                  </td>
+                </tr>
+              )}
+              {items.map((w) => (
+                <tr key={w.id} className="border-t border-white/5" data-testid={`withdrawal-row-${w.id}`}>
+                  <td className="px-5 py-3 text-xs font-mono text-white/60">
+                    {new Date(w.created_at).toLocaleString()}
+                  </td>
+                  <td className="px-5 py-3 text-xs">@{w.username}</td>
+                  <td className="px-5 py-3 text-right font-mono text-emerald-400">
+                    ${Math.abs(Number(w.amount)).toFixed(2)}
+                  </td>
+                  <td className="px-5 py-3 text-xs">{w.currency}</td>
+                  <td className="px-5 py-3 font-mono text-[10px] text-white/60 max-w-[260px]">
+                    <div className="truncate" title={w.address}>{w.address}</div>
+                    {w.tx_hash && (
+                      <div className="truncate text-emerald-400/80 mt-1" title={w.tx_hash}>
+                        TX: {w.tx_hash}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-5 py-3">
+                    {w.status === "pending" && (
+                      <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-amber-500/15 text-amber-400 font-bold">
+                        pending
+                      </span>
+                    )}
+                    {w.status === "approved" && (
+                      <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-emerald-500/15 text-emerald-400 font-bold">
+                        paid
+                      </span>
+                    )}
+                    {w.status === "rejected" && (
+                      <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-red-500/15 text-red-400 font-bold">
+                        rejected
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-5 py-3 text-right whitespace-nowrap">
+                    {w.status === "pending" && (
+                      <>
+                        <button
+                          onClick={() => approve(w.id)}
+                          data-testid={`withdraw-approve-${w.id}`}
+                          className="px-3 py-1 bg-emerald-500/20 text-emerald-300 rounded-sm text-[10px] uppercase tracking-wider font-bold mr-2 hover:bg-emerald-500/30"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => reject(w.id)}
+                          data-testid={`withdraw-reject-${w.id}`}
+                          className="px-3 py-1 bg-red-500/20 text-red-300 rounded-sm text-[10px] uppercase tracking-wider font-bold hover:bg-red-500/30"
+                        >
+                          Reject
+                        </button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 
 function TicketsAdminPanel({ token }) {
   const [tickets, setTickets] = useState([]);

@@ -91,6 +91,20 @@
   - Prize table: 0x (92%), 0.5x (4%), 2x (2.5%), 5x (0.9%), 10x (0.4%), 50x (0.15%), 100x (0.03%), 1000x (0.015%), **10000x (0.005% — 1 in 20,000)**. RTP ≈ 91% (house edge ~9%).
   - UI: animated reel (1.5s spin), prize table card with all 9 tiers, last-30-spins history (`GET /api/client/casino/history`). Validates stake range and balance before allowing spin.
 
+### Iteration 9 — Crypto Withdrawals + Winnings-only Cashout (Jun 8, 2026)
+- **Sidebar entry "Withdraw"** with badge showing withdrawable amount.
+- **Winnings-only rule**: separate `withdrawable_balance` field on users — incremented ONLY by casino wins. Deposits (PayPal/coupon/crypto in) cannot be withdrawn. Pending withdrawals reserve both balance + withdrawable.
+- **Withdrawal form**: amount (min $10, max-button auto-fills withdrawable), currency picker (USDT TRC-20, USDT ERC-20, BTC), wallet address. Submit → status=pending → reserved.
+- **Endpoints**:
+  - `GET /api/client/balance` now returns `{balance, withdrawable}`.
+  - `POST /api/client/withdraw {amount, currency, address}` — validates, reserves, creates pending tx.
+  - `GET /api/client/withdrawals` — user history.
+  - `GET /api/admin/withdrawals?status=pending|approved|rejected|all`.
+  - `POST /api/admin/withdrawals/{id}/approve {tx_hash?, note?}` — finalises debit.
+  - `POST /api/admin/withdrawals/{id}/reject {note?}` — releases reservation, refunds withdrawable.
+- **Admin Withdrawals tab** with filter pills (Pending/Approved/Rejected/All) + per-row Approve / Reject buttons. Approve prompts for TX hash (optional); Reject prompts for reason.
+- Verified live: $80 win → submit withdrawal → admin sees row → reject refunds correctly; approve permanently debits.
+
 ## Backlog
 ### P1
 - hCaptcha: swap test keys for production keys in backend `.env` on VPS

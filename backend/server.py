@@ -694,8 +694,15 @@ async def admin_set_paypal_config(payload: PaypalConfig, x_admin_token: Optional
 
 
 async def _get_user_balance(user_id: str) -> float:
+    """Total balance = approved txns + pending withdrawal reservations (which are negative)."""
     cur = db.transactions.aggregate([
-        {"$match": {"user_id": user_id, "status": "approved"}},
+        {"$match": {
+            "user_id": user_id,
+            "$or": [
+                {"status": "approved"},
+                {"status": "pending", "type": "withdrawal"},
+            ],
+        }},
         {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
     ])
     async for doc in cur:
@@ -703,10 +710,17 @@ async def _get_user_balance(user_id: str) -> float:
     return 0.0
 
 
+async def _get_user_withdrawable(user_id: str) -> float:
+    """Withdrawable = lifetime casino wins − (pending + approved withdrawals)."""
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "withdrawable_balance": 1})
+    return round(float((u or {}).get("withdrawable_balance", 0)), 2)
+
+
 @client_router.get("/balance")
 async def get_my_balance(user: CurrentUser = Depends(current_user_dep)):
     balance = await _get_user_balance(user.id)
-    return {"balance": balance}
+    withdrawable = await _get_user_withdrawable(user.id)
+    return {"balance": balance, "withdrawable": withdrawable}
 
 
 class RedeemCouponRequest(BaseModel):
@@ -906,6 +920,11 @@ async def casino_spin(body: CasinoSpinRequest, user: CurrentUser = Depends(curre
             "created_at": now,
             "approved_at": now,
         })
+        # Add to withdrawable bucket
+        await db_.users.update_one(
+            {"id": user.id},
+            {"$inc": {"withdrawable_balance": win_amount}},
+        )
 
     # Log into casino_rolls for admin / history
     await db_.casino_rolls.insert_one({
@@ -920,6 +939,7 @@ async def casino_spin(body: CasinoSpinRequest, user: CurrentUser = Depends(curre
     })
 
     new_balance = await _get_user_balance(user.id)
+    new_withdrawable = await _get_user_withdrawable(user.id)
     return {
         "roll_id": roll_id,
         "multiplier": multiplier,
@@ -927,6 +947,7 @@ async def casino_spin(body: CasinoSpinRequest, user: CurrentUser = Depends(curre
         "win": win_amount,
         "net": round(win_amount - stake, 4),
         "balance": new_balance,
+        "withdrawable": new_withdrawable,
     }
 
 
@@ -935,6 +956,128 @@ async def casino_history(user: CurrentUser = Depends(current_user_dep), request:
     db_: AsyncIOMotorDatabase = request.app.state.db
     items = await db_.casino_rolls.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).limit(30).to_list(30)
     return {"rolls": items}
+
+
+# ============ WITHDRAWALS ============
+
+class WithdrawRequest(BaseModel):
+    amount: float = Field(..., ge=10, le=100000)
+    currency: str = Field(..., pattern=r"^(BTC|USDT|USDT_TRC20|USDT_ERC20)$")
+    address: str = Field(..., min_length=10, max_length=200)
+
+
+@client_router.post("/withdraw")
+async def request_withdrawal(body: WithdrawRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Create a pending withdrawal. Reserves the amount from withdrawable + balance immediately."""
+    db_: AsyncIOMotorDatabase = request.app.state.db
+    amount = round(float(body.amount), 2)
+
+    # Check withdrawable bucket
+    withdrawable = await _get_user_withdrawable(user.id)
+    if amount > withdrawable:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You can only withdraw winnings (${withdrawable:.2f} available). Deposited funds cannot be withdrawn.",
+        )
+    # Sanity: ensure total balance can cover it
+    balance = await _get_user_balance(user.id)
+    if amount > balance:
+        raise HTTPException(status_code=400, detail=f"Insufficient total balance (${balance:.2f}).")
+
+    # Decrement withdrawable bucket immediately
+    res = await db_.users.update_one(
+        {"id": user.id, "withdrawable_balance": {"$gte": amount}},
+        {"$inc": {"withdrawable_balance": -amount}},
+    )
+    if res.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Withdrawable balance changed — try again.")
+
+    now = datetime.now(timezone.utc).isoformat()
+    wid = str(uuid.uuid4())
+    # Pending transaction (negative — reserves the balance)
+    await db_.transactions.insert_one({
+        "id": wid,
+        "user_id": user.id,
+        "username": user.username,
+        "amount": -amount,
+        "method": "withdrawal",
+        "status": "pending",
+        "type": "withdrawal",
+        "currency": body.currency,
+        "address": body.address.strip(),
+        "created_at": now,
+    })
+    return {"ok": True, "id": wid, "amount": amount, "status": "pending"}
+
+
+@client_router.get("/withdrawals")
+async def list_my_withdrawals(user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    db_: AsyncIOMotorDatabase = request.app.state.db
+    items = await db_.transactions.find(
+        {"user_id": user.id, "type": "withdrawal"},
+        {"_id": 0},
+    ).sort("created_at", -1).limit(50).to_list(50)
+    return {"withdrawals": items}
+
+
+@api_router.get("/admin/withdrawals")
+async def admin_list_withdrawals(x_admin_token: Optional[str] = Header(None), status: Optional[str] = None):
+    check_admin(x_admin_token)
+    q = {"type": "withdrawal"}
+    if status:
+        q["status"] = status
+    items = await db.transactions.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+    return {"withdrawals": items}
+
+
+class WithdrawDecision(BaseModel):
+    tx_hash: Optional[str] = None
+    note: Optional[str] = None
+
+
+@api_router.post("/admin/withdrawals/{tx_id}/approve")
+async def admin_approve_withdrawal(tx_id: str, body: WithdrawDecision, x_admin_token: Optional[str] = Header(None)):
+    """Mark withdrawal as approved. Money already reserved; this finalises the debit."""
+    check_admin(x_admin_token)
+    now = datetime.now(timezone.utc).isoformat()
+    res = await db.transactions.find_one_and_update(
+        {"id": tx_id, "type": "withdrawal", "status": "pending"},
+        {"$set": {
+            "status": "approved",
+            "approved_at": now,
+            "tx_hash": (body.tx_hash or "").strip() or None,
+            "admin_note": body.note,
+        }},
+        return_document=True,
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="Pending withdrawal not found")
+    return {"ok": True}
+
+
+@api_router.post("/admin/withdrawals/{tx_id}/reject")
+async def admin_reject_withdrawal(tx_id: str, body: WithdrawDecision, x_admin_token: Optional[str] = Header(None)):
+    """Reject withdrawal. Refunds withdrawable bucket."""
+    check_admin(x_admin_token)
+    now = datetime.now(timezone.utc).isoformat()
+    tx = await db.transactions.find_one_and_update(
+        {"id": tx_id, "type": "withdrawal", "status": "pending"},
+        {"$set": {
+            "status": "rejected",
+            "rejected_at": now,
+            "admin_note": body.note,
+        }},
+    )
+    if not tx:
+        raise HTTPException(status_code=404, detail="Pending withdrawal not found")
+    # Refund withdrawable bucket
+    refund_amount = abs(float(tx.get("amount", 0)))
+    if refund_amount > 0 and tx.get("user_id"):
+        await db.users.update_one(
+            {"id": tx["user_id"]},
+            {"$inc": {"withdrawable_balance": refund_amount}},
+        )
+    return {"ok": True, "refunded": refund_amount}
 
 
 class FundRequest(BaseModel):

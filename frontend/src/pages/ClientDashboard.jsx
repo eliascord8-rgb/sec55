@@ -29,6 +29,7 @@ import {
   Search,
   Zap,
   Dices,
+  ArrowUpRight,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -42,14 +43,16 @@ export default function ClientDashboard() {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [view, setView] = useState("home"); // home | funds | tickets | buy | redeem | casino
+  const [view, setView] = useState("home"); // home | funds | tickets | buy | redeem | casino | withdraw
   const [balance, setBalance] = useState(0);
+  const [withdrawable, setWithdrawable] = useState(0);
   const chatEndRef = useRef(null);
 
   const loadBalance = async () => {
     try {
       const r = await authedApi().get("/client/balance");
       setBalance(r.data.balance || 0);
+      setWithdrawable(r.data.withdrawable || 0);
     } catch {}
   };
 
@@ -201,6 +204,14 @@ export default function ClientDashboard() {
               testId="nav-casino"
             />
             <SideLink
+              icon={ArrowUpRight}
+              label="Withdraw"
+              active={view === "withdraw"}
+              onClick={() => setView("withdraw")}
+              testId="nav-withdraw"
+              badge={withdrawable > 0 ? `$${withdrawable.toFixed(2)}` : null}
+            />
+            <SideLink
               icon={LifeBuoy}
               label="Tickets"
               active={view === "tickets"}
@@ -254,6 +265,9 @@ export default function ClientDashboard() {
             )}
             {view === "casino" && (
               <CasinoView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
+            )}
+            {view === "withdraw" && (
+              <WithdrawView authedApi={authedApi} balance={balance} withdrawable={withdrawable} reloadBalance={loadBalance} />
             )}
             {view === "tickets" && <TicketsView authedApi={authedApi} />}
           </div>
@@ -860,6 +874,9 @@ function StatusPill({ status }) {
     open: { bg: "bg-amber-500/15", color: "text-amber-400", label: "open" },
     answered: { bg: "bg-emerald-500/15", color: "text-emerald-400", label: "answered" },
     closed: { bg: "bg-white/5", color: "text-white/40", label: "closed" },
+    pending: { bg: "bg-amber-500/15", color: "text-amber-400", label: "pending" },
+    approved: { bg: "bg-emerald-500/15", color: "text-emerald-400", label: "approved" },
+    rejected: { bg: "bg-red-500/15", color: "text-red-400", label: "rejected" },
   };
   const m = map[status] || map.open;
   return (
@@ -1485,6 +1502,238 @@ function CasinoView({ authedApi, balance, reloadBalance }) {
                       }`}
                     >
                       {h.net > 0 ? "+" : ""}${Number(h.net).toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+const CRYPTO_CHOICES = [
+  { id: "USDT_TRC20", label: "USDT (TRC-20)", placeholder: "T..." },
+  { id: "USDT_ERC20", label: "USDT (ERC-20)", placeholder: "0x..." },
+  { id: "BTC", label: "Bitcoin", placeholder: "bc1q... / 1... / 3..." },
+];
+
+function WithdrawView({ authedApi, balance, withdrawable, reloadBalance }) {
+  const [amount, setAmount] = useState(10);
+  const [currency, setCurrency] = useState("USDT_TRC20");
+  const [address, setAddress] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  const loadHistory = async () => {
+    try {
+      const r = await authedApi().get("/client/withdrawals");
+      setHistory(r.data.withdrawals || []);
+    } catch {}
+  };
+
+  useEffect(() => {
+    loadHistory();
+    // eslint-disable-next-line
+  }, []);
+
+  const chosen = CRYPTO_CHOICES.find((c) => c.id === currency) || CRYPTO_CHOICES[0];
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const a = Number(amount) || 0;
+    if (a < 10) {
+      toast.error("Minimum withdrawal is $10");
+      return;
+    }
+    if (a > withdrawable) {
+      toast.error(`You can only withdraw winnings ($${withdrawable.toFixed(2)} available).`);
+      return;
+    }
+    if (!address.trim() || address.trim().length < 10) {
+      toast.error("Enter a valid wallet address");
+      return;
+    }
+    setCreating(true);
+    try {
+      await authedApi().post("/client/withdraw", {
+        amount: a,
+        currency,
+        address: address.trim(),
+      });
+      toast.success("Withdrawal requested — staff will process within 24h.");
+      setAmount(10);
+      setAddress("");
+      reloadBalance();
+      loadHistory();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="font-display text-2xl md:text-4xl font-black tracking-tight flex items-center gap-3">
+          <ArrowUpRight className="w-7 h-7 text-emerald-400" /> Withdraw
+        </h1>
+        <p className="text-white/50 text-sm mt-1">
+          Cash out your casino winnings to a crypto wallet. <span className="text-amber-300 font-medium">Only winnings can be withdrawn</span> — deposited funds are for buying services.
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="bg-[#0d0a14] border border-emerald-500/30 rounded-sm p-5 relative overflow-hidden">
+          <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full blur-3xl opacity-40 bg-emerald-500" />
+          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40 relative">Withdrawable winnings</div>
+          <div className="font-display font-black text-3xl md:text-4xl text-emerald-400 mt-2 relative" data-testid="withdraw-withdrawable">
+            ${withdrawable.toFixed(2)}
+          </div>
+          <div className="text-[11px] text-white/50 mt-2 relative">
+            Min withdrawal: $10
+          </div>
+        </div>
+        <div className="bg-[#0d0a14] border border-white/5 rounded-sm p-5">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">Total balance</div>
+          <div className="font-display font-black text-3xl md:text-4xl text-[#FF007F] mt-2">
+            ${balance.toFixed(2)}
+          </div>
+          <div className="text-[11px] text-white/50 mt-2">
+            Non-withdrawable: <span className="text-white/70">${Math.max(0, balance - withdrawable).toFixed(2)}</span>
+          </div>
+        </div>
+      </div>
+
+      <form onSubmit={submit} className="bg-[#0d0a14] border border-white/5 rounded-sm p-5 md:p-6 space-y-4">
+        <h2 className="font-display font-bold text-lg">Request withdrawal</h2>
+
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Amount (USD)</Label>
+            <Input
+              data-testid="withdraw-amount"
+              type="number"
+              min="10"
+              max={Math.floor(withdrawable * 100) / 100 || 10}
+              step="1"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              className="bg-[#1a1525] border-white/10 mt-1 font-mono"
+            />
+            <div className="flex gap-1 mt-2">
+              {[10, 25, 50, 100].map((q) => (
+                <button
+                  type="button"
+                  key={q}
+                  onClick={() => setAmount(q)}
+                  disabled={q > withdrawable}
+                  data-testid={`withdraw-quick-${q}`}
+                  className="px-2 py-1 border border-white/10 rounded-sm text-[11px] hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  ${q}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setAmount(Math.floor(withdrawable * 100) / 100)}
+                disabled={withdrawable < 10}
+                data-testid="withdraw-max"
+                className="px-2 py-1 border border-emerald-500/40 text-emerald-400 rounded-sm text-[11px] hover:bg-emerald-500/10 disabled:opacity-30"
+              >
+                MAX
+              </button>
+            </div>
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Currency</Label>
+            <select
+              data-testid="withdraw-currency"
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value)}
+              className="w-full bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm text-white outline-none mt-1"
+            >
+              {CRYPTO_CHOICES.map((c) => (
+                <option key={c.id} value={c.id}>{c.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">Your {chosen.label} address</Label>
+          <Input
+            data-testid="withdraw-address"
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            placeholder={chosen.placeholder}
+            className="bg-[#1a1525] border-white/10 mt-1 font-mono text-xs"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <div className="text-[10px] text-white/40 mt-1">
+            Double-check the address — crypto sends are irreversible.
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          disabled={creating || withdrawable < 10}
+          data-testid="withdraw-submit"
+          className="w-full py-3 rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40 bg-gradient-to-r from-emerald-500 to-emerald-400 text-black hover:scale-[1.01] transition"
+        >
+          {creating ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <ArrowUpRight className="w-4 h-4" />
+          )}
+          Request withdrawal
+        </button>
+      </form>
+
+      <div className="bg-[#0d0a14] border border-white/5 rounded-sm overflow-hidden">
+        <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">
+          <h3 className="font-display font-bold text-sm">Past withdrawals</h3>
+          <span className="text-[10px] uppercase tracking-wider text-white/40">{history.length}</span>
+        </div>
+        {history.length === 0 ? (
+          <div className="px-5 py-10 text-center text-white/30 text-xs">No withdrawals yet.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-[10px] uppercase tracking-wider text-white/40">
+                <tr>
+                  <th className="text-left px-5 py-2">Date</th>
+                  <th className="text-left px-5 py-2">Amount</th>
+                  <th className="text-left px-5 py-2">Currency</th>
+                  <th className="text-left px-5 py-2">Address</th>
+                  <th className="text-left px-5 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((w) => (
+                  <tr key={w.id} className="border-t border-white/5" data-testid={`withdraw-row-${w.id}`}>
+                    <td className="px-5 py-2 text-white/60 text-xs font-mono">
+                      {new Date(w.created_at).toLocaleString()}
+                    </td>
+                    <td className="px-5 py-2 font-mono text-emerald-400">
+                      ${Math.abs(Number(w.amount)).toFixed(2)}
+                    </td>
+                    <td className="px-5 py-2 text-xs text-white/70">{w.currency}</td>
+                    <td className="px-5 py-2 font-mono text-[10px] text-white/40 max-w-[180px] truncate" title={w.address}>
+                      {w.address}
+                    </td>
+                    <td className="px-5 py-2">
+                      <StatusPill status={w.status} />
+                      {w.tx_hash && (
+                        <div className="text-[10px] text-white/40 font-mono mt-1 truncate max-w-[160px]" title={w.tx_hash}>
+                          {w.tx_hash}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
