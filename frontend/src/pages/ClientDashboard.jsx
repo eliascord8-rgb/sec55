@@ -94,6 +94,22 @@ export default function ClientDashboard() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
 
+  // Selly return handler — show toast and jump to Funds view
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("selly_funds") === "1") {
+      toast.success("Payment received — your balance will update once Selly confirms (usually within a minute).", { duration: 8000 });
+      setView("funds");
+      // Strip query so reload doesn't replay
+      window.history.replaceState({}, "", "/client/dashboard");
+      // Force-refresh balance soon after
+      const t1 = setTimeout(() => loadBalance(), 4000);
+      const t2 = setTimeout(() => loadBalance(), 15000);
+      return () => { clearTimeout(t1); clearTimeout(t2); };
+    }
+    // eslint-disable-next-line
+  }, []);
+
   const send = async (e) => {
     e?.preventDefault();
     const t = text.trim();
@@ -500,6 +516,23 @@ function FundsView({ authedApi, balance, reloadBalance }) {
     }
   };
 
+  const paySelly = async () => {
+    const a = Number(amount) || 0;
+    if (a < 5) {
+      toast.error("Min $5 for Selly checkout");
+      return;
+    }
+    setCreating(true);
+    try {
+      const r = await authedApi().post("/client/funds/selly-create", { amount: a });
+      // Redirect to hosted Selly checkout
+      window.location.href = r.data.checkout_url;
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to start Selly checkout");
+      setCreating(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -558,6 +591,17 @@ function FundsView({ authedApi, balance, reloadBalance }) {
               ${q}
             </button>
           ))}
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button
+            onClick={paySelly}
+            disabled={creating || Number(amount) < 5}
+            data-testid="funds-pay-selly"
+            className="flex-1 py-3 rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40 bg-gradient-to-r from-emerald-500 to-emerald-400 text-black hover:scale-[1.01] transition"
+          >
+            {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+            Pay ${Number(amount) || 0} via Selly (Crypto · Card)
+          </button>
         </div>
         <div className="flex flex-col sm:flex-row gap-2">
           <button

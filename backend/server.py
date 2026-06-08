@@ -1163,6 +1163,206 @@ async def request_funds(body: FundRequest, user: CurrentUser = Depends(current_u
     return {"ok": True, "id": doc["id"], "status": "pending"}
 
 
+# ============ SELLY.IO PAYMENTS ============
+
+SELLY_API_KEY = os.environ.get("SELLY_API_KEY", "")
+SELLY_WEBHOOK_SECRET = os.environ.get("SELLY_WEBHOOK_SECRET", "")
+SELLY_API_BASE = "https://selly.io/api/v2"
+
+
+async def _create_selly_invoice(amount_usd: float, title: str, metadata: dict, return_url: str) -> dict:
+    """Create a hosted Selly Payment Request and return {id, url}."""
+    if not SELLY_API_KEY or SELLY_API_KEY.startswith("replace-"):
+        raise HTTPException(status_code=503, detail="Selly is not configured — admin must set SELLY_API_KEY")
+    payload = {
+        "title": title[:200],
+        "currency": "USD",
+        "value": round(float(amount_usd), 2),
+        "white_label": False,
+        "return_url": return_url,
+        "metadata": metadata,
+    }
+    async with httpx.AsyncClient(timeout=20.0) as c:
+        r = await c.post(
+            f"{SELLY_API_BASE}/payment-requests",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {SELLY_API_KEY}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        if r.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"Selly error {r.status_code}: {r.text[:200]}")
+        data = r.json()
+    pr = data.get("payment_request") or data
+    url = pr.get("url") or pr.get("payment_url") or data.get("url")
+    pid = pr.get("id") or data.get("id")
+    if not url:
+        raise HTTPException(status_code=502, detail=f"Selly did not return checkout URL: {str(data)[:200]}")
+    return {"id": pid, "url": url}
+
+
+class SellyFundsRequest(BaseModel):
+    amount: float = Field(..., ge=5, le=10000)
+
+
+@client_router.post("/funds/selly-create")
+async def selly_create_funds(body: SellyFundsRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Create a Selly payment request to top up user balance."""
+    tx_id = str(uuid.uuid4())
+    amount = round(float(body.amount), 2)
+    origin = request.headers.get("origin", "").rstrip("/") or request.headers.get("referer", "").split("/api")[0]
+    # Pre-create a pending deposit row
+    await db.transactions.insert_one({
+        "id": tx_id,
+        "user_id": user.id,
+        "username": user.username,
+        "amount": amount,
+        "method": "selly",
+        "status": "pending",
+        "type": "deposit",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    invoice = await _create_selly_invoice(
+        amount_usd=amount,
+        title=f"Better Social — Add ${amount:.2f} for @{user.username}",
+        metadata={"kind": "funds", "tx_id": tx_id, "user_id": user.id, "username": user.username, "amount": amount},
+        return_url=f"{origin}/client/dashboard?selly_funds=1&tx={tx_id}",
+    )
+    await db.transactions.update_one(
+        {"id": tx_id},
+        {"$set": {"selly_payment_id": invoice["id"], "selly_url": invoice["url"]}},
+    )
+    return {"id": tx_id, "checkout_url": invoice["url"]}
+
+
+class SellyCheckoutRequest(BaseModel):
+    service_id: int
+    link: str
+    quantity: int
+    customer_email: str
+    price_usd: float
+    comments: Optional[str] = None
+
+
+@api_router.post("/checkout/selly-create")
+async def selly_create_checkout(body: SellyCheckoutRequest, request: Request):
+    """Public — Landing-page Selly checkout for one-off service purchase."""
+    svc = await db.curated_services.find_one(
+        {"service_id": body.service_id, "enabled": True}, {"_id": 0},
+    )
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not available")
+    needs_custom = bool(svc.get("needs_custom_text"))
+    comments = (body.comments or "").strip() or None
+    if needs_custom and not comments:
+        raise HTTPException(status_code=400, detail="This service requires custom comments.")
+    order_id = str(uuid.uuid4())
+    origin = request.headers.get("origin", "").rstrip("/") or request.headers.get("referer", "").split("/api")[0]
+    await db.orders.insert_one({
+        "id": order_id,
+        "service_id": body.service_id,
+        "link": body.link,
+        "quantity": body.quantity,
+        "price_usd": round(float(body.price_usd), 4),
+        "payment_method": "selly",
+        "customer_email": body.customer_email or "",
+        "ip": get_client_ip(request),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "PENDING_PAYMENT",
+        "smm_order_id": None,
+        "smm_response": None,
+        "comments": comments,
+        "provider_id": svc.get("provider_id"),
+    })
+    invoice = await _create_selly_invoice(
+        amount_usd=body.price_usd,
+        title=f"Better Social — {svc.get('name','order')[:80]}",
+        metadata={"kind": "order", "order_id": order_id, "service_id": body.service_id},
+        return_url=f"{origin}/?selly_order=1&order={order_id}",
+    )
+    await db.orders.update_one({"id": order_id}, {"$set": {"selly_payment_id": invoice["id"]}})
+    return {"id": order_id, "checkout_url": invoice["url"]}
+
+
+def _verify_selly_signature(raw_body: bytes, signature_header: Optional[str]) -> bool:
+    if not signature_header or not SELLY_WEBHOOK_SECRET or SELLY_WEBHOOK_SECRET.startswith("replace-"):
+        return False
+    expected = hmac.new(SELLY_WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha512).hexdigest()
+    return hmac.compare_digest(expected, signature_header)
+
+
+@api_router.post("/selly/webhook")
+async def selly_webhook(request: Request):
+    raw_body = await request.body()
+    sig = request.headers.get("X-Selly-Signature") or request.headers.get("x-selly-signature")
+    event = request.headers.get("X-Selly-Event") or request.headers.get("x-selly-event") or ""
+    if not _verify_selly_signature(raw_body, sig):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    try:
+        payload = jsonlib.loads(raw_body.decode("utf-8") or "{}")
+    except jsonlib.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Bad JSON")
+    # Selly emits various order events. Only act when payment is fully completed.
+    # Known completion events: "order:paid", "order:updated" (status=completed), "payment_request:completed"
+    status_field = (payload.get("status") or payload.get("order", {}).get("status") or "").lower()
+    is_paid = (
+        event.endswith(":paid")
+        or event.endswith(":completed")
+        or status_field in ("paid", "completed")
+    )
+    if not is_paid:
+        return {"ok": True, "ignored": event}
+
+    # Extract metadata
+    meta = payload.get("metadata") or payload.get("order", {}).get("metadata") or {}
+    kind = meta.get("kind")
+
+    if kind == "funds":
+        tx_id = meta.get("tx_id")
+        if not tx_id:
+            return {"ok": True, "warn": "no tx_id in metadata"}
+        tx = await db.transactions.find_one_and_update(
+            {"id": tx_id, "status": "pending"},
+            {"$set": {"status": "approved", "approved_at": datetime.now(timezone.utc).isoformat(), "selly_event": event}},
+        )
+        return {"ok": True, "credited": bool(tx)}
+
+    if kind == "order":
+        order_id = meta.get("order_id")
+        if not order_id:
+            return {"ok": True, "warn": "no order_id in metadata"}
+        order = await db.orders.find_one({"id": order_id})
+        if not order or order.get("smm_order_id"):
+            return {"ok": True, "already": True}
+        try:
+            smm_resp = await place_smm_order(
+                order["service_id"], order["link"], order["quantity"],
+                comments=order.get("comments"), provider_id=order.get("provider_id"),
+            )
+            await db.orders.update_one(
+                {"id": order_id},
+                {"$set": {
+                    "status": "Completed",
+                    "smm_order_id": smm_resp.get("order"),
+                    "smm_response": smm_resp,
+                    "paid_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+        except Exception as e:
+            await db.orders.update_one(
+                {"id": order_id},
+                {"$set": {"status": "PAID_SMM_FAILED", "smm_error": str(e)[:300]}},
+            )
+        return {"ok": True}
+
+    return {"ok": True, "kind": kind or "unknown"}
+
+
+
+
+
 @api_router.get("/admin/transactions")
 async def admin_list_transactions(
     x_admin_token: Optional[str] = Header(None),
