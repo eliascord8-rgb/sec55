@@ -115,6 +115,21 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
     }
     setSubmitting(true);
     try {
+      // Selly = hosted checkout: create payment-request, redirect to Selly's URL
+      if (method === "selly") {
+        const sr = await api.post("/checkout/selly-create", {
+          service_id: Number(selected.service),
+          link,
+          quantity: Number(qty),
+          customer_email: email || "",
+          price_usd: Number(price.toFixed(4)),
+          comments: selected.needs_custom_text ? comments.trim() : null,
+        });
+        if (sr.data.checkout_url) {
+          window.location.href = sr.data.checkout_url;
+          return;
+        }
+      }
       const r = await api.post("/checkout", {
         service_id: Number(selected.service),
         link,
@@ -375,11 +390,11 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                       <Ticket className="w-4 h-4 mr-2" /> Coupon
                     </TabsTrigger>
                     <TabsTrigger
-                      value="coinpayments"
-                      data-testid="tab-coinpayments"
-                      className="data-[state=active]:bg-[#7000FF] data-[state=active]:text-white rounded-sm"
+                      value="selly"
+                      data-testid="tab-selly"
+                      className="data-[state=active]:bg-emerald-500 data-[state=active]:text-black rounded-sm"
                     >
-                      <Bitcoin className="w-4 h-4 mr-2" /> CoinPayments
+                      <Bitcoin className="w-4 h-4 mr-2" /> Crypto / Card
                     </TabsTrigger>
                   </TabsList>
 
@@ -410,11 +425,15 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                     )}
                   </TabsContent>
 
-                  <TabsContent value="coinpayments" className="mt-3">
-                    <p className="text-xs text-white/50 leading-relaxed">
-                      Pay with BTC, ETH, USDT, LTC and more. After confirming the transaction we'll auto-fulfil
-                      your SMM order.
-                    </p>
+                  <TabsContent value="selly" className="mt-3">
+                    <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-sm p-3 space-y-2">
+                      <p className="text-xs text-white/80 leading-relaxed">
+                        Pay with <span className="font-bold text-emerald-400">BTC, ETH, LTC, USDT</span> or <span className="font-bold text-emerald-400">credit card</span> via secure Selly checkout.
+                      </p>
+                      <p className="text-[10px] text-white/50">
+                        You&apos;ll be redirected to Selly&apos;s hosted page. After confirmation we&apos;ll auto-place your SMM order.
+                      </p>
+                    </div>
                   </TabsContent>
                 </Tabs>
 
@@ -433,6 +452,8 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                   >
                     {submitting ? (
                       <Loader2 className="w-4 h-4 animate-spin mx-auto" />
+                    ) : method === "selly" ? (
+                      `Continue to Selly · ${fmt(price)}`
                     ) : (
                       `Place Order · ${fmt(price)}`
                     )}

@@ -114,6 +114,24 @@
   - AI Widget: system prompt updated to ask "Which comments?" before READY_TO_ORDER; READY_TO_ORDER JSON now includes optional `comments` field; widget passes it through to `/confirm-order`.
 - Public `/api/services` payload now includes `needs_custom_text`, `provider_id`, `provider_name`.
 
+### Iteration 11 — Selly.io payments (Add Funds + Landing checkout) (Jun 8, 2026)
+- **Selly.io integration** replaces Cryptomus on the public landing page and adds a new "Pay via Selly" button in the Client Dashboard Add Funds view. Supports BTC/ETH/USDT/LTC crypto + Visa/Mastercard via Selly's hosted checkout.
+- **Backend**:
+  - New env vars: `SELLY_API_KEY`, `SELLY_WEBHOOK_SECRET` (placeholders in `.env`; admin must set real values on VPS).
+  - `_create_selly_invoice()` helper calls `POST https://selly.io/api/v2/payment-requests` with USD value + metadata + return_url. Returns `{id, url}`.
+  - `POST /api/client/funds/selly-create` (auth required, min $5) — pre-creates a pending deposit tx then redirects user to Selly checkout. On payment webhook, tx flips to `approved` → balance updated automatically.
+  - `POST /api/checkout/selly-create` (public) — landing-page service order. Pre-creates order in `PENDING_PAYMENT` state then redirects to Selly. On payment webhook, auto-routes to `place_smm_order()` with the correct provider_id.
+  - `POST /api/selly/webhook` — verifies `X-Selly-Signature` (HMAC-SHA512 over raw body) using `hmac.compare_digest`. Ignores non-paid events; on completion event, dispatches by `metadata.kind` (`funds` → approve tx; `order` → place SMM order).
+- **Frontend**:
+  - Dashboard FundsView: emerald "Pay $X via Selly (Crypto · Card)" button above existing PayPal flow.
+  - CheckoutDialog: Cryptomus tab replaced with "Crypto / Card" tab (emerald). Submit redirects to Selly hosted page.
+  - Dashboard auto-detects `?selly_funds=1&tx=...` return URL → toast + jump to Funds view + force-refresh balance.
+  - Landing auto-detects `?selly_order=1&order=...` → toast confirming payment received.
+  - Landing marketing copy updated (Two ways to pay, How it works, FAQ) — replaces CoinPayments references with Selly.
+- **Backend verified via curl**:
+  - Webhook signature verification: rejects bad sig (401), accepts correctly-signed HMAC-SHA512 payload (200).
+  - Funds-create with no API key → 503 "Selly is not configured".
+
 ## Backlog
 ### P1
 - hCaptcha: swap test keys for production keys in backend `.env` on VPS

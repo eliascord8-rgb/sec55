@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { toast } from "sonner";
 import Header from "@/components/Header";
 import ServicesCatalog from "@/components/ServicesCatalog";
 import AIWidget from "@/components/AIWidget";
@@ -18,7 +19,7 @@ const FEATURES = [
   {
     icon: Coins,
     title: "Crypto + Coupon",
-    desc: "Pay via CoinPayments (BTC, ETH, USDT…) or redeem a Better Social gift card. Zero login.",
+    desc: "Pay via Selly (crypto BTC/ETH/USDT/LTC + credit card) or redeem a Better Social gift card. Zero login.",
   },
   {
     icon: Shield,
@@ -35,7 +36,7 @@ const FEATURES = [
 const STEPS = [
   { n: "01", t: "Pick a service", d: "Browse the live catalog. Filter by network, sort by price." },
   { n: "02", t: "Drop the link", d: "Public profile or post URL. Set the quantity you want." },
-  { n: "03", t: "Pay your way", d: "Crypto via CoinPayments or a Better Social coupon balance." },
+  { n: "03", t: "Pay your way", d: "Crypto + Card via Selly checkout, or a Better Social coupon balance." },
   { n: "04", t: "Watch it flow", d: "Order is auto-pushed to providers and starts in real time." },
 ];
 
@@ -50,7 +51,7 @@ const FAQ = [
   },
   {
     q: "Which cryptos are accepted?",
-    a: "Anything CoinPayments supports — BTC, ETH, USDT, LTC, DOGE, BCH and 40+ more.",
+    a: "Crypto: BTC, ETH, USDT, LTC and more via Selly checkout. Also credit/debit cards.",
   },
   {
     q: "When does my order start?",
@@ -64,6 +65,11 @@ export default function Landing() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("selly_order") === "1") {
+      toast.success("Payment received! Your order will be auto-placed within ~60s of Selly's final confirmation.", { duration: 9000 });
+      window.history.replaceState({}, "", "/");
+    }
     api
       .get("/services")
       .then((r) => {
@@ -230,9 +236,9 @@ export default function Landing() {
               <div className="flex gap-4 p-5 rounded-sm border border-white/5 bg-[#1a1525]">
                 <Coins className="w-6 h-6 text-[#FF007F] shrink-0 mt-1" />
                 <div>
-                  <div className="font-bold mb-1">CoinPayments</div>
+                  <div className="font-bold mb-1">Crypto & Card via Selly</div>
                   <div className="text-sm text-white/50">
-                    BTC, ETH, USDT, LTC, DOGE… 40+ assets. Auto-fulfil on confirmation.
+                    BTC, ETH, USDT, LTC + Visa/Mastercard. Hosted secure checkout. Auto-fulfil on confirmation.
                   </div>
                 </div>
               </div>
