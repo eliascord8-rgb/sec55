@@ -24,6 +24,7 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
   const [submitting, setSubmitting] = useState(false);
   const [pendingTx, setPendingTx] = useState(null);
   const [comments, setComments] = useState("");
+  const [sellyGateway, setSellyGateway] = useState("bitcoin");
 
   useEffect(() => {
     if (!open) return;
@@ -124,6 +125,7 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
           customer_email: email || "",
           price_usd: Number(price.toFixed(4)),
           comments: selected.needs_custom_text ? comments.trim() : null,
+          gateway: sellyGateway,
         });
         if (sr.data.checkout_url) {
           window.location.href = sr.data.checkout_url;
@@ -426,10 +428,37 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                   </TabsContent>
 
                   <TabsContent value="selly" className="mt-3">
-                    <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-sm p-3 space-y-2">
+                    <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-sm p-3 space-y-3">
                       <p className="text-xs text-white/80 leading-relaxed">
-                        Pay with <span className="font-bold text-emerald-400">BTC, ETH, LTC, USDT</span> or <span className="font-bold text-emerald-400">credit card</span> via secure Selly checkout.
+                        Pay with <span className="font-bold text-emerald-400">BTC, ETH, LTC</span> or <span className="font-bold text-emerald-400">credit card</span> via secure Selly checkout.
                       </p>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-white/60 mb-2">Choose payment method</div>
+                        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                          {[
+                            { id: "bitcoin", label: "BTC" },
+                            { id: "ethereum", label: "ETH" },
+                            { id: "litecoin", label: "LTC" },
+                            { id: "bitcoin_cash", label: "BCH" },
+                            { id: "dogecoin", label: "DOGE" },
+                            { id: "stripe", label: "Card" },
+                          ].map((g) => (
+                            <button
+                              key={g.id}
+                              type="button"
+                              onClick={() => setSellyGateway(g.id)}
+                              data-testid={`selly-gateway-${g.id}`}
+                              className={`px-2 py-1.5 text-[11px] rounded-sm border transition ${
+                                sellyGateway === g.id
+                                  ? "border-emerald-400 bg-emerald-500/20 text-emerald-200 font-bold"
+                                  : "border-white/10 text-white/60 hover:bg-white/5"
+                              }`}
+                            >
+                              {g.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       <p className="text-[10px] text-white/50">
                         You&apos;ll be redirected to Selly&apos;s hosted page. After confirmation we&apos;ll auto-place your SMM order.
                       </p>

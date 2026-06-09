@@ -1310,20 +1310,29 @@ async def _get_selly_key() -> str:
     return key
 
 
-async def _create_selly_invoice(amount_usd: float, title: str, metadata: dict, return_url: str) -> dict:
+SELLY_VALID_GATEWAYS = {
+    "bitcoin", "ethereum", "litecoin", "bitcoin_cash", "dogecoin", "bnb",
+    "polygon", "perfect_money", "skrill", "paypal", "stripe", "cashapp",
+}
+
+
+async def _create_selly_invoice(amount_usd: float, title: str, metadata: dict, return_url: str, payment_gateway: str = "bitcoin") -> dict:
     """Create a hosted Selly Payment Request and return {id, url}."""
     api_key = await _get_selly_key()
+    gateway = (payment_gateway or "bitcoin").lower().strip()
+    if gateway not in SELLY_VALID_GATEWAYS:
+        gateway = "bitcoin"
     payload = {
         "title": title[:200],
         "currency": "USD",
-        "value": round(float(amount_usd), 2),
-        "white_label": False,
+        "value": f"{round(float(amount_usd), 2):.2f}",
+        "payment_gateway": gateway,
         "return_url": return_url,
         "metadata": metadata,
     }
     async with httpx.AsyncClient(timeout=20.0) as c:
         r = await c.post(
-            f"{SELLY_API_BASE}/payment-requests",
+            f"{SELLY_API_BASE}/payment_requests",
             json=payload,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -1332,13 +1341,13 @@ async def _create_selly_invoice(amount_usd: float, title: str, metadata: dict, r
             },
         )
         if r.status_code >= 400:
-            raise HTTPException(status_code=502, detail=f"Selly error {r.status_code}: {r.text[:200]}")
+            raise HTTPException(status_code=502, detail=f"Selly error {r.status_code}: {r.text[:300]}")
         data = r.json()
     pr = data.get("payment_request") or data
     url = pr.get("url") or pr.get("payment_url") or data.get("url")
     pid = pr.get("id") or data.get("id")
     if not url:
-        raise HTTPException(status_code=502, detail=f"Selly did not return checkout URL: {str(data)[:200]}")
+        raise HTTPException(status_code=502, detail=f"Selly did not return checkout URL: {str(data)[:300]}")
     return {"id": pid, "url": url}
 
 
@@ -1347,7 +1356,7 @@ async def _verify_selly_payment(payment_id: str) -> dict:
     api_key = await _get_selly_key()
     async with httpx.AsyncClient(timeout=15.0) as c:
         # Try payment-requests first, then orders
-        for path in (f"/payment-requests/{payment_id}", f"/orders/{payment_id}"):
+        for path in (f"/payment_requests/{payment_id}", f"/orders/{payment_id}"):
             try:
                 r = await c.get(
                     f"{SELLY_API_BASE}{path}",
@@ -1362,6 +1371,7 @@ async def _verify_selly_payment(payment_id: str) -> dict:
 
 class SellyFundsRequest(BaseModel):
     amount: float = Field(..., ge=5, le=10000)
+    gateway: Optional[str] = "bitcoin"
 
 
 @client_router.post("/funds/selly-create")
@@ -1386,6 +1396,7 @@ async def selly_create_funds(body: SellyFundsRequest, user: CurrentUser = Depend
         title=f"Better Social — Add ${amount:.2f} for @{user.username}",
         metadata={"kind": "funds", "tx_id": tx_id, "user_id": user.id, "username": user.username, "amount": amount},
         return_url=f"{origin}/client/dashboard?selly_funds=1&tx={tx_id}",
+        payment_gateway=body.gateway or "bitcoin",
     )
     await db.transactions.update_one(
         {"id": tx_id},
@@ -1401,6 +1412,7 @@ class SellyCheckoutRequest(BaseModel):
     customer_email: str
     price_usd: float
     comments: Optional[str] = None
+    gateway: Optional[str] = "bitcoin"
 
 
 @api_router.post("/checkout/selly-create")
@@ -1438,6 +1450,7 @@ async def selly_create_checkout(body: SellyCheckoutRequest, request: Request):
         title=f"Better Social — {svc.get('name','order')[:80]}",
         metadata={"kind": "order", "order_id": order_id, "service_id": body.service_id},
         return_url=f"{origin}/?selly_order=1&order={order_id}",
+        payment_gateway=body.gateway or "bitcoin",
     )
     await db.orders.update_one({"id": order_id}, {"$set": {"selly_payment_id": invoice["id"]}})
     return {"id": order_id, "checkout_url": invoice["url"]}
