@@ -46,6 +46,7 @@ export default function ClientDashboard() {
   const [view, setView] = useState("home"); // home | funds | tickets | buy | redeem | casino | withdraw
   const [balance, setBalance] = useState(0);
   const [withdrawable, setWithdrawable] = useState(0);
+  const [unreadTickets, setUnreadTickets] = useState(0);
   const chatEndRef = useRef(null);
 
   const loadBalance = async () => {
@@ -55,6 +56,32 @@ export default function ClientDashboard() {
       setWithdrawable(r.data.withdrawable || 0);
     } catch {}
   };
+
+  const loadUnreadTickets = async () => {
+    try {
+      const r = await authedApi().get("/client/tickets-unread-count");
+      setUnreadTickets(r.data.unread || 0);
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (user) {
+      loadUnreadTickets();
+      const t = setInterval(loadUnreadTickets, 15000);
+      return () => clearInterval(t);
+    }
+    // eslint-disable-next-line
+  }, [user]);
+
+  // Clear badge instantly when user opens the Tickets view
+  useEffect(() => {
+    if (view === "tickets") {
+      // Give the TicketsView a beat to load, then reload count
+      const t = setTimeout(loadUnreadTickets, 1500);
+      return () => clearTimeout(t);
+    }
+    // eslint-disable-next-line
+  }, [view]);
 
   useEffect(() => {
     if (!loading && !user) nav("/client");
@@ -181,8 +208,11 @@ export default function ClientDashboard() {
           {/* SIDEBAR */}
           <aside
             data-testid="dashboard-sidebar"
-            className="bg-[#0d0a14] border border-white/5 rounded-sm p-2 h-fit lg:sticky lg:top-20"
+            className="bg-gradient-to-b from-[#0d0a14] via-[#0d0a14] to-[#13091a] border border-white/5 rounded-sm p-3 h-fit lg:sticky lg:top-20 space-y-0.5"
           >
+            <div className="px-3 pt-1 pb-2 text-[9px] uppercase tracking-[0.25em] text-white/30">
+              Overview
+            </div>
             <SideLink
               icon={LayoutDashboard}
               label="Dashboard"
@@ -190,6 +220,10 @@ export default function ClientDashboard() {
               onClick={() => setView("home")}
               testId="nav-home"
             />
+
+            <div className="px-3 pt-4 pb-2 text-[9px] uppercase tracking-[0.25em] text-white/30">
+              Wallet
+            </div>
             <SideLink
               icon={CreditCard}
               label="Add Funds"
@@ -199,25 +233,11 @@ export default function ClientDashboard() {
               badge={`$${balance.toFixed(2)}`}
             />
             <SideLink
-              icon={ShoppingBag}
-              label="Buy Services"
-              active={view === "buy"}
-              onClick={() => setView("buy")}
-              testId="nav-buy"
-            />
-            <SideLink
               icon={Ticket}
               label="Redeem Coupon"
               active={view === "redeem"}
               onClick={() => setView("redeem")}
               testId="nav-redeem"
-            />
-            <SideLink
-              icon={Dices}
-              label="Try Chance"
-              active={view === "casino"}
-              onClick={() => setView("casino")}
-              testId="nav-casino"
             />
             <SideLink
               icon={ArrowUpRight}
@@ -227,21 +247,45 @@ export default function ClientDashboard() {
               testId="nav-withdraw"
               badge={withdrawable > 0 ? `$${withdrawable.toFixed(2)}` : null}
             />
+
+            <div className="px-3 pt-4 pb-2 text-[9px] uppercase tracking-[0.25em] text-white/30">
+              Buy & play
+            </div>
+            <SideLink
+              icon={ShoppingBag}
+              label="Buy Services"
+              active={view === "buy"}
+              onClick={() => setView("buy")}
+              testId="nav-buy"
+            />
+            <SideLink
+              icon={Dices}
+              label="Try Chance"
+              active={view === "casino"}
+              onClick={() => setView("casino")}
+              testId="nav-casino"
+            />
+
+            <div className="px-3 pt-4 pb-2 text-[9px] uppercase tracking-[0.25em] text-white/30">
+              Support
+            </div>
             <SideLink
               icon={LifeBuoy}
               label="Tickets"
               active={view === "tickets"}
               onClick={() => setView("tickets")}
               testId="nav-tickets"
+              badge={unreadTickets > 0 ? unreadTickets : null}
+              badgeKind="alert"
             />
             <Link
               to="/"
-              className="flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm text-white/60 hover:text-white hover:bg-white/5 transition"
+              className="flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm text-white/60 hover:text-white hover:bg-white/[0.04] transition border-l-2 border-transparent"
               data-testid="nav-catalog"
             >
               <ExternalLink className="w-4 h-4" />
-              <span>Public Landing</span>
-              <ExternalLink className="w-3 h-3 ml-auto opacity-50" />
+              <span className="flex-1">Public Landing</span>
+              <ExternalLink className="w-3 h-3 opacity-40" />
             </Link>
             <button
               onClick={() => {
@@ -377,21 +421,29 @@ function Msg({ m }) {
   );
 }
 
-function SideLink({ icon: Icon, label, active, onClick, testId, badge }) {
+function SideLink({ icon: Icon, label, active, onClick, testId, badge, badgeKind }) {
   return (
     <button
       onClick={onClick}
       data-testid={testId}
-      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm transition ${
+      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm transition group ${
         active
-          ? "bg-[#FF007F]/15 text-white border-l-2 border-[#FF007F]"
-          : "text-white/60 hover:text-white hover:bg-white/5"
+          ? "bg-gradient-to-r from-[#FF007F]/20 to-transparent text-white border-l-2 border-[#FF007F]"
+          : "text-white/60 hover:text-white hover:bg-white/[0.04] border-l-2 border-transparent"
       }`}
     >
-      <Icon className="w-4 h-4" />
+      <Icon className={`w-4 h-4 transition ${active ? "text-[#FF007F]" : "group-hover:text-white"}`} />
       <span className="flex-1 text-left">{label}</span>
-      {badge != null && (
-        <span className="text-[10px] font-mono text-white/40">{badge}</span>
+      {badge != null && badgeKind === "alert" && (
+        <span
+          data-testid={`${testId}-badge`}
+          className="min-w-[20px] h-5 px-1.5 inline-flex items-center justify-center text-[10px] font-bold rounded-full bg-red-500 text-white shadow-[0_0_10px_rgba(239,68,68,0.6)] animate-pulse"
+        >
+          {badge}
+        </span>
+      )}
+      {badge != null && badgeKind !== "alert" && (
+        <span className="text-[10px] font-mono text-emerald-400">{badge}</span>
       )}
     </button>
   );
@@ -457,16 +509,8 @@ function HomeView({ user, stats, messages, send, sending, text, setText, chatEnd
 
 function FundsView({ authedApi, balance, reloadBalance }) {
   const [amount, setAmount] = useState(10);
-  const [paypal, setPaypal] = useState({ paypal_email: "", paypal_me_url: "", configured: false });
   const [txns, setTxns] = useState([]);
   const [creating, setCreating] = useState(false);
-
-  const loadConfig = async () => {
-    try {
-      const r = await api.get("/paypal-config");
-      setPaypal(r.data);
-    } catch {}
-  };
 
   const loadTxns = async () => {
     try {
@@ -476,45 +520,9 @@ function FundsView({ authedApi, balance, reloadBalance }) {
   };
 
   useEffect(() => {
-    loadConfig();
     loadTxns();
     // eslint-disable-next-line
   }, []);
-
-  const openPaypal = () => {
-    if (!paypal.paypal_me_url) {
-      toast.error("PayPal not configured yet — please use crypto or contact support.");
-      return;
-    }
-    const a = Number(amount) || 0;
-    if (a < 1) {
-      toast.error("Min $1");
-      return;
-    }
-    // paypal.me/USER/AMOUNT opens with prefilled amount
-    const url = paypal.paypal_me_url.replace(/\/$/, "") + `/${a}`;
-    window.open(url, "_blank");
-  };
-
-  const submitRequest = async () => {
-    const a = Number(amount) || 0;
-    if (a < 1) {
-      toast.error("Min $1");
-      return;
-    }
-    setCreating(true);
-    try {
-      await authedApi().post("/client/funds/request", { amount: a, method: "paypal" });
-      toast.success("Submitted — staff will credit your account after verifying payment.");
-      setAmount(10);
-      loadTxns();
-      reloadBalance();
-    } catch (err) {
-      toast.error(err.response?.data?.detail || "Failed");
-    } finally {
-      setCreating(false);
-    }
-  };
 
   const paySelly = async () => {
     const a = Number(amount) || 0;
@@ -525,7 +533,6 @@ function FundsView({ authedApi, balance, reloadBalance }) {
     setCreating(true);
     try {
       const r = await authedApi().post("/client/funds/selly-create", { amount: a });
-      // Redirect to hosted Selly checkout
       window.location.href = r.data.checkout_url;
     } catch (err) {
       toast.error(err.response?.data?.detail || "Failed to start Selly checkout");
@@ -543,28 +550,28 @@ function FundsView({ authedApi, balance, reloadBalance }) {
       </div>
 
       <div className="grid md:grid-cols-2 gap-4">
-        <div className="bg-[#0d0a14] border border-white/5 rounded-sm p-5">
-          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">Current balance</div>
-          <div className="font-display font-black text-3xl md:text-4xl text-[#FF007F] mt-2" data-testid="funds-balance">
+        <div className="bg-[#0d0a14] border border-white/5 rounded-sm p-5 relative overflow-hidden">
+          <div className="absolute -top-12 -right-12 w-32 h-32 rounded-full blur-3xl opacity-30 bg-[#FF007F]" />
+          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40 relative">Current balance</div>
+          <div className="font-display font-black text-3xl md:text-4xl text-[#FF007F] mt-2 relative" data-testid="funds-balance">
             ${balance.toFixed(2)}
           </div>
         </div>
-        <div className="bg-[#0d0a14] border border-white/5 rounded-sm p-5">
-          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">Payment method</div>
-          <div className="font-display font-bold text-lg mt-2 flex items-center gap-2">
-            <img alt="PayPal" src="https://www.paypalobjects.com/webstatic/icon/pp32.png" className="w-5 h-5" />
-            PayPal
+        <div className="bg-[#0d0a14] border border-emerald-500/30 rounded-sm p-5">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">Payment options</div>
+          <div className="font-display font-bold text-lg mt-2 text-emerald-300">
+            Crypto · Visa · Mastercard
           </div>
           <div className="text-[11px] text-white/40 mt-1">
-            {paypal.configured ? "Manual approval after payment" : "Not configured — contact support"}
+            Instant credit after Selly confirms payment
           </div>
         </div>
       </div>
 
       <div className="bg-[#0d0a14] border border-white/5 rounded-sm p-5 md:p-6">
-        <h2 className="font-display font-bold text-lg mb-1">Top up via PayPal</h2>
+        <h2 className="font-display font-bold text-lg mb-1">Add funds</h2>
         <p className="text-xs text-white/50 mb-4">
-          1) Enter an amount → 2) Pay via PayPal → 3) Click "I've Paid" → 4) We credit your account after verification (usually &lt; 30 min).
+          1) Enter an amount → 2) Pay via Selly hosted checkout → 3) Balance auto-credits within seconds.
         </p>
         <div className="flex items-end gap-2 mb-4">
           <div className="flex-1">
@@ -592,36 +599,19 @@ function FundsView({ authedApi, balance, reloadBalance }) {
             </button>
           ))}
         </div>
-        <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex flex-col gap-2">
           <button
             onClick={paySelly}
             disabled={creating || Number(amount) < 5}
             data-testid="funds-pay-selly"
-            className="flex-1 py-3 rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40 bg-gradient-to-r from-emerald-500 to-emerald-400 text-black hover:scale-[1.01] transition"
+            className="w-full py-3.5 rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40 bg-gradient-to-r from-emerald-500 via-emerald-400 to-emerald-500 text-black hover:scale-[1.01] transition shadow-lg shadow-emerald-500/20"
           >
             {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-            Pay ${Number(amount) || 0} via Selly (Crypto · Card)
+            Pay ${Number(amount) || 0} via Selly / Visa / Master (Crypto)
           </button>
-        </div>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <button
-            onClick={openPaypal}
-            disabled={!paypal.configured}
-            data-testid="open-paypal"
-            className="flex-1 py-3 gradient-pp rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40"
-          >
-            <ExternalLink className="w-4 h-4" />
-            Pay ${Number(amount) || 0} on PayPal
-          </button>
-          <button
-            onClick={submitRequest}
-            disabled={creating || !paypal.configured}
-            data-testid="confirm-paid"
-            className="flex-1 py-3 border border-[#00E5FF]/40 text-[#00E5FF] rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 hover:bg-[#00E5FF]/5 disabled:opacity-40"
-          >
-            {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-            I've Paid — Submit for Approval
-          </button>
+          <div className="text-[10px] text-center text-white/40 uppercase tracking-wider">
+            Min $5 · Instant credit after payment confirmation
+          </div>
         </div>
       </div>
 
