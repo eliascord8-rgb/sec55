@@ -1532,6 +1532,12 @@ async def list_my_tickets(user: CurrentUser = Depends(current_user_dep)):
     return {"tickets": items}
 
 
+@client_router.get("/tickets-unread-count")
+async def my_tickets_unread_count(user: CurrentUser = Depends(current_user_dep)):
+    n = await db.tickets.count_documents({"user_id": user.id, "client_unread": True})
+    return {"unread": n}
+
+
 @client_router.get("/tickets/{ticket_id}")
 async def get_my_ticket(ticket_id: str, user: CurrentUser = Depends(current_user_dep)):
     t = await db.tickets.find_one({"id": ticket_id, "user_id": user.id}, {"_id": 0})
@@ -1541,6 +1547,9 @@ async def get_my_ticket(ticket_id: str, user: CurrentUser = Depends(current_user
         {"ticket_id": ticket_id},
         {"_id": 0},
     ).sort("created_at", 1).to_list(500)
+    # Mark as read since the client just opened it
+    if t.get("client_unread"):
+        await db.tickets.update_one({"id": ticket_id}, {"$set": {"client_unread": False}})
     return {"ticket": t, "messages": msgs}
 
 
@@ -1562,7 +1571,7 @@ async def reply_my_ticket(ticket_id: str, body: TicketReply, user: CurrentUser =
     })
     await db.tickets.update_one(
         {"id": ticket_id},
-        {"$set": {"status": "open", "updated_at": now, "last_reply_by": "user"}},
+        {"$set": {"status": "open", "updated_at": now, "last_reply_by": "user", "client_unread": False}},
     )
     return {"ok": True}
 
@@ -1616,7 +1625,7 @@ async def admin_reply_ticket(ticket_id: str, body: AdminTicketReply, x_admin_tok
     })
     await db.tickets.update_one(
         {"id": ticket_id},
-        {"$set": {"status": "answered", "updated_at": now, "last_reply_by": "staff"}},
+        {"$set": {"status": "answered", "updated_at": now, "last_reply_by": "staff", "client_unread": True}},
     )
     return {"ok": True}
 

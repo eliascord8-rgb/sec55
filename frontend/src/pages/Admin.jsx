@@ -975,7 +975,6 @@ function SettingsPanel({ token }) {
     <div className="space-y-6">
       <SmmConfigPanel token={token} />
       <SellyConfigPanel token={token} />
-      <CryptomusPanel token={token} />
     </div>
   );
 }
