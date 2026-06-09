@@ -511,6 +511,7 @@ function FundsView({ authedApi, balance, reloadBalance }) {
   const [amount, setAmount] = useState(10);
   const [txns, setTxns] = useState([]);
   const [creating, setCreating] = useState(false);
+  const [gateway, setGateway] = useState("bitcoin");
 
   const loadTxns = async () => {
     try {
@@ -532,7 +533,7 @@ function FundsView({ authedApi, balance, reloadBalance }) {
     }
     setCreating(true);
     try {
-      const r = await authedApi().post("/client/funds/selly-create", { amount: a });
+      const r = await authedApi().post("/client/funds/selly-create", { amount: a, gateway });
       window.location.href = r.data.checkout_url;
     } catch (err) {
       toast.error(err.response?.data?.detail || "Failed to start Selly checkout");
@@ -599,6 +600,33 @@ function FundsView({ authedApi, balance, reloadBalance }) {
             </button>
           ))}
         </div>
+        <div className="mb-3">
+          <Label className="text-[11px] uppercase tracking-wider text-white/60 mb-2 block">Payment Method</Label>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+            {[
+              { id: "bitcoin", label: "BTC" },
+              { id: "ethereum", label: "ETH" },
+              { id: "litecoin", label: "LTC" },
+              { id: "bitcoin_cash", label: "BCH" },
+              { id: "dogecoin", label: "DOGE" },
+              { id: "stripe", label: "Card" },
+            ].map((g) => (
+              <button
+                key={g.id}
+                type="button"
+                onClick={() => setGateway(g.id)}
+                data-testid={`funds-gateway-${g.id}`}
+                className={`px-2 py-2 text-xs rounded-sm border transition ${
+                  gateway === g.id
+                    ? "border-emerald-400 bg-emerald-500/10 text-emerald-300 font-bold"
+                    : "border-white/10 text-white/60 hover:bg-white/5"
+                }`}
+              >
+                {g.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="flex flex-col gap-2">
           <button
             onClick={paySelly}
@@ -607,7 +635,7 @@ function FundsView({ authedApi, balance, reloadBalance }) {
             className="w-full py-3.5 rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40 bg-gradient-to-r from-emerald-500 via-emerald-400 to-emerald-500 text-black hover:scale-[1.01] transition shadow-lg shadow-emerald-500/20"
           >
             {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-            Pay ${Number(amount) || 0} via Selly / Visa / Master (Crypto)
+            Pay ${Number(amount) || 0} via Selly · {gateway.toUpperCase().replace("_", " ")}
           </button>
           <div className="text-[10px] text-center text-white/40 uppercase tracking-wider">
             Min $5 · Instant credit after payment confirmation
