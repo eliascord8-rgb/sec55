@@ -31,7 +31,12 @@ SMM_API_KEY_DEFAULT = os.environ.get("SMM_API_KEY", "47b5c3b01e4b5ecd1e53b39baef
 ADMIN_USER = os.environ.get("ADMIN_USER", "Balkin99")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "Armin1234")
 ADMIN_URL_SECRET = os.environ.get("ADMIN_URL_SECRET", "")  # set in .env for secret URL login
-ADMIN_SESSIONS = set()  # in-mem session tokens
+ADMIN_SESSIONS = set()  # in-mem session tokens (owner)
+# Staff tokens map: token -> {username, role, perms}
+STAFF_SESSIONS = {}
+
+# Permission scopes a staff role can have
+STAFF_PERMS = {"tickets", "ai_inbox", "orders", "discord", "withdrawals"}
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -116,9 +121,24 @@ def get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def check_admin(token: Optional[str]) -> None:
-    if not token or token not in ADMIN_SESSIONS:
+def check_admin(token: Optional[str], perm: Optional[str] = None) -> None:
+    """Accept owner token OR staff token (if staff has the required perm)."""
+    if not token:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    if token in ADMIN_SESSIONS:
+        return  # owner — full access
+    staff = STAFF_SESSIONS.get(token)
+    if staff:
+        if perm is None or perm in staff.get("perms", set()):
+            return
+        raise HTTPException(status_code=403, detail=f"Staff lacks '{perm}' permission")
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def check_owner(token: Optional[str]) -> None:
+    """Owner-only routes — reject staff tokens."""
+    if not token or token not in ADMIN_SESSIONS:
+        raise HTTPException(status_code=403, detail="Owner only")
 
 
 def gen_coupon_code() -> str:
@@ -507,9 +527,122 @@ async def admin_login_secret(payload: AdminSecretLogin):
     return {"token": token}
 
 
+# ============ STAFF ACCOUNTS ============
+
+from auth_and_chat import hash_password as _hash_password, verify_password as _verify_password  # noqa: E402
+
+class StaffCreate(BaseModel):
+    username: str = Field(..., min_length=3, max_length=40, pattern=r"^[A-Za-z0-9_.\-]+$")
+    password: str = Field(..., min_length=8, max_length=120)
+    perms: List[str] = Field(default_factory=lambda: ["tickets", "ai_inbox", "orders", "discord", "withdrawals"])
+
+
+class StaffLogin(BaseModel):
+    username: str
+    password: str
+
+
+@api_router.post("/admin/staff")
+async def create_staff(payload: StaffCreate, x_admin_token: Optional[str] = Header(None)):
+    """Owner-only: create a staff account."""
+    check_owner(x_admin_token)
+    perms = [p for p in payload.perms if p in STAFF_PERMS]
+    if not perms:
+        raise HTTPException(status_code=400, detail="At least one permission required")
+    if await db.staff_users.find_one({"username": payload.username.lower()}):
+        raise HTTPException(status_code=400, detail="Username already taken")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "username": payload.username.lower(),
+        "password_hash": _hash_password(payload.password),
+        "perms": perms,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "active": True,
+    }
+    await db.staff_users.insert_one(doc.copy())
+    return {"id": doc["id"], "username": doc["username"], "perms": perms}
+
+
+@api_router.get("/admin/staff")
+async def list_staff(x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    items = await db.staff_users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", 1).to_list(50)
+    return {"staff": items}
+
+
+@api_router.delete("/admin/staff/{staff_id}")
+async def delete_staff(staff_id: str, x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    res = await db.staff_users.delete_one({"id": staff_id})
+    # Invalidate any active token for this staff
+    for t, s in list(STAFF_SESSIONS.items()):
+        if s.get("id") == staff_id:
+            STAFF_SESSIONS.pop(t, None)
+    return {"deleted": res.deleted_count}
+
+
+class StaffUpdate(BaseModel):
+    perms: Optional[List[str]] = None
+    active: Optional[bool] = None
+    password: Optional[str] = Field(None, min_length=8, max_length=120)
+
+
+@api_router.patch("/admin/staff/{staff_id}")
+async def update_staff(staff_id: str, payload: StaffUpdate, x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    upd = {}
+    if payload.perms is not None:
+        upd["perms"] = [p for p in payload.perms if p in STAFF_PERMS]
+    if payload.active is not None:
+        upd["active"] = payload.active
+    if payload.password:
+        upd["password_hash"] = _hash_password(payload.password)
+    if not upd:
+        return {"updated": False}
+    res = await db.staff_users.update_one({"id": staff_id}, {"$set": upd})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    # Refresh existing tokens' perms map
+    if "perms" in upd:
+        for t, s in STAFF_SESSIONS.items():
+            if s.get("id") == staff_id:
+                s["perms"] = set(upd["perms"])
+    return {"updated": True}
+
+
+@api_router.post("/admin/staff/login")
+async def staff_login(payload: StaffLogin):
+    """Staff login — returns a token they use with x-admin-token header (subset of admin perms)."""
+    user = await db.staff_users.find_one({"username": payload.username.strip().lower(), "active": True})
+    if not user or not _verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = secrets.token_urlsafe(24)
+    STAFF_SESSIONS[token] = {
+        "id": user["id"],
+        "username": user["username"],
+        "perms": set(user.get("perms", [])),
+    }
+    return {"token": token, "username": user["username"], "perms": list(user.get("perms", [])), "role": "staff"}
+
+
+@api_router.get("/admin/me")
+async def admin_me(x_admin_token: Optional[str] = Header(None)):
+    """Tell the admin frontend which role + perms the current token has."""
+    if not x_admin_token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if x_admin_token in ADMIN_SESSIONS:
+        return {"role": "owner", "perms": list(STAFF_PERMS) + ["all"]}
+    s = STAFF_SESSIONS.get(x_admin_token)
+    if s:
+        return {"role": "staff", "username": s["username"], "perms": list(s["perms"])}
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+
+
 @api_router.get("/admin/orders")
 async def admin_orders(x_admin_token: Optional[str] = Header(None)):
-    check_admin(x_admin_token)
+    check_admin(x_admin_token, "orders")
     orders = await db.orders.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return {"orders": orders}
 
@@ -1083,7 +1216,7 @@ async def list_my_withdrawals(user: CurrentUser = Depends(current_user_dep), req
 
 @api_router.get("/admin/withdrawals")
 async def admin_list_withdrawals(x_admin_token: Optional[str] = Header(None), status: Optional[str] = None):
-    check_admin(x_admin_token)
+    check_admin(x_admin_token, "withdrawals")
     q = {"type": "withdrawal"}
     if status:
         q["status"] = status
@@ -1099,7 +1232,7 @@ class WithdrawDecision(BaseModel):
 @api_router.post("/admin/withdrawals/{tx_id}/approve")
 async def admin_approve_withdrawal(tx_id: str, body: WithdrawDecision, x_admin_token: Optional[str] = Header(None)):
     """Mark withdrawal as approved. Money already reserved; this finalises the debit."""
-    check_admin(x_admin_token)
+    check_admin(x_admin_token, "withdrawals")
     now = datetime.now(timezone.utc).isoformat()
     res = await db.transactions.find_one_and_update(
         {"id": tx_id, "type": "withdrawal", "status": "pending"},
@@ -1119,7 +1252,7 @@ async def admin_approve_withdrawal(tx_id: str, body: WithdrawDecision, x_admin_t
 @api_router.post("/admin/withdrawals/{tx_id}/reject")
 async def admin_reject_withdrawal(tx_id: str, body: WithdrawDecision, x_admin_token: Optional[str] = Header(None)):
     """Reject withdrawal. Refunds withdrawable bucket."""
-    check_admin(x_admin_token)
+    check_admin(x_admin_token, "withdrawals")
     now = datetime.now(timezone.utc).isoformat()
     tx = await db.transactions.find_one_and_update(
         {"id": tx_id, "type": "withdrawal", "status": "pending"},
@@ -1580,7 +1713,7 @@ async def reply_my_ticket(ticket_id: str, body: TicketReply, user: CurrentUser =
 
 @api_router.get("/admin/tickets")
 async def admin_list_tickets(x_admin_token: Optional[str] = Header(None), status: Optional[str] = None):
-    check_admin(x_admin_token)
+    check_admin(x_admin_token, "tickets")
     q = {}
     if status:
         q["status"] = status
@@ -1592,7 +1725,7 @@ async def admin_list_tickets(x_admin_token: Optional[str] = Header(None), status
 
 @api_router.get("/admin/tickets/{ticket_id}")
 async def admin_get_ticket(ticket_id: str, x_admin_token: Optional[str] = Header(None)):
-    check_admin(x_admin_token)
+    check_admin(x_admin_token, "tickets")
     t = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not t:
         raise HTTPException(status_code=404, detail="Ticket not found")
@@ -1610,7 +1743,7 @@ class AdminTicketReply(BaseModel):
 
 @api_router.post("/admin/tickets/{ticket_id}/reply")
 async def admin_reply_ticket(ticket_id: str, body: AdminTicketReply, x_admin_token: Optional[str] = Header(None)):
-    check_admin(x_admin_token)
+    check_admin(x_admin_token, "tickets")
     t = await db.tickets.find_one({"id": ticket_id}, {"_id": 0, "id": 1})
     if not t:
         raise HTTPException(status_code=404, detail="Ticket not found")
@@ -1632,7 +1765,7 @@ async def admin_reply_ticket(ticket_id: str, body: AdminTicketReply, x_admin_tok
 
 @api_router.post("/admin/tickets/{ticket_id}/close")
 async def admin_close_ticket(ticket_id: str, x_admin_token: Optional[str] = Header(None)):
-    check_admin(x_admin_token)
+    check_admin(x_admin_token, "tickets")
     res = await db.tickets.update_one({"id": ticket_id}, {"$set": {"status": "closed"}})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Ticket not found")
@@ -1641,7 +1774,7 @@ async def admin_close_ticket(ticket_id: str, x_admin_token: Optional[str] = Head
 
 @api_router.delete("/admin/tickets/{ticket_id}")
 async def admin_delete_ticket(ticket_id: str, x_admin_token: Optional[str] = Header(None)):
-    check_admin(x_admin_token)
+    check_admin(x_admin_token, "tickets")
     t = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not t:
         raise HTTPException(status_code=404, detail="Ticket not found")

@@ -13,7 +13,27 @@ export default function Admin() {
   const [p, setP] = useState("");
   const [loading, setLoading] = useState(false);
   const [secretLoggingIn, setSecretLoggingIn] = useState(false);
+  const [role, setRole] = useState("owner"); // 'owner' | 'staff'
+  const [perms, setPerms] = useState([]);
   const navigate = useNavigate();
+
+  // Load role + perms once we have a token
+  useEffect(() => {
+    if (!token) return;
+    adminApi(token)
+      .get("/admin/me")
+      .then((r) => {
+        setRole(r.data.role || "owner");
+        setPerms(r.data.perms || []);
+      })
+      .catch(() => {
+        // invalid token — clear
+        localStorage.removeItem("bs_admin_token");
+        setToken("");
+      });
+  }, [token]);
+
+  const can = (p) => role === "owner" || perms.includes(p);
 
   // Auto-login via secret URL (e.g. /admin?key=mysecret)
   useEffect(() => {
@@ -50,10 +70,20 @@ export default function Admin() {
     e.preventDefault();
     setLoading(true);
     try {
-      const r = await api.post("/admin/login", { username: u.trim(), password: p });
+      // Try owner login first; if 401, try staff
+      let r;
+      try {
+        r = await api.post("/admin/login", { username: u.trim(), password: p });
+      } catch (err) {
+        if (err.response?.status === 401 || err.response?.status === 403) {
+          r = await api.post("/admin/staff/login", { username: u.trim(), password: p });
+        } else {
+          throw err;
+        }
+      }
       localStorage.setItem("bs_admin_token", r.data.token);
       setToken(r.data.token);
-      toast.success("Welcome, admin");
+      toast.success(`Welcome, ${r.data.username || "admin"}`);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Invalid credentials");
     } finally {
@@ -138,10 +168,10 @@ export default function Admin() {
     );
   }
 
-  return <Dashboard token={token} onLogout={logout} />;
+  return <Dashboard token={token} onLogout={logout} role={role} can={can} />;
 }
 
-function Dashboard({ token, onLogout }) {
+function Dashboard({ token, onLogout, role, can }) {
   return (
     <div className="min-h-screen bg-[#0d0a14]">
       <header className="border-b border-white/5 bg-[#050505]/80 backdrop-blur sticky top-0 z-10">
@@ -163,8 +193,9 @@ function Dashboard({ token, onLogout }) {
       </header>
 
       <main className="max-w-7xl mx-auto px-6 md:px-10 py-10">
-        <Tabs defaultValue="orders" className="w-full">
-          <TabsList className="grid grid-cols-10 max-w-7xl bg-[#1a1525] mb-6 rounded-sm">
+        <Tabs defaultValue={role === "staff" ? (can("ai_inbox") ? "inbox" : "tickets") : "orders"} className="w-full">
+          <TabsList className="grid grid-cols-12 max-w-7xl bg-[#1a1525] mb-6 rounded-sm">
+            {can("orders") && (
             <TabsTrigger
               value="orders"
               data-testid="tab-orders"
@@ -172,6 +203,8 @@ function Dashboard({ token, onLogout }) {
             >
               Orders
             </TabsTrigger>
+            )}
+            {role === "owner" && (
             <TabsTrigger
               value="services"
               data-testid="tab-services"
@@ -179,6 +212,8 @@ function Dashboard({ token, onLogout }) {
             >
               Services
             </TabsTrigger>
+            )}
+            {role === "owner" && (
             <TabsTrigger
               value="coupons"
               data-testid="tab-coupons"
@@ -186,6 +221,8 @@ function Dashboard({ token, onLogout }) {
             >
               Coupons
             </TabsTrigger>
+            )}
+            {role === "owner" && (
             <TabsTrigger
               value="users"
               data-testid="tab-users"
@@ -193,6 +230,8 @@ function Dashboard({ token, onLogout }) {
             >
               Users
             </TabsTrigger>
+            )}
+            {role === "owner" && (
             <TabsTrigger
               value="funds"
               data-testid="tab-funds"
@@ -200,6 +239,8 @@ function Dashboard({ token, onLogout }) {
             >
               Funds
             </TabsTrigger>
+            )}
+            {can("withdrawals") && (
             <TabsTrigger
               value="withdrawals"
               data-testid="tab-withdrawals"
@@ -207,6 +248,8 @@ function Dashboard({ token, onLogout }) {
             >
               Withdrawals
             </TabsTrigger>
+            )}
+            {can("tickets") && (
             <TabsTrigger
               value="tickets"
               data-testid="tab-tickets"
@@ -214,6 +257,8 @@ function Dashboard({ token, onLogout }) {
             >
               Tickets
             </TabsTrigger>
+            )}
+            {role === "owner" && (
             <TabsTrigger
               value="ai"
               data-testid="tab-ai"
@@ -221,6 +266,8 @@ function Dashboard({ token, onLogout }) {
             >
               AI Buy
             </TabsTrigger>
+            )}
+            {can("ai_inbox") && (
             <TabsTrigger
               value="inbox"
               data-testid="tab-inbox"
@@ -228,6 +275,8 @@ function Dashboard({ token, onLogout }) {
             >
               AI Inbox
             </TabsTrigger>
+            )}
+            {can("discord") && (
             <TabsTrigger
               value="discord"
               data-testid="tab-discord"
@@ -235,6 +284,8 @@ function Dashboard({ token, onLogout }) {
             >
               Discord
             </TabsTrigger>
+            )}
+            {role === "owner" && (
             <TabsTrigger
               value="settings"
               data-testid="tab-settings"
@@ -242,6 +293,8 @@ function Dashboard({ token, onLogout }) {
             >
               Settings
             </TabsTrigger>
+            )}
+            {role === "owner" && (
             <TabsTrigger
               value="providers"
               data-testid="tab-providers"
@@ -249,6 +302,16 @@ function Dashboard({ token, onLogout }) {
             >
               Providers
             </TabsTrigger>
+            )}
+            {role === "owner" && (
+            <TabsTrigger
+              value="staff"
+              data-testid="tab-staff"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Team
+            </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="orders">
@@ -286,6 +349,9 @@ function Dashboard({ token, onLogout }) {
           </TabsContent>
           <TabsContent value="providers">
             <ProvidersPanel token={token} />
+          </TabsContent>
+          <TabsContent value="staff">
+            <StaffPanel token={token} />
           </TabsContent>
         </Tabs>
       </main>
@@ -1786,6 +1852,29 @@ function AIInboxPanel({ token }) {
   const audioRef = useRef(null);
   const originalTitleRef = useRef(typeof document !== "undefined" ? document.title : "Admin");
   const titleFlashRef = useRef(null);
+  const lastTypingPingRef = useRef(0);
+
+  const pingTyping = () => {
+    if (!activeId) return;
+    const now = Date.now();
+    if (now - lastTypingPingRef.current < 3000) return; // throttle to 1 ping every 3s
+    lastTypingPingRef.current = now;
+    adminApi(token).post(`/ai/admin/sessions/${activeId}/typing`).catch(() => {});
+  };
+
+  const massDelete = async () => {
+    if (!window.confirm("Delete ALL AI chat sessions and messages? This wipes the inbox completely (bans are kept).")) return;
+    try {
+      const r = await adminApi(token).post(`/ai/admin/sessions/clear-all`);
+      toast.success(`Cleared ${r.data.sessions_deleted} sessions, ${r.data.messages_deleted} messages`);
+      setActiveId(null);
+      setActiveSess(null);
+      setMessages([]);
+      loadSessions();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    }
+  };
 
   // Lazy-init the alert sound — short pleasant chime (data URI = no asset needed)
   const playChime = () => {
@@ -2112,6 +2201,15 @@ function AIInboxPanel({ token }) {
               </span>
             )}
           </button>
+          <ChatBansButton token={token} />
+          <button
+            onClick={massDelete}
+            data-testid="inbox-clear-all"
+            className="px-3 py-2 text-[10px] uppercase tracking-wider border border-red-500/40 text-red-300 rounded-sm hover:bg-red-500/10 inline-flex items-center gap-1"
+            title="Wipe ALL chat sessions and messages"
+          >
+            <Trash2 className="w-3 h-3" /> Clear all
+          </button>
         </div>
       </div>
 
@@ -2424,7 +2522,10 @@ function AIInboxPanel({ token }) {
                 <input
                   data-testid="inbox-input"
                   value={text}
-                  onChange={(e) => setText(e.target.value)}
+                  onChange={(e) => {
+                    setText(e.target.value);
+                    if (e.target.value.trim()) pingTyping();
+                  }}
                   placeholder={isHuman ? `Reply as "${staffName}"…` : "Click Take Over first to reply…"}
                   className="flex-1 bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-[#FF007F]"
                 />
@@ -3557,6 +3658,325 @@ function ProvidersPanel({ token }) {
                   <button
                     onClick={() => remove(p)}
                     data-testid={`provider-delete-${p.id}`}
+                    className="px-3 py-1 bg-red-500/20 text-red-300 rounded-sm text-[10px] uppercase tracking-wider font-bold hover:bg-red-500/30"
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+
+function ChatBansButton({ token }) {
+  const [open, setOpen] = useState(false);
+  const [bans, setBans] = useState([]);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/ai/admin/chat-bans");
+      setBans(r.data.bans || []);
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (open) load();
+    // eslint-disable-next-line
+  }, [open]);
+
+  const unban = async (ident) => {
+    if (!window.confirm(`Unban "${ident}"?`)) return;
+    try {
+      await adminApi(token).post("/ai/admin/chat-bans/unban", { identifier: ident });
+      toast.success(`Unbanned ${ident}`);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    }
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        data-testid="inbox-bans"
+        className="px-3 py-2 text-[10px] uppercase tracking-wider border border-amber-500/40 text-amber-300 rounded-sm hover:bg-amber-500/10 inline-flex items-center gap-2"
+      >
+        Banned users
+        {bans.length > 0 && (
+          <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-black text-[9px] font-bold">
+            {bans.length}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setOpen(false)}
+          data-testid="bans-modal"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#1a1525] border border-white/10 rounded-sm max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col"
+          >
+            <div className="px-5 py-3 border-b border-white/10 flex items-center justify-between">
+              <h3 className="font-bold text-sm">Chat bans ({bans.length})</h3>
+              <button onClick={() => setOpen(false)} className="text-white/50 hover:text-white text-xs">
+                ✕
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {bans.length === 0 ? (
+                <div className="text-center py-12 text-xs text-white/40">No banned users.</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="text-[10px] uppercase tracking-wider text-white/40 bg-[#0d0a14]">
+                    <tr>
+                      <th className="text-left px-4 py-2">Identifier</th>
+                      <th className="text-left px-4 py-2">IP</th>
+                      <th className="text-left px-4 py-2">Banned at</th>
+                      <th className="text-right px-4 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bans.map((b) => (
+                      <tr key={b.identifier} className="border-t border-white/5">
+                        <td className="px-4 py-2 font-mono text-xs">{b.identifier}</td>
+                        <td className="px-4 py-2 font-mono text-[10px] text-white/50">{b.ip || "—"}</td>
+                        <td className="px-4 py-2 font-mono text-[10px] text-white/50">
+                          {b.banned_at ? new Date(b.banned_at).toLocaleString() : ""}
+                        </td>
+                        <td className="px-4 py-2 text-right">
+                          <button
+                            onClick={() => unban(b.identifier)}
+                            data-testid={`unban-${b.identifier}`}
+                            className="px-3 py-1 bg-emerald-500/20 text-emerald-300 rounded-sm text-[10px] uppercase tracking-wider font-bold hover:bg-emerald-500/30"
+                          >
+                            Unban
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+const STAFF_PERMS_OPTIONS = ["tickets", "ai_inbox", "orders", "discord", "withdrawals"];
+
+function StaffPanel({ token }) {
+  const [items, setItems] = useState([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [uname, setUname] = useState("");
+  const [pw, setPw] = useState("");
+  const [selectedPerms, setSelectedPerms] = useState([...STAFF_PERMS_OPTIONS]);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/staff");
+      setItems(r.data.staff || []);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Owner only");
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line
+  }, []);
+
+  const create = async (e) => {
+    e.preventDefault();
+    if (uname.trim().length < 3 || pw.length < 8) {
+      toast.error("Username (3+) and password (8+) required");
+      return;
+    }
+    setBusy(true);
+    try {
+      await adminApi(token).post("/admin/staff", {
+        username: uname.trim(),
+        password: pw,
+        perms: selectedPerms,
+      });
+      toast.success(`Staff "${uname}" created`);
+      setUname("");
+      setPw("");
+      setShowAdd(false);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const togglePerm = (p) => {
+    setSelectedPerms((cur) => (cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p]));
+  };
+
+  const remove = async (id, uname) => {
+    if (!window.confirm(`Delete staff "${uname}"? They will be logged out immediately.`)) return;
+    try {
+      await adminApi(token).delete(`/admin/staff/${id}`);
+      toast.success("Staff deleted");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    }
+  };
+
+  const toggleActive = async (s) => {
+    try {
+      await adminApi(token).patch(`/admin/staff/${s.id}`, { active: !s.active });
+      load();
+    } catch {
+      toast.error("Failed");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-display font-black text-xl">Team / Staff Agents</h2>
+          <p className="text-xs text-white/40 mt-1">
+            Create scoped accounts for your support team. Staff cannot create other accounts or change settings.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowAdd((v) => !v)}
+          data-testid="staff-add-btn"
+          className="px-4 py-2 gradient-pp rounded-sm font-bold text-xs uppercase tracking-wider inline-flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" /> Add staff
+        </button>
+      </div>
+
+      {showAdd && (
+        <form
+          onSubmit={create}
+          data-testid="staff-add-form"
+          className="bg-[#1a1525] border border-[#FF007F]/40 rounded-sm p-5 space-y-3"
+        >
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div>
+              <Label className="text-[11px] uppercase tracking-wider text-white/60">Username</Label>
+              <Input
+                data-testid="staff-username"
+                value={uname}
+                onChange={(e) => setUname(e.target.value)}
+                placeholder="e.g. agent1"
+                className="bg-[#0d0a14] border-white/10 mt-1 font-mono"
+              />
+            </div>
+            <div>
+              <Label className="text-[11px] uppercase tracking-wider text-white/60">Password</Label>
+              <Input
+                data-testid="staff-password"
+                type="password"
+                value={pw}
+                onChange={(e) => setPw(e.target.value)}
+                placeholder="min 8 chars"
+                className="bg-[#0d0a14] border-white/10 mt-1 font-mono"
+              />
+            </div>
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Permissions</Label>
+            <div className="flex flex-wrap gap-2 mt-1">
+              {STAFF_PERMS_OPTIONS.map((p) => (
+                <button
+                  type="button"
+                  key={p}
+                  data-testid={`perm-${p}`}
+                  onClick={() => togglePerm(p)}
+                  className={`px-3 py-1 rounded-sm text-[11px] uppercase tracking-wider font-bold ${
+                    selectedPerms.includes(p)
+                      ? "bg-[#00E5FF]/20 text-[#00E5FF]"
+                      : "bg-white/5 text-white/40 border border-white/10"
+                  }`}
+                >
+                  {p.replace("_", " ")}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAdd(false)}
+              className="flex-1 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              data-testid="staff-create-submit"
+              className="flex-1 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-50"
+            >
+              {busy ? <Loader2 className="w-3 h-3 animate-spin inline" /> : "Create staff"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden">
+        <table className="w-full text-sm" data-testid="staff-table">
+          <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14]">
+            <tr>
+              <th className="text-left px-4 py-3">Username</th>
+              <th className="text-left px-4 py-3">Permissions</th>
+              <th className="text-center px-4 py-3">Active</th>
+              <th className="text-right px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.length === 0 && (
+              <tr>
+                <td colSpan={4} className="text-center py-10 text-xs text-white/40">
+                  No staff yet. Click "Add staff" to create the first one.
+                </td>
+              </tr>
+            )}
+            {items.map((s) => (
+              <tr key={s.id} className="border-t border-white/5" data-testid={`staff-row-${s.username}`}>
+                <td className="px-4 py-3 font-bold">@{s.username}</td>
+                <td className="px-4 py-3">
+                  <div className="flex flex-wrap gap-1">
+                    {(s.perms || []).map((p) => (
+                      <span key={p} className="px-1.5 py-0.5 bg-[#00E5FF]/15 text-[#00E5FF] rounded-sm text-[9px] uppercase tracking-wider font-bold">
+                        {p.replace("_", " ")}
+                      </span>
+                    ))}
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-center">
+                  <button
+                    onClick={() => toggleActive(s)}
+                    className={`px-2 py-1 rounded-sm text-[10px] uppercase tracking-wider font-bold ${
+                      s.active ? "bg-emerald-500/20 text-emerald-300" : "bg-white/5 text-white/40"
+                    }`}
+                  >
+                    {s.active ? "On" : "Off"}
+                  </button>
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <button
+                    onClick={() => remove(s.id, s.username)}
+                    data-testid={`staff-delete-${s.username}`}
                     className="px-3 py-1 bg-red-500/20 text-red-300 rounded-sm text-[10px] uppercase tracking-wider font-bold hover:bg-red-500/30"
                   >
                     Delete

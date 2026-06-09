@@ -872,6 +872,15 @@ async def ai_poll(request: Request, session_id: str, since: Optional[str] = None
                 muted_until = sess["muted_until"]
         except (ValueError, TypeError):
             pass
+    # Staff typing indicator
+    staff_typing = False
+    if sess and sess.get("staff_typing_until"):
+        try:
+            st = datetime.fromisoformat(sess["staff_typing_until"])
+            if st > datetime.now(timezone.utc):
+                staff_typing = True
+        except (ValueError, TypeError):
+            pass
     return {
         "messages": items,
         "human_takeover": bool(sess and sess.get("status") == "human"),
@@ -883,6 +892,7 @@ async def ai_poll(request: Request, session_id: str, since: Optional[str] = None
         "muted": muted,
         "muted_until": muted_until,
         "banned": bool(sess and sess.get("banned")),
+        "staff_typing": staff_typing,
     }
 
 
@@ -1080,12 +1090,12 @@ async def ai_attach_message(body: AttachMessageBody, request: Request):
     return {"ok": True, "message_id": msg["id"], "attachments": valid_files}
 
 
-def _admin_check(request: Request):
+def _admin_check(request: Request, perm: Optional[str] = "ai_inbox"):
     token = request.headers.get("x-admin-token")
     fn = getattr(request.app.state, "check_admin", None)
     if fn is None:
         raise HTTPException(status_code=500, detail="Admin auth not initialised")
-    fn(token)
+    fn(token, perm)
 
 
 # ---------------- Admin AI inbox ----------------
@@ -1292,6 +1302,29 @@ async def admin_chat_unmute(session_id: str, request: Request):
     db: AsyncIOMotorDatabase = request.app.state.db
     await db.ai_sessions.update_one({"session_id": session_id}, {"$set": {"muted_until": None}})
     return {"ok": True}
+
+
+@ai_router.post("/admin/sessions/{session_id}/typing")
+async def admin_chat_typing(session_id: str, request: Request):
+    """Staff is typing — bump staff_typing_until so the user sees an animation."""
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    until = (datetime.now(timezone.utc) + timedelta(seconds=6)).isoformat()
+    await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {"$set": {"staff_typing_until": until}},
+    )
+    return {"ok": True}
+
+
+@ai_router.post("/admin/sessions/clear-all")
+async def admin_chat_mass_delete(request: Request):
+    """Owner/staff with ai_inbox perm: wipe ALL AI chat sessions and messages. Does NOT remove bans."""
+    _admin_check(request)
+    db: AsyncIOMotorDatabase = request.app.state.db
+    m = await db.ai_chat_messages.delete_many({})
+    s = await db.ai_sessions.delete_many({})
+    return {"ok": True, "messages_deleted": m.deleted_count, "sessions_deleted": s.deleted_count}
 
 
 @ai_router.post("/admin/sessions/{session_id}/ban")

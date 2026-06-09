@@ -65,6 +65,9 @@ export default function AIWidget({ open, onOpenChange }) {
   const [identified, setIdentified] = useState(false);
   const [identifyValue, setIdentifyValue] = useState("");
   const [identifying, setIdentifying] = useState(false);
+  const [staffTyping, setStaffTyping] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [banned, setBanned] = useState(false);
   const fileInputRef = useRef(null);
   const endRef = useRef(null);
   const sessionIdRef = useRef(null);
@@ -157,6 +160,17 @@ export default function AIWidget({ open, onOpenChange }) {
         });
         const wasTakeover = humanTakeover;
         setHumanTakeover(!!r.data.human_takeover);
+        setStaffTyping(!!r.data.staff_typing);
+        setMuted(!!r.data.muted);
+        setBanned(!!r.data.banned);
+        if (r.data.banned) {
+          // Persist so the floating launcher button can hide itself on next render
+          try { localStorage.setItem("bs_chat_banned", "1"); } catch {}
+          setOpen(false);
+          return;
+        }
+        // Clear ban flag if we were previously marked banned and now we're not
+        try { if (localStorage.getItem("bs_chat_banned")) localStorage.removeItem("bs_chat_banned"); } catch {}
         if (r.data.staff_display_name) setStaffName(r.data.staff_display_name);
         // If admin just took over → reset handover state to "submitted" so we don't show form
         if (r.data.human_takeover && handoverState !== "none") setHandoverState("none");
@@ -421,6 +435,7 @@ export default function AIWidget({ open, onOpenChange }) {
   };
 
   if (!open) return null;
+  if (banned) return null;
 
   return (
     <>
@@ -492,6 +507,9 @@ export default function AIWidget({ open, onOpenChange }) {
             <Bubble key={i} m={m} />
           ))}
           {sending && <Bubble m={{ role: "assistant", text: "…" }} typing />}
+          {staffTyping && !sending && (
+            <Bubble m={{ role: "admin", text: "", _staffname: staffName }} typing />
+          )}
           <div ref={endRef} />
         </div>
 
@@ -708,7 +726,9 @@ export default function AIWidget({ open, onOpenChange }) {
           <input
             data-testid="ai-widget-input"
             placeholder={
-              !identified
+              muted
+                ? "You're temporarily muted by staff…"
+                : !identified
                 ? "Enter email/username above first…"
                 : humanTakeover
                 ? `Message ${staffName}…`
@@ -718,12 +738,13 @@ export default function AIWidget({ open, onOpenChange }) {
             }
             value={text}
             onChange={(e) => setText(e.target.value)}
-            disabled={!identified || sending}
+            disabled={!identified || sending || muted}
+            readOnly={muted}
             className="flex-1 bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2.5 text-sm outline-none focus:border-[#FF007F] text-white placeholder:text-white/40 disabled:opacity-60"
           />
           <button
             type="submit"
-            disabled={!identified || sending || (!text.trim() && pendingFiles.length === 0)}
+            disabled={!identified || sending || muted || (!text.trim() && pendingFiles.length === 0)}
             data-testid="ai-widget-send"
             className="w-10 h-10 gradient-pp rounded-sm flex items-center justify-center font-bold disabled:opacity-40 shrink-0"
           >
@@ -834,10 +855,25 @@ function Bubble({ m, typing }) {
             }`}
           >
             {typing ? (
-              <span className="inline-flex gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "0ms" }} />
-                <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "150ms" }} />
-                <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: "300ms" }} />
+              <span className="inline-flex gap-1 items-center py-1">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full animate-bounce ${
+                    isAdmin ? "bg-[#050505]/60" : "bg-white/60"
+                  }`}
+                  style={{ animationDelay: "0ms", animationDuration: "900ms" }}
+                />
+                <span
+                  className={`w-1.5 h-1.5 rounded-full animate-bounce ${
+                    isAdmin ? "bg-[#050505]/60" : "bg-white/60"
+                  }`}
+                  style={{ animationDelay: "180ms", animationDuration: "900ms" }}
+                />
+                <span
+                  className={`w-1.5 h-1.5 rounded-full animate-bounce ${
+                    isAdmin ? "bg-[#050505]/60" : "bg-white/60"
+                  }`}
+                  style={{ animationDelay: "360ms", animationDuration: "900ms" }}
+                />
               </span>
             ) : (
               cleanText
