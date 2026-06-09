@@ -2263,6 +2263,29 @@ function AIInboxPanel({ token }) {
                       ? "User asked for staff — Take Over now"
                       : "AI handling · click Take Over to reply"}
                   </div>
+                  {(activeSess?.ip || activeSess?.country || activeSess?.isp) && (
+                    <div
+                      data-testid="session-geo"
+                      className="mt-1.5 flex flex-wrap gap-1.5 text-[9px] font-mono"
+                    >
+                      {activeSess.country_code && (
+                        <span className="px-1.5 py-0.5 rounded-sm bg-white/5 text-white/70">
+                          {activeSess.country_code} · {activeSess.country}
+                          {activeSess.city ? ` · ${activeSess.city}` : ""}
+                        </span>
+                      )}
+                      {activeSess.ip && (
+                        <span className="px-1.5 py-0.5 rounded-sm bg-white/5 text-[#00E5FF]/80">
+                          IP: {activeSess.ip}
+                        </span>
+                      )}
+                      {activeSess.isp && (
+                        <span className="px-1.5 py-0.5 rounded-sm bg-white/5 text-amber-300/80 truncate max-w-[260px]" title={activeSess.isp}>
+                          ISP: {activeSess.isp}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {!isHuman ? (
@@ -3184,6 +3207,19 @@ function TicketsAdminPanel({ token }) {
     }
   };
 
+  const remove = async () => {
+    if (!open) return;
+    if (!window.confirm(`Permanently DELETE ticket "${open.ticket.subject}" and all its messages? This cannot be undone.`)) return;
+    try {
+      await adminApi(token).delete(`/admin/tickets/${open.ticket.id}`);
+      toast.success("Ticket deleted");
+      setOpen(null);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    }
+  };
+
   return (
     <div className="grid lg:grid-cols-[340px_1fr] gap-6 h-[calc(100vh-220px)] min-h-[480px]">
       <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden flex flex-col">
@@ -3246,15 +3282,24 @@ function TicketsAdminPanel({ token }) {
                   @{open.ticket.username} · status: {open.ticket.status}
                 </div>
               </div>
-              {open.ticket.status !== "closed" && (
+              <div className="flex items-center gap-2">
+                {open.ticket.status !== "closed" && (
+                  <button
+                    onClick={close}
+                    data-testid="ticket-close"
+                    className="text-[10px] uppercase tracking-wider px-3 py-1.5 border border-white/20 rounded-sm hover:bg-white/5"
+                  >
+                    Close
+                  </button>
+                )}
                 <button
-                  onClick={close}
-                  data-testid="ticket-close"
-                  className="text-[10px] uppercase tracking-wider px-3 py-1.5 border border-white/20 rounded-sm hover:bg-white/5"
+                  onClick={remove}
+                  data-testid="ticket-delete"
+                  className="text-[10px] uppercase tracking-wider px-3 py-1.5 border border-red-500/40 text-red-400 rounded-sm hover:bg-red-500/10 inline-flex items-center gap-1"
                 >
-                  Close
+                  <Trash2 className="w-3 h-3" /> Delete
                 </button>
-              )}
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#0d0a14]">
               {open.messages.map((m) => {
