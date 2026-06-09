@@ -269,7 +269,12 @@ export default function AIWidget({ open, onOpenChange }) {
       setHumanTakeover(!!r.data.human_takeover);
       const reply = r.data.reply;
       if (reply && !r.data.human_takeover) {
-        setMessages((prev) => [...prev, { role: "assistant", text: reply }]);
+        // Use the server's reply_id so the poll dedupes correctly and we don't show duplicates
+        setMessages((prev) => [...prev, { role: "assistant", text: reply, _id: r.data.reply_id }]);
+        // Bump the poll "since" pointer past this message
+        if (r.data.reply_id) {
+          lastPollAtRef.current = new Date().toISOString();
+        }
         const ready = parseReady(reply);
         if (ready) await tryExecuteOrder(reply);
         // Handover flow

@@ -780,8 +780,9 @@ async def ai_chat(req: AIChatRequest, request: Request):
         admin_online = await is_admin_online(db)
 
     # Persist assistant message
+    assistant_msg_id = str(uuid.uuid4())
     await db.ai_chat_messages.insert_one({
-        "id": str(uuid.uuid4()),
+        "id": assistant_msg_id,
         "session_id": session_id,
         "role": "assistant",
         "text": reply_text[:4000],
@@ -789,6 +790,7 @@ async def ai_chat(req: AIChatRequest, request: Request):
     })
     return {
         "reply": reply_text,
+        "reply_id": assistant_msg_id,
         "session_id": session_id,
         "human_takeover": False,
         "needs_handover": needs_handover,
