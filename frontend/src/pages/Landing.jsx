@@ -318,7 +318,7 @@ export default function Landing() {
 
       {/* AI Widget + launcher FAB */}
       <AIWidget open={aiOpen} onOpenChange={setAiOpen} />
-      {!aiOpen && (
+      {!aiOpen && !(typeof window !== "undefined" && localStorage.getItem("bs_chat_banned") === "1") && (
         <button
           onClick={() => setAiOpen(true)}
           data-testid="ai-fab"
