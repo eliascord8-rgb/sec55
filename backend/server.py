@@ -1639,6 +1639,17 @@ async def admin_close_ticket(ticket_id: str, x_admin_token: Optional[str] = Head
     return {"ok": True}
 
 
+@api_router.delete("/admin/tickets/{ticket_id}")
+async def admin_delete_ticket(ticket_id: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    t = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    await db.ticket_messages.delete_many({"ticket_id": ticket_id})
+    await db.tickets.delete_one({"id": ticket_id})
+    return {"ok": True, "deleted": ticket_id}
+
+
 @api_router.get("/admin/cryptomus-config")
 async def get_cryptomus_admin_config(x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
