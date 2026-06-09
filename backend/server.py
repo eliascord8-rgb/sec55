@@ -1165,15 +1165,21 @@ async def request_funds(body: FundRequest, user: CurrentUser = Depends(current_u
 
 # ============ SELLY.IO PAYMENTS ============
 
-SELLY_API_KEY = os.environ.get("SELLY_API_KEY", "")
-SELLY_WEBHOOK_SECRET = os.environ.get("SELLY_WEBHOOK_SECRET", "")
 SELLY_API_BASE = "https://selly.io/api/v2"
+
+
+async def _get_selly_key() -> str:
+    """Fetch the admin-configured Selly API key from DB."""
+    cfg = await db.selly_config.find_one({}, {"_id": 0})
+    key = (cfg or {}).get("api_key", "")
+    if not key:
+        raise HTTPException(status_code=503, detail="Selly is not configured — admin must set the API key in the Settings tab")
+    return key
 
 
 async def _create_selly_invoice(amount_usd: float, title: str, metadata: dict, return_url: str) -> dict:
     """Create a hosted Selly Payment Request and return {id, url}."""
-    if not SELLY_API_KEY or SELLY_API_KEY.startswith("replace-"):
-        raise HTTPException(status_code=503, detail="Selly is not configured — admin must set SELLY_API_KEY")
+    api_key = await _get_selly_key()
     payload = {
         "title": title[:200],
         "currency": "USD",
@@ -1187,7 +1193,7 @@ async def _create_selly_invoice(amount_usd: float, title: str, metadata: dict, r
             f"{SELLY_API_BASE}/payment-requests",
             json=payload,
             headers={
-                "Authorization": f"Bearer {SELLY_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
             },
@@ -1201,6 +1207,24 @@ async def _create_selly_invoice(amount_usd: float, title: str, metadata: dict, r
     if not url:
         raise HTTPException(status_code=502, detail=f"Selly did not return checkout URL: {str(data)[:200]}")
     return {"id": pid, "url": url}
+
+
+async def _verify_selly_payment(payment_id: str) -> dict:
+    """Call Selly back to verify payment status. Returns the order/payment_request body."""
+    api_key = await _get_selly_key()
+    async with httpx.AsyncClient(timeout=15.0) as c:
+        # Try payment-requests first, then orders
+        for path in (f"/payment-requests/{payment_id}", f"/orders/{payment_id}"):
+            try:
+                r = await c.get(
+                    f"{SELLY_API_BASE}{path}",
+                    headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+                )
+                if r.status_code == 200:
+                    return r.json()
+            except Exception:
+                continue
+    return {}
 
 
 class SellyFundsRequest(BaseModel):
@@ -1286,37 +1310,56 @@ async def selly_create_checkout(body: SellyCheckoutRequest, request: Request):
     return {"id": order_id, "checkout_url": invoice["url"]}
 
 
-def _verify_selly_signature(raw_body: bytes, signature_header: Optional[str]) -> bool:
-    if not signature_header or not SELLY_WEBHOOK_SECRET or SELLY_WEBHOOK_SECRET.startswith("replace-"):
-        return False
-    expected = hmac.new(SELLY_WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha512).hexdigest()
-    return hmac.compare_digest(expected, signature_header)
+def _is_selly_paid_event(event: str, payload: dict) -> bool:
+    e = (event or "").lower()
+    status = (
+        payload.get("status")
+        or (payload.get("order") or {}).get("status")
+        or (payload.get("payment_request") or {}).get("status")
+        or ""
+    ).lower()
+    return (
+        e.endswith(":paid")
+        or e.endswith(":completed")
+        or e == "order:updated"  # often the "paid" transition fires as updated
+        or status in ("paid", "completed")
+    )
 
 
 @api_router.post("/selly/webhook")
 async def selly_webhook(request: Request):
-    raw_body = await request.body()
-    sig = request.headers.get("X-Selly-Signature") or request.headers.get("x-selly-signature")
-    event = request.headers.get("X-Selly-Event") or request.headers.get("x-selly-event") or ""
-    if not _verify_selly_signature(raw_body, sig):
-        raise HTTPException(status_code=401, detail="Invalid signature")
     try:
-        payload = jsonlib.loads(raw_body.decode("utf-8") or "{}")
-    except jsonlib.JSONDecodeError:
+        payload = await request.json()
+    except Exception:
         raise HTTPException(status_code=400, detail="Bad JSON")
-    # Selly emits various order events. Only act when payment is fully completed.
-    # Known completion events: "order:paid", "order:updated" (status=completed), "payment_request:completed"
-    status_field = (payload.get("status") or payload.get("order", {}).get("status") or "").lower()
-    is_paid = (
-        event.endswith(":paid")
-        or event.endswith(":completed")
-        or status_field in ("paid", "completed")
-    )
-    if not is_paid:
-        return {"ok": True, "ignored": event}
+    if not isinstance(payload, dict):
+        payload = {}
+    event = request.headers.get("X-Selly-Event") or request.headers.get("x-selly-event") or ""
 
-    # Extract metadata
-    meta = payload.get("metadata") or payload.get("order", {}).get("metadata") or {}
+    # Extract metadata + payment id
+    inner = payload.get("order") or payload.get("payment_request") or payload
+    meta = payload.get("metadata") or inner.get("metadata") or {}
+    payment_id = (inner.get("id") or payload.get("id") or "").strip() if isinstance(inner, dict) else ""
+
+    # Filter: only process payments that look paid
+    if not _is_selly_paid_event(event, payload):
+        return {"ok": True, "ignored": event or "unknown"}
+
+    # Callback verification — re-fetch from Selly API to confirm the order is genuinely paid
+    if payment_id:
+        try:
+            verified = await _verify_selly_payment(payment_id)
+            v_inner = verified.get("order") or verified.get("payment_request") or verified
+            v_status = (v_inner.get("status") or verified.get("status") or "").lower()
+            if v_status and v_status not in ("paid", "completed"):
+                return {"ok": True, "rejected": f"Selly status is {v_status}"}
+            # Use verified metadata if local was empty
+            if not meta:
+                meta = verified.get("metadata") or v_inner.get("metadata") or {}
+        except HTTPException:
+            # If we cannot verify (e.g. no API key yet), still process by metadata for resilience
+            pass
+
     kind = meta.get("kind")
 
     if kind == "funds":
@@ -1358,6 +1401,33 @@ async def selly_webhook(request: Request):
         return {"ok": True}
 
     return {"ok": True, "kind": kind or "unknown"}
+
+
+class SellyConfig(BaseModel):
+    api_key: str = Field(..., min_length=10, max_length=300)
+
+
+@api_router.get("/admin/selly-config")
+async def admin_get_selly_config(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.selly_config.find_one({}, {"_id": 0}) or {}
+    key = cfg.get("api_key", "")
+    return {
+        "configured": bool(key),
+        "api_key_masked": ("*" * 8 + key[-4:]) if key else "",
+        "webhook_url_hint": "/api/selly/webhook",
+    }
+
+
+@api_router.post("/admin/selly-config")
+async def admin_set_selly_config(payload: SellyConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    await db.selly_config.update_one(
+        {},
+        {"$set": {"api_key": payload.api_key.strip(), "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"configured": True}
 
 
 

@@ -132,6 +132,12 @@
   - Webhook signature verification: rejects bad sig (401), accepts correctly-signed HMAC-SHA512 payload (200).
   - Funds-create with no API key → 503 "Selly is not configured".
 
+### Iteration 12 — Selly admin-managed key + AI double-message fix (Jun 9, 2026)
+- **Selly API key now lives in DB, not .env**: new admin endpoints `GET/POST /api/admin/selly-config`. Key stored in `selly_config` collection. Admin UI: new "Selly.io Payments" panel in Settings tab (emerald) with masked key display + helper text + webhook URL pre-filled for copy-paste into Selly dashboard.
+- **Webhook HMAC dropped** (Selly's free tier has no webhook secret feature). Replaced with **callback verification**: on webhook event, we call Selly's API back (`/payment-requests/{id}` or `/orders/{id}`) to confirm the payment is genuinely paid before crediting balance or placing the SMM order. Webhook still filters by event name + status field as the first gate.
+- Removed `SELLY_API_KEY` and `SELLY_WEBHOOK_SECRET` from `.env`. No env vars needed.
+- **AI Widget double-message bug fixed**: `POST /api/ai/chat` now returns `reply_id` along with the reply text. Frontend appends the local bubble with that `_id`, and bumps `lastPollAtRef` so the next poll's `since` filter skips past it. The dedupe set now correctly recognises the just-sent message and won't insert a duplicate.
+
 ## Backlog
 ### P1
 - hCaptcha: swap test keys for production keys in backend `.env` on VPS

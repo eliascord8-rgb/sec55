@@ -974,8 +974,97 @@ function SettingsPanel({ token }) {
   return (
     <div className="space-y-6">
       <SmmConfigPanel token={token} />
+      <SellyConfigPanel token={token} />
       <CryptomusPanel token={token} />
     </div>
+  );
+}
+
+function SellyConfigPanel({ token }) {
+  const [cfg, setCfg] = useState(null);
+  const [key, setKey] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/selly-config");
+      setCfg(r.data);
+    } catch {}
+  };
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const save = async (e) => {
+    e.preventDefault();
+    if (key.trim().length < 10) {
+      toast.error("Enter a valid Selly API key");
+      return;
+    }
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/selly-config", { api_key: key.trim() });
+      toast.success("Selly API key saved");
+      setKey("");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form
+      onSubmit={save}
+      data-testid="selly-config-form"
+      className="bg-[#1a1525] border border-emerald-500/30 rounded-sm p-8 max-w-2xl"
+    >
+      <div className="flex items-center gap-3 mb-2">
+        <KeyRound className="w-5 h-5 text-emerald-400" />
+        <h2 className="font-display font-bold text-lg">Selly.io Payments</h2>
+      </div>
+      <p className="text-xs text-white/50 mb-5">
+        Accepts crypto (BTC, ETH, USDT, LTC) and credit/debit cards via Selly's hosted checkout. Set the API key
+        below — you don&apos;t need a webhook secret (we verify payments by calling Selly back).
+      </p>
+      {cfg && (
+        <div className={`mb-4 p-3 rounded-sm text-xs ${cfg.configured ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" : "bg-amber-500/10 border border-amber-500/30 text-amber-300"}`}>
+          {cfg.configured ? `Active · key: ${cfg.api_key_masked}` : "Not configured — Selly checkout is disabled until you add a key."}
+        </div>
+      )}
+      <div className="space-y-4">
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">Selly API Key</Label>
+          <Input
+            data-testid="selly-api-key"
+            type="password"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder={cfg?.configured ? "re-enter to update" : "Paste your Selly API key here"}
+            className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+          />
+          <div className="text-[10px] text-white/40 mt-1">
+            Get this from <span className="font-mono text-emerald-400">selly.io/dashboard/developer</span>
+          </div>
+        </div>
+        <div className="bg-[#0d0a14] border border-white/5 rounded-sm p-3 text-xs">
+          <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1">Webhook URL (set this in Selly's dashboard)</div>
+          <div className="font-mono text-emerald-300 break-all">
+            https://better-social.pro/api/selly/webhook
+          </div>
+        </div>
+        <button
+          type="submit"
+          disabled={saving}
+          data-testid="selly-config-save"
+          className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-black rounded-sm font-bold text-xs uppercase tracking-wider disabled:opacity-50 inline-flex items-center gap-2"
+        >
+          {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+          Save Selly Key
+        </button>
+      </div>
+    </form>
   );
 }
 
