@@ -1301,13 +1301,14 @@ async def request_funds(body: FundRequest, user: CurrentUser = Depends(current_u
 SELLY_API_BASE = "https://selly.io/api/v2"
 
 
-async def _get_selly_key() -> str:
-    """Fetch the admin-configured Selly API key from DB."""
+async def _get_selly_creds() -> tuple:
+    """Fetch the admin-configured Selly API credentials (email, api_key) from DB."""
     cfg = await db.selly_config.find_one({}, {"_id": 0})
-    key = (cfg or {}).get("api_key", "")
+    key = (cfg or {}).get("api_key", "").strip()
+    email = (cfg or {}).get("email", "").strip()
     if not key:
         raise HTTPException(status_code=503, detail="Selly is not configured — admin must set the API key in the Settings tab")
-    return key
+    return email, key
 
 
 SELLY_VALID_GATEWAYS = {
@@ -1318,7 +1319,7 @@ SELLY_VALID_GATEWAYS = {
 
 async def _create_selly_invoice(amount_usd: float, title: str, metadata: dict, return_url: str, payment_gateway: str = "bitcoin") -> dict:
     """Create a hosted Selly Payment Request and return {id, url}."""
-    api_key = await _get_selly_key()
+    email, api_key = await _get_selly_creds()
     gateway = (payment_gateway or "bitcoin").lower().strip()
     if gateway not in SELLY_VALID_GATEWAYS:
         gateway = "bitcoin"
@@ -1330,15 +1331,21 @@ async def _create_selly_invoice(amount_usd: float, title: str, metadata: dict, r
         "return_url": return_url,
         "metadata": metadata,
     }
+    # Selly's primary auth = HTTP Basic Auth (email:api_key). Use that if email provided,
+    # otherwise fall back to Bearer (some Selly accounts accept token-only).
+    auth = (email, api_key) if email else None
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if not email:
+        headers["Authorization"] = f"Bearer {api_key}"
     async with httpx.AsyncClient(timeout=20.0) as c:
         r = await c.post(
             f"{SELLY_API_BASE}/payment_requests",
             json=payload,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
+            auth=auth,
+            headers=headers,
         )
         if r.status_code >= 400:
             raise HTTPException(status_code=502, detail=f"Selly error {r.status_code}: {r.text[:300]}")
@@ -1353,14 +1360,19 @@ async def _create_selly_invoice(amount_usd: float, title: str, metadata: dict, r
 
 async def _verify_selly_payment(payment_id: str) -> dict:
     """Call Selly back to verify payment status. Returns the order/payment_request body."""
-    api_key = await _get_selly_key()
+    email, api_key = await _get_selly_creds()
+    auth = (email, api_key) if email else None
+    headers = {"Accept": "application/json"}
+    if not email:
+        headers["Authorization"] = f"Bearer {api_key}"
     async with httpx.AsyncClient(timeout=15.0) as c:
-        # Try payment-requests first, then orders
+        # Try payment_requests first, then orders
         for path in (f"/payment_requests/{payment_id}", f"/orders/{payment_id}"):
             try:
                 r = await c.get(
                     f"{SELLY_API_BASE}{path}",
-                    headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+                    auth=auth,
+                    headers=headers,
                 )
                 if r.status_code == 200:
                     return r.json()
@@ -1551,6 +1563,7 @@ async def selly_webhook(request: Request):
 
 class SellyConfig(BaseModel):
     api_key: str = Field(..., min_length=10, max_length=300)
+    email: Optional[str] = ""
 
 
 @api_router.get("/admin/selly-config")
@@ -1561,6 +1574,7 @@ async def admin_get_selly_config(x_admin_token: Optional[str] = Header(None)):
     return {
         "configured": bool(key),
         "api_key_masked": ("*" * 8 + key[-4:]) if key else "",
+        "email": cfg.get("email", ""),
         "webhook_url_hint": "/api/selly/webhook",
     }
 
@@ -1570,7 +1584,11 @@ async def admin_set_selly_config(payload: SellyConfig, x_admin_token: Optional[s
     check_admin(x_admin_token)
     await db.selly_config.update_one(
         {},
-        {"$set": {"api_key": payload.api_key.strip(), "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {
+            "api_key": payload.api_key.strip(),
+            "email": (payload.email or "").strip(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
         upsert=True,
     )
     return {"configured": True}
