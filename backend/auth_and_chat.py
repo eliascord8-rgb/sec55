@@ -1190,7 +1190,13 @@ async def admin_ai_send(session_id: str, body: AdminAISend, request: Request):
     _admin_check(request)
     db: AsyncIOMotorDatabase = request.app.state.db
     settings = await get_ai_settings(db)
-    name = (body.admin_name or "").strip() or settings.get("staff_display_name") or STAFF_DISPLAY_NAME_DEFAULT
+    # Always derive the staff display name from the logged-in token
+    token = request.headers.get("x-admin-token")
+    get_actor = getattr(request.app.state, "get_actor_display_name", None)
+    if get_actor:
+        name = await get_actor(token)
+    else:
+        name = (body.admin_name or "").strip() or settings.get("staff_display_name") or STAFF_DISPLAY_NAME_DEFAULT
     now = datetime.now(timezone.utc).isoformat()
     msg = {
         "id": str(uuid.uuid4()),

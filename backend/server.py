@@ -32,7 +32,9 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "Balkin99")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "Armin1234")
 ADMIN_URL_SECRET = os.environ.get("ADMIN_URL_SECRET", "")  # set in .env for secret URL login
 ADMIN_SESSIONS = set()  # in-mem session tokens (owner)
-# Staff tokens map: token -> {username, role, perms}
+# Owner display nickname (configurable via /admin/me/nickname)
+OWNER_DISPLAY_NAME = ADMIN_USER  # in-mem, persisted in DB
+# Staff tokens map: token -> {id, username, display_name, perms}
 STAFF_SESSIONS = {}
 
 # Permission scopes a staff role can have
@@ -139,6 +141,21 @@ def check_owner(token: Optional[str]) -> None:
     """Owner-only routes — reject staff tokens."""
     if not token or token not in ADMIN_SESSIONS:
         raise HTTPException(status_code=403, detail="Owner only")
+
+
+async def get_actor_display_name(token: Optional[str]) -> str:
+    """Return the display nickname for whoever is making the request (owner or staff).
+    Used to attribute replies in tickets / AI chat to the right person."""
+    if not token:
+        return "Support"
+    if token in ADMIN_SESSIONS:
+        # Owner — use persisted nickname (falls back to in-mem default)
+        cfg = await db.app_settings.find_one({"_id": "singleton"}, {"_id": 0, "owner_display_name": 1})
+        return (cfg or {}).get("owner_display_name") or OWNER_DISPLAY_NAME or "Owner"
+    s = STAFF_SESSIONS.get(token)
+    if s:
+        return s.get("display_name") or s.get("username") or "Staff"
+    return "Support"
 
 
 def gen_coupon_code() -> str:
@@ -534,6 +551,7 @@ from auth_and_chat import hash_password as _hash_password, verify_password as _v
 class StaffCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=40, pattern=r"^[A-Za-z0-9_.\-]+$")
     password: str = Field(..., min_length=8, max_length=120)
+    display_name: Optional[str] = None
     perms: List[str] = Field(default_factory=lambda: ["tickets", "ai_inbox", "orders", "discord", "withdrawals"])
 
 
@@ -554,13 +572,14 @@ async def create_staff(payload: StaffCreate, x_admin_token: Optional[str] = Head
     doc = {
         "id": str(uuid.uuid4()),
         "username": payload.username.lower(),
+        "display_name": (payload.display_name or payload.username).strip()[:40],
         "password_hash": _hash_password(payload.password),
         "perms": perms,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "active": True,
     }
     await db.staff_users.insert_one(doc.copy())
-    return {"id": doc["id"], "username": doc["username"], "perms": perms}
+    return {"id": doc["id"], "username": doc["username"], "display_name": doc["display_name"], "perms": perms}
 
 
 @api_router.get("/admin/staff")
@@ -585,6 +604,7 @@ class StaffUpdate(BaseModel):
     perms: Optional[List[str]] = None
     active: Optional[bool] = None
     password: Optional[str] = Field(None, min_length=8, max_length=120)
+    display_name: Optional[str] = Field(None, min_length=1, max_length=40)
 
 
 @api_router.patch("/admin/staff/{staff_id}")
@@ -597,16 +617,20 @@ async def update_staff(staff_id: str, payload: StaffUpdate, x_admin_token: Optio
         upd["active"] = payload.active
     if payload.password:
         upd["password_hash"] = _hash_password(payload.password)
+    if payload.display_name is not None:
+        upd["display_name"] = payload.display_name.strip()[:40]
     if not upd:
         return {"updated": False}
     res = await db.staff_users.update_one({"id": staff_id}, {"$set": upd})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
-    # Refresh existing tokens' perms map
-    if "perms" in upd:
-        for t, s in STAFF_SESSIONS.items():
-            if s.get("id") == staff_id:
+    # Refresh existing tokens' perms / display name
+    for t, s in STAFF_SESSIONS.items():
+        if s.get("id") == staff_id:
+            if "perms" in upd:
                 s["perms"] = set(upd["perms"])
+            if "display_name" in upd:
+                s["display_name"] = upd["display_name"]
     return {"updated": True}
 
 
@@ -620,22 +644,67 @@ async def staff_login(payload: StaffLogin):
     STAFF_SESSIONS[token] = {
         "id": user["id"],
         "username": user["username"],
+        "display_name": user.get("display_name") or user["username"],
         "perms": set(user.get("perms", [])),
     }
-    return {"token": token, "username": user["username"], "perms": list(user.get("perms", [])), "role": "staff"}
+    return {
+        "token": token,
+        "username": user["username"],
+        "display_name": user.get("display_name") or user["username"],
+        "perms": list(user.get("perms", [])),
+        "role": "staff",
+    }
 
 
 @api_router.get("/admin/me")
 async def admin_me(x_admin_token: Optional[str] = Header(None)):
-    """Tell the admin frontend which role + perms the current token has."""
+    """Tell the admin frontend which role + perms + display name the current token has."""
     if not x_admin_token:
         raise HTTPException(status_code=401, detail="Unauthorized")
     if x_admin_token in ADMIN_SESSIONS:
-        return {"role": "owner", "perms": list(STAFF_PERMS) + ["all"]}
+        cfg = await db.app_settings.find_one({"_id": "singleton"}, {"_id": 0, "owner_display_name": 1}) or {}
+        return {
+            "role": "owner",
+            "username": ADMIN_USER,
+            "display_name": cfg.get("owner_display_name") or OWNER_DISPLAY_NAME,
+            "perms": list(STAFF_PERMS) + ["all"],
+        }
     s = STAFF_SESSIONS.get(x_admin_token)
     if s:
-        return {"role": "staff", "username": s["username"], "perms": list(s["perms"])}
+        return {
+            "role": "staff",
+            "username": s["username"],
+            "display_name": s.get("display_name") or s["username"],
+            "perms": list(s["perms"]),
+        }
     raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+class NicknameUpdate(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=40)
+
+
+@api_router.post("/admin/me/nickname")
+async def update_my_nickname(payload: NicknameUpdate, x_admin_token: Optional[str] = Header(None)):
+    """Owner or staff updates their own display nickname (shown to clients in chats/tickets)."""
+    if not x_admin_token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    new_name = payload.display_name.strip()[:40]
+    if x_admin_token in ADMIN_SESSIONS:
+        global OWNER_DISPLAY_NAME
+        OWNER_DISPLAY_NAME = new_name
+        await db.app_settings.update_one(
+            {"_id": "singleton"},
+            {"$set": {"owner_display_name": new_name}},
+            upsert=True,
+        )
+        return {"display_name": new_name, "role": "owner"}
+    s = STAFF_SESSIONS.get(x_admin_token)
+    if not s:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    await db.staff_users.update_one({"id": s["id"]}, {"$set": {"display_name": new_name}})
+    s["display_name"] = new_name
+    return {"display_name": new_name, "role": "staff"}
 
 
 
@@ -1769,7 +1838,7 @@ async def admin_get_ticket(ticket_id: str, x_admin_token: Optional[str] = Header
 
 class AdminTicketReply(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
-    staff_name: Optional[str] = "Support"
+    staff_name: Optional[str] = None  # ignored — author is auto-derived from token
 
 
 @api_router.post("/admin/tickets/{ticket_id}/reply")
@@ -1779,19 +1848,20 @@ async def admin_reply_ticket(ticket_id: str, body: AdminTicketReply, x_admin_tok
     if not t:
         raise HTTPException(status_code=404, detail="Ticket not found")
     now = datetime.now(timezone.utc).isoformat()
+    author_name = await get_actor_display_name(x_admin_token)
     await db.ticket_messages.insert_one({
         "id": str(uuid.uuid4()),
         "ticket_id": ticket_id,
         "author_role": "staff",
-        "author_name": (body.staff_name or "Support").strip()[:40],
+        "author_name": author_name,
         "message": body.message.strip()[:4000],
         "created_at": now,
     })
     await db.tickets.update_one(
         {"id": ticket_id},
-        {"$set": {"status": "answered", "updated_at": now, "last_reply_by": "staff", "client_unread": True}},
+        {"$set": {"status": "answered", "updated_at": now, "last_reply_by": "staff", "last_reply_author": author_name, "client_unread": True}},
     )
-    return {"ok": True}
+    return {"ok": True, "author_name": author_name}
 
 
 @api_router.post("/admin/tickets/{ticket_id}/close")
@@ -2332,11 +2402,17 @@ app.include_router(ai_router)
 app.state.db = db
 app.state.place_smm_order = place_smm_order
 app.state.check_admin = check_admin
+app.state.get_actor_display_name = get_actor_display_name
 
 
 @app.on_event("startup")
 async def _startup():
     await seed_owner(db)
+    # Restore owner display nickname from DB
+    global OWNER_DISPLAY_NAME
+    cfg = await db.app_settings.find_one({"_id": "singleton"}, {"_id": 0, "owner_display_name": 1})
+    if cfg and cfg.get("owner_display_name"):
+        OWNER_DISPLAY_NAME = cfg["owner_display_name"]
 
 app.add_middleware(
     CORSMiddleware,

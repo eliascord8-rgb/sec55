@@ -15,22 +15,30 @@ export default function Admin() {
   const [secretLoggingIn, setSecretLoggingIn] = useState(false);
   const [role, setRole] = useState("owner"); // 'owner' | 'staff'
   const [perms, setPerms] = useState([]);
+  const [displayName, setDisplayName] = useState("");
+  const [username, setUsername] = useState("");
   const navigate = useNavigate();
 
-  // Load role + perms once we have a token
-  useEffect(() => {
+  // Load role + perms + display_name once we have a token
+  const loadMe = () => {
     if (!token) return;
     adminApi(token)
       .get("/admin/me")
       .then((r) => {
         setRole(r.data.role || "owner");
         setPerms(r.data.perms || []);
+        setDisplayName(r.data.display_name || "");
+        setUsername(r.data.username || "");
       })
       .catch(() => {
         // invalid token — clear
         localStorage.removeItem("bs_admin_token");
         setToken("");
       });
+  };
+  useEffect(() => {
+    loadMe();
+    // eslint-disable-next-line
   }, [token]);
 
   const can = (p) => role === "owner" || perms.includes(p);
@@ -168,10 +176,34 @@ export default function Admin() {
     );
   }
 
-  return <Dashboard token={token} onLogout={logout} role={role} can={can} />;
+  return <Dashboard token={token} onLogout={logout} role={role} can={can} displayName={displayName} username={username} loadMe={loadMe} />;
 }
 
-function Dashboard({ token, onLogout, role, can }) {
+function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }) {
+  const [nickOpen, setNickOpen] = useState(false);
+  const [nickValue, setNickValue] = useState(displayName || "");
+  const [savingNick, setSavingNick] = useState(false);
+  useEffect(() => { setNickValue(displayName || ""); }, [displayName]);
+
+  const saveNick = async () => {
+    const v = (nickValue || "").trim();
+    if (v.length < 1) {
+      toast.error("Nickname can't be empty");
+      return;
+    }
+    setSavingNick(true);
+    try {
+      await adminApi(token).post("/admin/me/nickname", { display_name: v });
+      toast.success(`Nickname updated to "${v}"`);
+      setNickOpen(false);
+      loadMe && loadMe();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to update nickname");
+    } finally {
+      setSavingNick(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#0d0a14]">
       <header className="border-b border-white/5 bg-[#050505]/80 backdrop-blur sticky top-0 z-10">
@@ -182,15 +214,55 @@ function Dashboard({ token, onLogout, role, can }) {
             </div>
             <span className="font-display font-black">Admin Console</span>
           </Link>
-          <button
-            onClick={onLogout}
-            data-testid="admin-logout"
-            className="inline-flex items-center gap-2 px-4 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5 transition"
-          >
-            <LogOut className="w-3 h-3" /> Logout
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setNickOpen(true)}
+              data-testid="admin-nickname-btn"
+              className="hidden sm:inline-flex items-center gap-2 px-3 py-2 border border-emerald-400/30 bg-emerald-500/10 rounded-sm text-xs hover:bg-emerald-500/20 transition"
+              title="Click to change the nickname shown to clients"
+            >
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-emerald-200">
+                Posting as <span className="font-bold text-white">{displayName || username || "—"}</span>
+              </span>
+            </button>
+            <button
+              onClick={onLogout}
+              data-testid="admin-logout"
+              className="inline-flex items-center gap-2 px-4 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5 transition"
+            >
+              <LogOut className="w-3 h-3" /> Logout
+            </button>
+          </div>
         </div>
       </header>
+
+      {nickOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => !savingNick && setNickOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="bg-[#1a1525] border border-emerald-500/30 rounded-sm p-6 max-w-md w-full">
+            <h3 className="font-display font-bold text-lg mb-1">Change your nickname</h3>
+            <p className="text-[11px] text-white/50 mb-4">
+              This is the name clients will see when you reply in chats and tickets. ({role === "owner" ? "Owner" : `Staff: @${username}`})
+            </p>
+            <Input
+              data-testid="nickname-input"
+              value={nickValue}
+              onChange={(e) => setNickValue(e.target.value.slice(0, 40))}
+              placeholder="e.g. Alex from Support"
+              className="bg-[#0d0a14] border-white/10 mb-4"
+            />
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setNickOpen(false)} disabled={savingNick} className="px-4 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5">
+                Cancel
+              </button>
+              <button onClick={saveNick} disabled={savingNick} data-testid="nickname-save" className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-50 inline-flex items-center gap-2">
+                {savingNick ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                Save Nickname
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="max-w-7xl mx-auto px-6 md:px-10 py-10">
         <Tabs defaultValue={role === "staff" ? (can("ai_inbox") ? "inbox" : "tickets") : "orders"} className="w-full">
@@ -333,13 +405,13 @@ function Dashboard({ token, onLogout, role, can }) {
             <WithdrawalsAdminPanel token={token} />
           </TabsContent>
           <TabsContent value="tickets">
-            <TicketsAdminPanel token={token} />
+            <TicketsAdminPanel token={token} displayName={displayName} />
           </TabsContent>
           <TabsContent value="ai">
             <AIPanel token={token} />
           </TabsContent>
           <TabsContent value="inbox">
-            <AIInboxPanel token={token} />
+            <AIInboxPanel token={token} displayName={displayName} reloadMe={loadMe} />
           </TabsContent>
           <TabsContent value="discord">
             <DiscordPanel token={token} />
