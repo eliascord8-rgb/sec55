@@ -3,6 +3,17 @@
 ## Original Problem Statement
 "Make a normal SMM landing page but better. When someone wants to buy, press checkout button → redirects to the purchase box. No login — peoples buy directly. They can pay using a generated gift card from us (use coupon to pay) or pay by CoinPayments. List all offers from smmcost.com API (key 47b5c3b01e4b5ecd1e53b39baef31a6e). When the user presses order, take the money via the API. If pay using CoinPayments, after complete status show a sweet alert success message and send the API request immediately. Site title and on-site name: 'Better Social'. Make a separate page with admin panel access (username: DEMO, password: DEMO). On admin panel: only order logs (with IP of buyers) and generated coupons with custom amount."
 
+## Recent Updates (Jun 27, 2026)
+- ✅ **SMTP email integration** — Welcome email on registration + Password reset flow (forgot-password modal, /reset page, reset_password endpoint). Admin configures SMTP host/port/user/password in Settings → Email (SMTP).
+- ✅ **Manual services** — Admin can add custom services (no API ID): title, description, flat price, delivery minutes. Doesn't call SMM API on order — flagged for manual fulfillment.
+- ✅ **Delivery time auto-extraction** — During sync, parses provider description for delivery time (regex). Admin can override.
+- ✅ **Selly.io Basic Auth fix** — Was using Bearer only; Selly's primary auth is HTTP Basic with `email:api_key`. Added email field in Admin → Settings → Selly Config.
+- ✅ **Gateway picker** — BTC/ETH/LTC/BCH/DOGE/Card selector for Selly checkout (Funds + Order pages).
+- ✅ **Nickname system** — Each staff/owner has a `display_name`. Auto-attached to AI chat and ticket replies. Click "Posting as @X" in admin header to change.
+- ✅ **Dashboard redesign (Selly-inspired)** — Cleaner card layout, removed community chat from home view.
+- ✅ **Community chat disabled** on home dashboard (still works internally if needed).
+- ✅ **Removed all client-facing "SMM" mentions** — Landing, dashboard, status page, checkout, AI widget — all changed to "Order" / "Better Social" / generic terms.
+
 ## User Choices (Feb 29, 2026)
 - CoinPayments: keys configured later via Admin → Settings (no env vars)
 - Coupons: multi-use, deplete-by-balance

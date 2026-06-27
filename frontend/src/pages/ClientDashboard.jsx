@@ -30,6 +30,8 @@ import {
   Zap,
   Dices,
   ArrowUpRight,
+  Calendar,
+  MessageSquare,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -303,16 +305,7 @@ export default function ClientDashboard() {
           {/* MAIN CONTENT */}
           <div>
             {view === "home" && (
-              <HomeView
-                user={user}
-                stats={stats}
-                messages={messages}
-                send={send}
-                sending={sending}
-                text={text}
-                setText={setText}
-                chatEndRef={chatEndRef}
-              />
+              <HomeView user={user} stats={stats} />
             )}
             {view === "funds" && (
               <FundsView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
@@ -449,61 +442,108 @@ function SideLink({ icon: Icon, label, active, onClick, testId, badge, badgeKind
   );
 }
 
-function HomeView({ user, stats, messages, send, sending, text, setText, chatEndRef }) {
+function HomeView({ user, stats, last7 }) {
+  const balance = stats ? Number(stats.balance || 0) : 0;
+  const withdrawable = stats ? Number(stats.withdrawable_balance || 0) : 0;
+  const orders = stats ? Number(stats.total_orders || 0) : 0;
+  const onlineUsers = stats ? Number(stats.online_users || 0) : 0;
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="font-display text-2xl md:text-4xl font-black tracking-tight">
-          Hey <span className="gradient-text">{user.username}</span>.
-        </h1>
-        <p className="text-white/50 text-sm mt-1">Your overview and the community lobby.</p>
+    <div className="space-y-8">
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        <div>
+          <h1 className="font-display text-3xl md:text-4xl font-black tracking-tight">
+            Dashboard
+          </h1>
+          <p className="text-white/50 text-sm mt-1.5">
+            Welcome <span className="text-white font-bold">{user.username}</span>, let&apos;s see how things are going.
+          </p>
+        </div>
+        <div className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#0d0a14] border border-white/5 rounded-md text-xs text-white/60">
+          <Calendar className="w-3.5 h-3.5 text-[#3b82f6]" />
+          Last 7 days
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
-        <StatBox icon={Wallet} label="Balance" value={stats ? `$${Number(stats.balance).toFixed(2)}` : "—"} color="#FF007F" testId="stat-balance" />
-        <StatBox icon={Users} label="Online" value={stats ? stats.online_users : "—"} color="#00E5FF" testId="stat-online" />
-        <StatBox icon={ShoppingBag} label="Orders" value={stats ? stats.total_orders : "—"} color="#7000FF" testId="stat-orders" />
-        <StatBox icon={UserCheck} label="Users" value={stats ? stats.registered_users : "—"} color="#FFB800" testId="stat-registered" />
+      {/* Top row — three big metric cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <BigStatCard
+          label="Balance"
+          value={`$${balance.toFixed(2)}`}
+          accent="#3b82f6"
+          testId="big-stat-balance"
+        />
+        <BigStatCard
+          label="Total Orders"
+          value={orders}
+          accent="#3b82f6"
+          testId="big-stat-orders"
+        />
+        <BigStatCard
+          label="Withdrawable"
+          value={`$${withdrawable.toFixed(2)}`}
+          accent="#3b82f6"
+          testId="big-stat-withdrawable"
+        />
       </div>
 
-      <div
-        data-testid="community-chat"
-        className="bg-[#0d0a14] border border-white/5 rounded-sm flex flex-col h-[420px] md:h-[520px]"
-      >
-        <div className="px-4 md:px-5 py-3 border-b border-white/5 flex items-center justify-between">
-          <div>
-            <h2 className="font-display font-bold">Community Chat</h2>
-            <p className="text-[10px] uppercase tracking-wider text-white/40">Be kind · be useful</p>
-          </div>
-          <div className="text-[10px] uppercase tracking-wider text-[#00E5FF]">LIVE</div>
-        </div>
-        <div className="flex-1 overflow-y-auto px-3 md:px-4 py-3 space-y-2" data-testid="chat-messages">
-          {messages.length === 0 && (
-            <div className="text-center text-white/30 text-xs py-10">No messages yet — say hi!</div>
-          )}
-          {messages.map((m) => <Msg key={m.id} m={m} />)}
-          <div ref={chatEndRef} />
-        </div>
-        <form onSubmit={send} className="border-t border-white/5 p-3 flex gap-2">
-          <Input
-            data-testid="chat-input"
-            placeholder="Say something…"
-            value={text}
-            onChange={(e) => setText(e.target.value.slice(0, 500))}
-            maxLength={500}
-            className="bg-[#1a1525] border-white/10"
-          />
-          <button
-            type="submit"
-            disabled={sending || !text.trim()}
-            data-testid="chat-send"
-            className="px-4 gradient-pp rounded-sm font-bold disabled:opacity-40 inline-flex items-center"
-          >
-            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-          </button>
-        </form>
+      {/* Second row — smaller secondary metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <BigStatCard
+          label="Online Users"
+          value={onlineUsers}
+          accent="#10b981"
+          testId="big-stat-online"
+        />
+        <BigStatCard
+          label="Registered Users"
+          value={stats ? stats.registered_users : "—"}
+          accent="#10b981"
+          testId="big-stat-registered"
+        />
+      </div>
+
+      {/* Quick actions */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <QuickAction icon={Plus} label="Add Funds" tab="funds" testId="quick-funds" />
+        <QuickAction icon={ShoppingBag} label="New Order" tab="orders" testId="quick-orders" />
+        <QuickAction icon={MessageSquare} label="Open Ticket" tab="tickets" testId="quick-tickets" />
       </div>
     </div>
+  );
+}
+
+function BigStatCard({ label, value, accent, testId }) {
+  return (
+    <div
+      data-testid={testId}
+      className="bg-[#1a1525] border border-white/5 rounded-md p-6 hover:border-white/10 transition group"
+    >
+      <div className="text-xs uppercase tracking-wider text-white/40 mb-3">{label}</div>
+      <div className="text-3xl md:text-4xl font-display font-black text-white tracking-tight mb-4">{value}</div>
+      <div className="h-1 rounded-full bg-white/5 overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: "60%", background: accent }} />
+      </div>
+    </div>
+  );
+}
+
+function QuickAction({ icon: Icon, label, tab, testId }) {
+  const navigate = useNavigate();
+  return (
+    <button
+      data-testid={testId}
+      onClick={() => navigate(`/client/dashboard?tab=${tab}`)}
+      className="bg-[#0d0a14] border border-white/5 rounded-md p-5 flex items-center gap-4 hover:border-[#3b82f6]/40 hover:bg-[#1a1525] transition text-left"
+    >
+      <div className="w-11 h-11 rounded-md bg-[#3b82f6]/10 border border-[#3b82f6]/30 flex items-center justify-center">
+        <Icon className="w-5 h-5 text-[#3b82f6]" />
+      </div>
+      <div>
+        <div className="font-bold text-sm">{label}</div>
+        <div className="text-[11px] text-white/40 mt-0.5">Tap to open</div>
+      </div>
+    </button>
   );
 }
 
@@ -1133,7 +1173,7 @@ function BuyView({ authedApi, balance, reloadBalance }) {
         <div className="bg-[#0d0a14] border border-emerald-500/40 rounded-sm p-4 flex items-center justify-between gap-3">
           <div className="text-xs">
             <span className="text-emerald-400 font-bold">Last order placed</span>{" "}
-            — SMM ID <span className="font-mono">#{last.id}</span> · charged{" "}
+            — Order ID <span className="font-mono">#{last.id}</span> · charged{" "}
             <span className="text-[#FF007F] font-bold">${last.charge.toFixed(2)}</span>
           </div>
           <button

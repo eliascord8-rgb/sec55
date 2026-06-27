@@ -74,7 +74,7 @@ export default function OrderPage() {
       if (r.data.status === "success") {
         Swal.fire({
           title: "Order Placed!",
-          html: `<div style="font-family:'IBM Plex Sans'">Your SMM order has been submitted.<br/><br/><b style="color:#FF007F">SMM Order ID: ${r.data.smm_order_id || "—"}</b></div>`,
+          html: `<div style="font-family:'IBM Plex Sans'">Your order has been submitted.<br/><br/><b style="color:#FF007F">Order ID: ${r.data.smm_order_id || "—"}</b></div>`,
           icon: "success",
           iconColor: "#00E5FF",
           background: "#1a1525",

@@ -9,6 +9,13 @@ import Swal from "sweetalert2";
 
 const fmt = (n) => `$${Number(n).toFixed(2)}`;
 
+const formatDelivery = (mins) => {
+  const m = Number(mins) || 0;
+  if (m < 60) return `${m} min`;
+  if (m < 60 * 24) return `${(m / 60).toFixed(m % 60 ? 1 : 0)} h`;
+  return `${(m / 60 / 24).toFixed(m % (60 * 24) ? 1 : 0)} d`;
+};
+
 export default function CheckoutDialog({ open, onOpenChange, initialService }) {
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -39,7 +46,7 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
   useEffect(() => {
     if (initialService) {
       setSelected(initialService);
-      setQty(initialService.min ? Number(initialService.min) : 1000);
+      setQty(initialService.manual ? 1 : (initialService.min ? Number(initialService.min) : 1000));
     }
   }, [initialService]);
 
@@ -58,12 +65,20 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
   }, [services, search, category]);
 
   const price = useMemo(() => {
-    if (!selected || !qty) return 0;
+    if (!selected) return 0;
+    if (selected.manual) {
+      return Number(selected.price_flat || selected.rate || 0);
+    }
+    if (!qty) return 0;
     const rate = parseFloat(selected.rate || 0);
     return (rate * Number(qty)) / 1000;
   }, [selected, qty]);
 
-  const validQty = selected && qty >= Number(selected.min || 0) && qty <= Number(selected.max || 1e12);
+  const validQty = !selected
+    ? false
+    : selected.manual
+      ? true
+      : qty >= Number(selected.min || 0) && qty <= Number(selected.max || 1e12);
 
   const checkCoupon = async () => {
     try {
@@ -77,7 +92,7 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
   const showSuccess = (smmId) => {
     Swal.fire({
       title: "Order Placed!",
-      html: `<div style="font-family:'IBM Plex Sans'">Your SMM order has been submitted.<br/><br/><b style="color:#FF007F">SMM Order ID: ${smmId || "—"}</b></div>`,
+      html: `<div style="font-family:'IBM Plex Sans'">Your order has been submitted.<br/><br/><b style="color:#FF007F">Order ID: ${smmId || "—"}</b></div>`,
       icon: "success",
       iconColor: "#00E5FF",
       background: "#1a1525",
@@ -244,7 +259,7 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                   data-testid={`service-${s.service}`}
                   onClick={() => {
                     setSelected(s);
-                    setQty(Number(s.min || 1000));
+                    setQty(s.manual ? 1 : Number(s.min || 1000));
                   }}
                   className={`w-full text-left p-4 rounded-sm border transition group ${
                     selected?.service === s.service
@@ -321,33 +336,49 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                   <div className="text-xs uppercase tracking-[0.2em] text-[#FF007F] mb-1">Selected</div>
                   <div className="text-sm font-medium" data-testid="selected-service-name">{selected.name}</div>
                   <div className="text-[11px] text-white/40 font-mono">
-                    Rate ${Number(selected.rate).toFixed(3)}/1k · Min {selected.min} · Max {selected.max}
+                    {selected.manual
+                      ? `Flat $${Number(selected.price_flat || selected.rate || 0).toFixed(2)}`
+                      : `Rate $${Number(selected.rate).toFixed(3)}/1k · Min ${selected.min} · Max ${selected.max}`}
                   </div>
+                  {selected.delivery_minutes ? (
+                    <div className="text-[11px] text-emerald-400 mt-1 font-medium">
+                      ⚡ Delivery ~{formatDelivery(selected.delivery_minutes)}
+                    </div>
+                  ) : null}
+                  {selected.description ? (
+                    <p className="text-[11px] text-white/60 mt-2 leading-relaxed bg-[#0d0a14] rounded-sm p-2 border border-white/5">
+                      {selected.description}
+                    </p>
+                  ) : null}
                 </div>
 
                 <div>
-                  <Label className="text-[11px] uppercase tracking-wider text-white/60">Link / Username</Label>
+                  <Label className="text-[11px] uppercase tracking-wider text-white/60">
+                    {selected.manual ? "Notes / Details for us" : "Link / Username"}
+                  </Label>
                   <Input
                     data-testid="link-input"
-                    placeholder="https://instagram.com/username"
+                    placeholder={selected.manual ? "Anything we need to know (URL, brief, account, etc.)" : "https://instagram.com/username"}
                     value={link}
                     onChange={(e) => setLink(e.target.value)}
                     className="bg-[#1a1525] border-white/10 mt-1"
                   />
                 </div>
 
-                <div>
-                  <Label className="text-[11px] uppercase tracking-wider text-white/60">Quantity</Label>
-                  <Input
-                    data-testid="qty-input"
-                    type="number"
-                    min={selected.min}
-                    max={selected.max}
-                    value={qty}
-                    onChange={(e) => setQty(e.target.value)}
-                    className="bg-[#1a1525] border-white/10 mt-1 font-mono"
-                  />
-                </div>
+                {!selected.manual && (
+                  <div>
+                    <Label className="text-[11px] uppercase tracking-wider text-white/60">Quantity</Label>
+                    <Input
+                      data-testid="qty-input"
+                      type="number"
+                      min={selected.min}
+                      max={selected.max}
+                      value={qty}
+                      onChange={(e) => setQty(e.target.value)}
+                      className="bg-[#1a1525] border-white/10 mt-1 font-mono"
+                    />
+                  </div>
+                )}
 
                 <div>
                   <Label className="text-[11px] uppercase tracking-wider text-white/60">Email (optional)</Label>
@@ -460,7 +491,7 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                         </div>
                       </div>
                       <p className="text-[10px] text-white/50">
-                        You&apos;ll be redirected to Selly&apos;s hosted page. After confirmation we&apos;ll auto-place your SMM order.
+                        You&apos;ll be redirected to Selly&apos;s hosted page. After confirmation we&apos;ll auto-place your order.
                       </p>
                     </div>
                   </TabsContent>

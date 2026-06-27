@@ -1737,6 +1737,72 @@ async def selly_webhook(request: Request):
     return {"ok": True, "kind": kind or "unknown"}
 
 
+class EmailConfig(BaseModel):
+    smtp_host: str = Field(..., min_length=2, max_length=200)
+    smtp_port: int = Field(587, ge=1, le=65535)
+    smtp_user: str = Field(..., min_length=2, max_length=200)
+    smtp_password: Optional[str] = ""
+    from_email: Optional[str] = ""
+    from_name: Optional[str] = "Better Social"
+    use_tls: bool = True
+
+
+@api_router.get("/admin/email-config")
+async def admin_get_email_config(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.email_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    pw = cfg.get("smtp_password", "")
+    return {
+        "configured": bool(cfg.get("smtp_host") and cfg.get("smtp_user")),
+        "smtp_host": cfg.get("smtp_host", ""),
+        "smtp_port": cfg.get("smtp_port", 587),
+        "smtp_user": cfg.get("smtp_user", ""),
+        "password_set": bool(pw),
+        "from_email": cfg.get("from_email", ""),
+        "from_name": cfg.get("from_name", "Better Social"),
+        "use_tls": cfg.get("use_tls", True),
+    }
+
+
+@api_router.post("/admin/email-config")
+async def admin_set_email_config(payload: EmailConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    upd = {
+        "smtp_host": payload.smtp_host.strip(),
+        "smtp_port": int(payload.smtp_port),
+        "smtp_user": payload.smtp_user.strip(),
+        "from_email": (payload.from_email or payload.smtp_user).strip(),
+        "from_name": (payload.from_name or "Better Social").strip(),
+        "use_tls": bool(payload.use_tls),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Only update password if a new non-empty one is provided (preserve existing on edits)
+    if payload.smtp_password:
+        upd["smtp_password"] = payload.smtp_password
+    await db.email_config.update_one(
+        {"_id": "singleton"},
+        {"$set": upd},
+        upsert=True,
+    )
+    return {"ok": True, "configured": True}
+
+
+class TestEmailRequest(BaseModel):
+    to: str = Field(..., min_length=3, max_length=200)
+
+
+@api_router.post("/admin/email-config/test")
+async def admin_send_test_email(payload: TestEmailRequest, x_admin_token: Optional[str] = Header(None)):
+    """Send a test email so admin can verify SMTP works without registering a fake user."""
+    check_admin(x_admin_token)
+    from email_service import send_email, _wrap
+    body = _wrap("<h2 style='margin:0 0 12px;color:#fff;'>SMTP test ✅</h2><p>Your SMTP configuration is working. You can safely close this email.</p>")
+    res = await send_email(db, payload.to.strip(), "Better Social — SMTP test", body)
+    if not res.get("ok"):
+        raise HTTPException(status_code=502, detail=res.get("error") or "SMTP send failed")
+    return {"ok": True, "to": payload.to.strip()}
+
+
 class SellyConfig(BaseModel):
     api_key: str = Field(..., min_length=10, max_length=300)
     email: Optional[str] = ""
