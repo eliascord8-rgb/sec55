@@ -883,7 +883,54 @@ async def admin_list_users(x_admin_token: Optional[str] = Header(None)):
         {},
         {"_id": 0, "password_hash": 0},
     ).sort("created_at", -1).to_list(500)
+    # Enrich each user with current wallet balance + withdrawable
+    for u in items:
+        try:
+            u["balance"] = await _get_user_balance(u["id"])
+            u["withdrawable"] = await _get_user_withdrawable(u["id"])
+        except Exception:
+            u["balance"] = 0
+            u["withdrawable"] = 0
     return {"users": items, "count": len(items)}
+
+
+class AdminBalanceAdjust(BaseModel):
+    amount: float = Field(..., ge=-100000, le=100000)  # positive = add, negative = subtract
+    reason: Optional[str] = "admin_adjustment"
+    note: Optional[str] = ""
+
+
+@api_router.post("/admin/users/{user_id}/adjust-balance")
+async def admin_adjust_user_balance(
+    user_id: str,
+    payload: AdminBalanceAdjust,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """Owner/staff (with admin perms) credits or debits a user's wallet balance.
+    Persists as a transaction so it shows in their history."""
+    check_admin(x_admin_token)
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "id": 1, "username": 1})
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload.amount == 0:
+        raise HTTPException(status_code=400, detail="Amount cannot be zero")
+    actor = await get_actor_display_name(x_admin_token)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "username": u["username"],
+        "amount": round(float(payload.amount), 2),
+        "method": "admin",
+        "status": "approved",
+        "type": payload.reason or "admin_adjustment",
+        "note": (payload.note or f"by {actor}")[:200],
+        "actor": actor,
+        "created_at": now,
+        "approved_at": now,
+    })
+    new_balance = await _get_user_balance(user_id)
+    return {"ok": True, "new_balance": new_balance, "actor": actor}
 
 
 class AdminUserUpdate(BaseModel):
@@ -2645,6 +2692,8 @@ app.state.db = db
 app.state.place_smm_order = place_smm_order
 app.state.check_admin = check_admin
 app.state.get_actor_display_name = get_actor_display_name
+app.state.get_user_balance = _get_user_balance
+app.state.get_user_withdrawable = _get_user_withdrawable
 
 
 @app.on_event("startup")
