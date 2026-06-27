@@ -32,6 +32,7 @@ import {
   ArrowUpRight,
   Calendar,
   MessageSquare,
+  Bell,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -164,145 +165,156 @@ export default function ClientDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white">
-      <header className="border-b border-white/5 bg-[#0d0a14]/90 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 md:px-10 h-14 md:h-16 flex items-center justify-between gap-3">
-          <Link to="/" className="flex items-center gap-2" data-testid="brand-logo">
-            <div className="w-7 h-7 rounded-sm gradient-pp flex items-center justify-center">
-              <Sparkles className="w-3.5 h-3.5" strokeWidth={2.5} />
+    <div className="min-h-screen bg-[#0a0a14] text-white">
+      {/* TOP BAR — blue, like Selly */}
+      <header className="bg-[#2563eb] sticky top-0 z-20 shadow-lg shadow-[#2563eb]/20">
+        <div className="flex items-center h-16">
+          {/* Brand block — fixed width matches sidebar */}
+          <div className="hidden lg:flex items-center gap-2 w-[240px] px-6 border-r border-white/10">
+            <div className="w-8 h-8 rounded-md bg-white/20 backdrop-blur flex items-center justify-center">
+              <Sparkles className="w-4 h-4 text-white" strokeWidth={2.5} />
             </div>
-            <span className="font-display font-black text-base">
-              Better<span className="text-[#FF007F]">Social</span>
-            </span>
-            <span className="ml-2 text-[10px] uppercase tracking-[0.2em] text-white/40 hidden md:inline">
-              Client Area
-            </span>
-          </Link>
-          <div className="flex items-center gap-3">
+            <span className="font-display font-black text-base text-white">Better<span className="text-white/70">Social</span></span>
+          </div>
+          <div className="lg:hidden flex items-center gap-2 px-4">
+            <div className="w-7 h-7 rounded-md bg-white/20 flex items-center justify-center">
+              <Sparkles className="w-3.5 h-3.5 text-white" />
+            </div>
+            <span className="font-display font-black text-sm text-white">BS</span>
+          </div>
+
+          {/* Search */}
+          <div className="flex-1 px-4 md:px-8 max-w-2xl">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/60" />
+              <input
+                data-testid="dashboard-search"
+                placeholder="Search or ask a question"
+                className="w-full bg-white/15 hover:bg-white/20 focus:bg-white/25 transition border-0 rounded-md pl-10 pr-4 py-2.5 text-sm text-white placeholder-white/60 outline-none focus:ring-2 focus:ring-white/30"
+              />
+            </div>
+          </div>
+
+          {/* Right cluster */}
+          <div className="flex items-center gap-2 md:gap-3 px-4 md:px-6 ml-auto">
             <button
               onClick={() => setView("casino")}
               data-testid="header-try-chance"
-              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[#FFB800]/40 text-[#FFB800] text-[11px] uppercase tracking-wider font-bold hover:bg-[#FFB800]/10 transition group"
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#FFB800]/20 border border-[#FFB800]/40 text-[#FFB800] text-[11px] uppercase tracking-wider font-bold hover:bg-[#FFB800]/30 transition"
             >
-              <Dices className="w-3.5 h-3.5 group-hover:rotate-12 transition" />
+              <Dices className="w-3.5 h-3.5" />
               Try Chance
             </button>
-            <RoleBadge role={user.role} />
-            <span className="text-sm text-white/80 hidden sm:inline" data-testid="client-username">
-              @{user.username}
-            </span>
+            <button
+              data-testid="header-bell"
+              className="relative w-9 h-9 rounded-md hover:bg-white/15 flex items-center justify-center transition"
+              title="Notifications"
+            >
+              <Bell className="w-4 h-4 text-white" />
+              {unreadTickets > 0 && (
+                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500 ring-2 ring-[#2563eb]" />
+              )}
+            </button>
+            <div className="hidden sm:flex items-center gap-2 pl-3 ml-1 border-l border-white/15">
+              <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-xs font-bold text-white" data-testid="client-username">
+                {user.username.slice(0, 2).toUpperCase()}
+              </div>
+              <div className="text-xs">
+                <div className="font-bold text-white leading-tight">{user.username}</div>
+                <div className="text-white/70 leading-tight">{user.role || "member"}</div>
+              </div>
+            </div>
             <button
               onClick={() => {
                 logout();
                 nav("/");
               }}
               data-testid="client-logout"
-              className="inline-flex items-center gap-1 px-3 py-1.5 border border-white/10 rounded-sm text-[11px] uppercase tracking-wider hover:bg-white/5"
+              className="ml-1 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md hover:bg-white/15 text-white/90 transition"
+              title="Logout"
             >
-              <LogOut className="w-3 h-3" /> Logout
+              <LogOut className="w-4 h-4" />
             </button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 md:px-10 py-6 md:py-10">
-        <div className="grid lg:grid-cols-[220px_1fr] gap-6">
-          {/* SIDEBAR */}
-          <aside
-            data-testid="dashboard-sidebar"
-            className="bg-gradient-to-b from-[#0d0a14] via-[#0d0a14] to-[#13091a] border border-white/5 rounded-sm p-3 h-fit lg:sticky lg:top-20 space-y-0.5"
-          >
-            <div className="px-3 pt-1 pb-2 text-[9px] uppercase tracking-[0.25em] text-white/30">
-              Overview
-            </div>
-            <SideLink
-              icon={LayoutDashboard}
-              label="Dashboard"
-              active={view === "home"}
-              onClick={() => setView("home")}
-              testId="nav-home"
-            />
+      <div className="flex">
+        {/* SIDEBAR — fixed left, dark */}
+        <aside
+          data-testid="dashboard-sidebar"
+          className="hidden lg:flex flex-col w-[240px] min-h-[calc(100vh-4rem)] bg-[#0a0a14] border-r border-white/5 sticky top-16 self-start"
+        >
+          <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">
+            Main Menu
+          </div>
+          <nav className="px-3 space-y-0.5">
+            <SideLinkV2 icon={LayoutDashboard} label="Dashboard" active={view === "home"} onClick={() => setView("home")} testId="nav-home" />
+          </nav>
 
-            <div className="px-3 pt-4 pb-2 text-[9px] uppercase tracking-[0.25em] text-white/30">
-              Wallet
-            </div>
-            <SideLink
-              icon={CreditCard}
-              label="Add Funds"
-              active={view === "funds"}
-              onClick={() => setView("funds")}
-              testId="nav-funds"
-              badge={`$${balance.toFixed(2)}`}
-            />
-            <SideLink
-              icon={Ticket}
-              label="Redeem Coupon"
-              active={view === "redeem"}
-              onClick={() => setView("redeem")}
-              testId="nav-redeem"
-            />
-            <SideLink
-              icon={ArrowUpRight}
-              label="Withdraw"
-              active={view === "withdraw"}
-              onClick={() => setView("withdraw")}
-              testId="nav-withdraw"
-              badge={withdrawable > 0 ? `$${withdrawable.toFixed(2)}` : null}
-            />
+          <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Wallet</div>
+          <nav className="px-3 space-y-0.5">
+            <SideLinkV2 icon={CreditCard} label="Add Funds" active={view === "funds"} onClick={() => setView("funds")} testId="nav-funds" badge={`$${balance.toFixed(2)}`} />
+            <SideLinkV2 icon={Ticket} label="Redeem Coupon" active={view === "redeem"} onClick={() => setView("redeem")} testId="nav-redeem" />
+            <SideLinkV2 icon={ArrowUpRight} label="Withdraw" active={view === "withdraw"} onClick={() => setView("withdraw")} testId="nav-withdraw" badge={withdrawable > 0 ? `$${withdrawable.toFixed(2)}` : null} />
+          </nav>
 
-            <div className="px-3 pt-4 pb-2 text-[9px] uppercase tracking-[0.25em] text-white/30">
-              Buy & play
-            </div>
-            <SideLink
-              icon={ShoppingBag}
-              label="Buy Services"
-              active={view === "buy"}
-              onClick={() => setView("buy")}
-              testId="nav-buy"
-            />
-            <SideLink
-              icon={Dices}
-              label="Try Chance"
-              active={view === "casino"}
-              onClick={() => setView("casino")}
-              testId="nav-casino"
-            />
+          <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Shop</div>
+          <nav className="px-3 space-y-0.5">
+            <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => setView("buy")} testId="nav-buy" />
+            <SideLinkV2 icon={Dices} label="Try Chance" active={view === "casino"} onClick={() => setView("casino")} testId="nav-casino" />
+          </nav>
 
-            <div className="px-3 pt-4 pb-2 text-[9px] uppercase tracking-[0.25em] text-white/30">
-              Support
-            </div>
-            <SideLink
-              icon={LifeBuoy}
-              label="Tickets"
-              active={view === "tickets"}
-              onClick={() => setView("tickets")}
-              testId="nav-tickets"
-              badge={unreadTickets > 0 ? unreadTickets : null}
-              badgeKind="alert"
-            />
+          <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Support</div>
+          <nav className="px-3 space-y-0.5 pb-6">
+            <SideLinkV2 icon={LifeBuoy} label="Tickets" active={view === "tickets"} onClick={() => setView("tickets")} testId="nav-tickets" badge={unreadTickets > 0 ? unreadTickets : null} badgeKind="alert" />
             <Link
               to="/"
-              className="flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm text-white/60 hover:text-white hover:bg-white/[0.04] transition border-l-2 border-transparent"
+              className="flex items-center gap-3 px-4 py-2.5 rounded-md text-sm text-white/55 hover:text-white hover:bg-white/[0.04] transition"
               data-testid="nav-catalog"
             >
               <ExternalLink className="w-4 h-4" />
-              <span className="flex-1">Public Landing</span>
-              <ExternalLink className="w-3 h-3 opacity-40" />
+              <span className="flex-1">Public site</span>
             </Link>
-            <button
-              onClick={() => {
-                logout();
-                nav("/");
-              }}
-              data-testid="nav-logout"
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm text-white/60 hover:text-[#FF3B30] hover:bg-white/5 transition"
-            >
-              <LogOut className="w-4 h-4" />
-              Logout
-            </button>
-          </aside>
+          </nav>
 
-          {/* MAIN CONTENT */}
+          <div className="mt-auto px-3 pb-6">
+            <div className="flex items-center gap-2 px-4 py-3 bg-[#13091a] rounded-md">
+              <div className="w-8 h-8 rounded-full bg-[#2563eb] flex items-center justify-center text-xs font-bold">
+                {user.username.slice(0, 2).toUpperCase()}
+              </div>
+              <div className="text-xs">
+                <div className="font-bold text-white leading-tight">{user.username}</div>
+                <div className="text-white/40 leading-tight">{user.role || "member"}</div>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        {/* Mobile bottom-nav alternative (simple inline) */}
+        <div className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-[#0a0a14] border-t border-white/10 flex justify-around py-2">
+          {[
+            { v: "home", icon: LayoutDashboard, label: "Home" },
+            { v: "funds", icon: CreditCard, label: "Funds" },
+            { v: "buy", icon: ShoppingBag, label: "Buy" },
+            { v: "tickets", icon: LifeBuoy, label: "Help" },
+          ].map((t) => (
+            <button
+              key={t.v}
+              onClick={() => setView(t.v)}
+              data-testid={`mobile-nav-${t.v}`}
+              className={`flex flex-col items-center gap-0.5 px-3 py-1 text-[10px] uppercase tracking-wider ${
+                view === t.v ? "text-[#3b82f6]" : "text-white/40"
+              }`}
+            >
+              <t.icon className="w-4 h-4" />
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* MAIN CONTENT */}
+        <main className="flex-1 px-4 md:px-8 lg:px-10 py-6 md:py-10 pb-24 lg:pb-10">
           <div>
             {view === "home" && (
               <HomeView user={user} stats={stats} />
@@ -324,8 +336,8 @@ export default function ClientDashboard() {
             )}
             {view === "tickets" && <TicketsView authedApi={authedApi} />}
           </div>
-        </div>
-      </main>
+        </main>
+      </div>
 
       {/* Better Social AI floating widget */}
       <AIWidget open={aiOpen} onOpenChange={setAiOpen} />
@@ -442,87 +454,137 @@ function SideLink({ icon: Icon, label, active, onClick, testId, badge, badgeKind
   );
 }
 
+function SideLinkV2({ icon: Icon, label, active, onClick, testId, badge, badgeKind }) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid={testId}
+      className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-md text-sm transition relative ${
+        active
+          ? "bg-[#2563eb]/10 text-[#3b82f6] font-bold"
+          : "text-white/55 hover:text-white hover:bg-white/[0.04]"
+      }`}
+    >
+      {active && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-[#3b82f6] rounded-r" />}
+      <Icon className={`w-4 h-4 ${active ? "text-[#3b82f6]" : ""}`} />
+      <span className="flex-1 text-left">{label}</span>
+      {badge != null && badgeKind === "alert" && (
+        <span
+          data-testid={`${testId}-badge`}
+          className="min-w-[20px] h-5 px-1.5 inline-flex items-center justify-center text-[10px] font-bold rounded-full bg-red-500 text-white"
+        >
+          {badge}
+        </span>
+      )}
+      {badge != null && badgeKind !== "alert" && (
+        <span className="text-[10px] font-mono text-emerald-400">{badge}</span>
+      )}
+    </button>
+  );
+}
+
 function HomeView({ user, stats, last7 }) {
   const balance = stats ? Number(stats.balance || 0) : 0;
   const withdrawable = stats ? Number(stats.withdrawable_balance || 0) : 0;
   const orders = stats ? Number(stats.total_orders || 0) : 0;
   const onlineUsers = stats ? Number(stats.online_users || 0) : 0;
+  const dateRange = (() => {
+    const today = new Date();
+    const past = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const fmt = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    return `${fmt(past)} – ${fmt(today)}`;
+  })();
 
   return (
     <div className="space-y-8">
-      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="font-display text-3xl md:text-4xl font-black tracking-tight">
             Dashboard
           </h1>
-          <p className="text-white/50 text-sm mt-1.5">
-            Welcome <span className="text-white font-bold">{user.username}</span>, let&apos;s see how things are going.
+          <p className="text-white/50 text-sm mt-2">
+            Welcome <span className="text-white font-bold">{user.username}</span>, let&apos;s see how things are going this week.
           </p>
         </div>
-        <div className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#0d0a14] border border-white/5 rounded-md text-xs text-white/60">
+        <div className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#13091a] border border-white/5 rounded-md text-xs text-white/70" data-testid="date-range-pill">
           <Calendar className="w-3.5 h-3.5 text-[#3b82f6]" />
-          Last 7 days
+          {dateRange}
         </div>
       </div>
 
-      {/* Top row — three big metric cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* Top row — three big metric cards (Sales / Orders / Customers style) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         <BigStatCard
-          label="Balance"
+          label="Sales"
           value={`$${balance.toFixed(2)}`}
+          sub="Current balance"
           accent="#3b82f6"
           testId="big-stat-balance"
         />
         <BigStatCard
-          label="Total Orders"
+          label="Orders"
           value={orders}
+          sub="Total placed"
           accent="#3b82f6"
           testId="big-stat-orders"
         />
         <BigStatCard
           label="Withdrawable"
           value={`$${withdrawable.toFixed(2)}`}
+          sub="From winnings"
           accent="#3b82f6"
           testId="big-stat-withdrawable"
         />
       </div>
 
-      {/* Second row — smaller secondary metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Second row — Views / Visitors */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <BigStatCard
           label="Online Users"
           value={onlineUsers}
-          accent="#10b981"
+          sub="Right now"
+          accent="#3b82f6"
           testId="big-stat-online"
         />
         <BigStatCard
-          label="Registered Users"
+          label="Members"
           value={stats ? stats.registered_users : "—"}
-          accent="#10b981"
+          sub="All-time"
+          accent="#3b82f6"
           testId="big-stat-registered"
         />
       </div>
 
       {/* Quick actions */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <QuickAction icon={Plus} label="Add Funds" tab="funds" testId="quick-funds" />
-        <QuickAction icon={ShoppingBag} label="New Order" tab="orders" testId="quick-orders" />
-        <QuickAction icon={MessageSquare} label="Open Ticket" tab="tickets" testId="quick-tickets" />
+      <div>
+        <div className="text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold mb-3">Quick Actions</div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <QuickAction icon={Plus} label="Add Funds" tab="funds" testId="quick-funds" />
+          <QuickAction icon={ShoppingBag} label="New Order" tab="orders" testId="quick-orders" />
+          <QuickAction icon={MessageSquare} label="Open Ticket" tab="tickets" testId="quick-tickets" />
+        </div>
       </div>
     </div>
   );
 }
 
-function BigStatCard({ label, value, accent, testId }) {
+function BigStatCard({ label, value, sub, accent, testId }) {
   return (
     <div
       data-testid={testId}
-      className="bg-[#1a1525] border border-white/5 rounded-md p-6 hover:border-white/10 transition group"
+      className="bg-[#13091a] border border-white/5 rounded-lg p-6 hover:border-white/10 transition relative overflow-hidden"
     >
-      <div className="text-xs uppercase tracking-wider text-white/40 mb-3">{label}</div>
-      <div className="text-3xl md:text-4xl font-display font-black text-white tracking-tight mb-4">{value}</div>
-      <div className="h-1 rounded-full bg-white/5 overflow-hidden">
-        <div className="h-full rounded-full" style={{ width: "60%", background: accent }} />
+      <div className="text-xs uppercase tracking-wider text-white/40 mb-3 font-bold">{label}</div>
+      <div className="text-3xl md:text-4xl font-display font-black text-white tracking-tight">{value}</div>
+      {sub && <div className="text-[11px] text-white/40 mt-2">{sub}</div>}
+      <div className="mt-5 flex items-center gap-1">
+        {Array.from({ length: 14 }).map((_, i) => (
+          <span
+            key={i}
+            className="flex-1 h-1 rounded-full"
+            style={{ background: `${accent}${i < 7 ? "" : "30"}`, opacity: i < 7 ? 0.9 : 0.4 }}
+          />
+        ))}
       </div>
     </div>
   );
@@ -534,15 +596,16 @@ function QuickAction({ icon: Icon, label, tab, testId }) {
     <button
       data-testid={testId}
       onClick={() => navigate(`/client/dashboard?tab=${tab}`)}
-      className="bg-[#0d0a14] border border-white/5 rounded-md p-5 flex items-center gap-4 hover:border-[#3b82f6]/40 hover:bg-[#1a1525] transition text-left"
+      className="bg-[#13091a] border border-white/5 rounded-lg p-5 flex items-center gap-4 hover:border-[#3b82f6]/40 hover:bg-[#15102e] transition text-left group"
     >
-      <div className="w-11 h-11 rounded-md bg-[#3b82f6]/10 border border-[#3b82f6]/30 flex items-center justify-center">
+      <div className="w-11 h-11 rounded-md bg-[#3b82f6]/10 border border-[#3b82f6]/30 flex items-center justify-center group-hover:bg-[#3b82f6]/20 transition">
         <Icon className="w-5 h-5 text-[#3b82f6]" />
       </div>
-      <div>
+      <div className="flex-1">
         <div className="font-bold text-sm">{label}</div>
         <div className="text-[11px] text-white/40 mt-0.5">Tap to open</div>
       </div>
+      <ArrowUpRight className="w-4 h-4 text-white/30 group-hover:text-[#3b82f6] transition" />
     </button>
   );
 }
