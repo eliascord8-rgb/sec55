@@ -2919,6 +2919,10 @@ function UsersPanel({ token }) {
   const [editing, setEditing] = useState(null); // user doc
   const [edit, setEdit] = useState({ email: "", role: "user", new_password: "" });
   const [saving, setSaving] = useState(false);
+  const [balUser, setBalUser] = useState(null); // user for balance adjust modal
+  const [balAmount, setBalAmount] = useState("");
+  const [balNote, setBalNote] = useState("");
+  const [balSaving, setBalSaving] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -2936,6 +2940,31 @@ function UsersPanel({ token }) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  const adjustBalance = async () => {
+    if (!balUser) return;
+    const amt = Number(balAmount);
+    if (!amt || isNaN(amt) || amt === 0) {
+      toast.error("Enter a non-zero amount (negative to debit)");
+      return;
+    }
+    setBalSaving(true);
+    try {
+      const r = await adminApi(token).post(`/admin/users/${balUser.id}/adjust-balance`, {
+        amount: amt,
+        note: balNote.trim() || `manual ${amt > 0 ? "credit" : "debit"}`,
+      });
+      toast.success(`${balUser.username} → new balance $${r.data.new_balance.toFixed(2)}`);
+      setBalUser(null);
+      setBalAmount("");
+      setBalNote("");
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed");
+    } finally {
+      setBalSaving(false);
+    }
+  };
 
   const filtered = users.filter((u) => {
     const s = search.trim().toLowerCase();
@@ -3044,6 +3073,7 @@ function UsersPanel({ token }) {
                 <th className="text-left px-6 py-3">User</th>
                 <th className="text-left px-6 py-3">Email</th>
                 <th className="text-left px-6 py-3">Role</th>
+                <th className="text-right px-6 py-3">Balance</th>
                 <th className="text-left px-6 py-3">Joined</th>
                 <th className="text-left px-6 py-3">Status</th>
                 <th className="text-right px-6 py-3">Actions</th>
@@ -3052,14 +3082,14 @@ function UsersPanel({ token }) {
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-white/40 text-xs">
+                  <td colSpan={7} className="px-6 py-12 text-center text-white/40 text-xs">
                     Loading…
                   </td>
                 </tr>
               )}
               {!loading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-white/40 text-xs">
+                  <td colSpan={7} className="px-6 py-12 text-center text-white/40 text-xs">
                     No users.
                   </td>
                 </tr>
@@ -3086,6 +3116,17 @@ function UsersPanel({ token }) {
                       >
                         {u.role}
                       </span>
+                    </td>
+                    <td className="px-6 py-3 text-right">
+                      <button
+                        onClick={() => { setBalUser(u); setBalAmount(""); setBalNote(""); }}
+                        data-testid={`balance-btn-${u.id}`}
+                        title="Adjust balance (credit/debit)"
+                        className="inline-flex items-center gap-1 font-mono text-xs px-2 py-1 rounded-sm bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 border border-emerald-500/30"
+                      >
+                        ${Number(u.balance || 0).toFixed(2)}
+                        <Pencil className="w-3 h-3 opacity-60" />
+                      </button>
                     </td>
                     <td className="px-6 py-3 text-white/50 text-xs">{fmtDate(u.created_at)}</td>
                     <td className="px-6 py-3">
@@ -3148,13 +3189,80 @@ function UsersPanel({ token }) {
         </div>
       </div>
 
+      {balUser && (
+        <div
+          data-testid="balance-adjust-modal"
+          className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => !balSaving && setBalUser(null)}
+        >
+          <div
+            className="w-full max-w-md bg-[#1a1525] border border-emerald-500/30 rounded-sm p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display font-bold text-lg mb-1">Adjust Balance</h3>
+            <div className="text-xs text-white/50 mb-4">
+              <span className="font-mono text-white">@{balUser.username}</span> · current{" "}
+              <span className="font-mono text-emerald-300">${Number(balUser.balance || 0).toFixed(2)}</span>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">Amount (USD)</Label>
+                <Input
+                  data-testid="balance-amount"
+                  type="number"
+                  step="0.01"
+                  value={balAmount}
+                  onChange={(e) => setBalAmount(e.target.value)}
+                  placeholder="e.g. 25  (or -10 to debit)"
+                  className="bg-[#0d0a14] border-white/10 mt-1 font-mono"
+                  autoFocus
+                />
+                <div className="text-[10px] text-white/40 mt-1">
+                  Positive = credit, negative = debit. Logged as a transaction in user&apos;s history.
+                </div>
+              </div>
+              <div>
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">Note (optional)</Label>
+                <Input
+                  data-testid="balance-note"
+                  value={balNote}
+                  onChange={(e) => setBalNote(e.target.value)}
+                  placeholder="reason / reference"
+                  className="bg-[#0d0a14] border-white/10 mt-1"
+                />
+              </div>
+              <div className="flex gap-2 pt-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setBalUser(null)}
+                  disabled={balSaving}
+                  className="px-4 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={adjustBalance}
+                  disabled={balSaving}
+                  data-testid="balance-save"
+                  className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-black rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-50 inline-flex items-center gap-2"
+                >
+                  {balSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                  Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+
       {editing && (
         <div
           data-testid="edit-user-modal"
           className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
           onClick={() => !saving && setEditing(null)}
-        >
-          <div
+        >          <div
             className="w-full max-w-md bg-[#1a1525] border border-white/10 rounded-sm p-6 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >

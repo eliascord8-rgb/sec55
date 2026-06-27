@@ -198,14 +198,6 @@ export default function ClientDashboard() {
           {/* Right cluster */}
           <div className="flex items-center gap-2 md:gap-3 px-4 md:px-6 ml-auto">
             <button
-              onClick={() => setView("casino")}
-              data-testid="header-try-chance"
-              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#FFB800]/20 border border-[#FFB800]/40 text-[#FFB800] text-[11px] uppercase tracking-wider font-bold hover:bg-[#FFB800]/30 transition"
-            >
-              <Dices className="w-3.5 h-3.5" />
-              Try Chance
-            </button>
-            <button
               data-testid="header-bell"
               className="relative w-9 h-9 rounded-md hover:bg-white/15 flex items-center justify-center transition"
               title="Notifications"
@@ -262,7 +254,6 @@ export default function ClientDashboard() {
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Shop</div>
           <nav className="px-3 space-y-0.5">
             <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => setView("buy")} testId="nav-buy" />
-            <SideLinkV2 icon={Dices} label="Try Chance" active={view === "casino"} onClick={() => setView("casino")} testId="nav-casino" />
           </nav>
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Support</div>
