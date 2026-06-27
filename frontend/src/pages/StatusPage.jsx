@@ -112,7 +112,7 @@ function Completed({ order }) {
         begins within minutes.
       </p>
       <div className="inline-block bg-[#1a1525] border border-white/10 rounded-sm px-6 py-4 mb-8">
-        <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1">SMM Order ID</div>
+        <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1">Order ID</div>
         <div className="font-mono text-xl font-bold text-[#FF007F]">
           {order.smm_order_id || "—"}
         </div>

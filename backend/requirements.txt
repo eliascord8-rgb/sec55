@@ -1,6 +1,7 @@
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.5
 aiosignal==1.4.0
+aiosmtplib==5.1.2
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.13.0
@@ -14,6 +15,7 @@ cffi==2.0.0
 charset-normalizer==3.4.7
 click==8.3.2
 cryptography==46.0.7
+discord.py==2.7.1
 distro==1.9.0
 dnspython==2.8.0
 ecdsa==0.19.2

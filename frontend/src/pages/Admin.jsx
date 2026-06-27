@@ -936,6 +936,7 @@ function ServicesPanel({ token }) {
         >
           Delete all
         </button>
+        <ManualServiceQuickAdd token={token} onAdded={load} />
         <div className="flex items-center gap-1">
           <Input
             type="number"
@@ -1113,6 +1114,155 @@ function SettingsPanel({ token }) {
     <div className="space-y-6">
       <SmmConfigPanel token={token} />
       <SellyConfigPanel token={token} />
+      <EmailConfigPanel token={token} />
+    </div>
+  );
+}
+
+function EmailConfigPanel({ token }) {
+  const [cfg, setCfg] = useState(null);
+  const [host, setHost] = useState("");
+  const [port, setPort] = useState(587);
+  const [user, setUser] = useState("");
+  const [pw, setPw] = useState("");
+  const [fromEmail, setFromEmail] = useState("");
+  const [fromName, setFromName] = useState("Better Social");
+  const [useTls, setUseTls] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testTo, setTestTo] = useState("");
+  const [testing, setTesting] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/email-config");
+      setCfg(r.data);
+      setHost(r.data.smtp_host || "");
+      setPort(r.data.smtp_port || 587);
+      setUser(r.data.smtp_user || "");
+      setFromEmail(r.data.from_email || "");
+      setFromName(r.data.from_name || "Better Social");
+      setUseTls(r.data.use_tls !== false);
+    } catch {}
+  };
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const save = async (e) => {
+    e.preventDefault();
+    if (!host.trim() || !user.trim()) {
+      toast.error("Host and username are required");
+      return;
+    }
+    if (!cfg?.password_set && !pw) {
+      toast.error("Password is required on first save");
+      return;
+    }
+    setSaving(true);
+    try {
+      const body = {
+        smtp_host: host.trim(),
+        smtp_port: Number(port),
+        smtp_user: user.trim(),
+        from_email: fromEmail.trim() || user.trim(),
+        from_name: fromName.trim() || "Better Social",
+        use_tls: useTls,
+      };
+      if (pw) body.smtp_password = pw;
+      await adminApi(token).post("/admin/email-config", body);
+      toast.success("SMTP saved");
+      setPw("");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const sendTest = async () => {
+    if (!testTo.includes("@")) {
+      toast.error("Enter a valid email");
+      return;
+    }
+    setTesting(true);
+    try {
+      await adminApi(token).post("/admin/email-config/test", { to: testTo.trim() });
+      toast.success(`Test email sent to ${testTo}`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Send failed — check host/port/password");
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-blue-400/30 rounded-sm p-8 max-w-2xl">
+      <div className="flex items-center gap-3 mb-2">
+        <Send className="w-5 h-5 text-blue-400" />
+        <h2 className="font-display font-bold text-lg">Email (SMTP) Configuration</h2>
+      </div>
+      <p className="text-xs text-white/50 mb-5">
+        Used for welcome emails after registration and password reset links. Compatible with Gmail, Outlook, SendGrid SMTP relay, custom mailservers, etc.
+      </p>
+      {cfg && (
+        <div className={`mb-4 p-3 rounded-sm text-xs ${cfg.configured ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" : "bg-amber-500/10 border border-amber-500/30 text-amber-300"}`}>
+          {cfg.configured ? `Active · ${cfg.smtp_user} via ${cfg.smtp_host}:${cfg.smtp_port}` : "Not configured — welcome emails & password reset are disabled."}
+        </div>
+      )}
+      <form onSubmit={save} className="space-y-3" data-testid="email-config-form">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="sm:col-span-2">
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">SMTP Host</Label>
+            <Input data-testid="smtp-host" value={host} onChange={(e) => setHost(e.target.value)} placeholder="smtp.gmail.com" className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Port</Label>
+            <Input data-testid="smtp-port" type="number" value={port} onChange={(e) => setPort(e.target.value)} placeholder="587" className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
+          </div>
+        </div>
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">Username (Email)</Label>
+          <Input data-testid="smtp-user" type="email" value={user} onChange={(e) => setUser(e.target.value)} placeholder="you@gmail.com" className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
+        </div>
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">Password / App Password</Label>
+          <Input data-testid="smtp-password" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder={cfg?.password_set ? "•••••••• (saved — re-enter to update)" : "App password or SMTP key"} className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
+          <div className="text-[10px] text-white/40 mt-1">
+            For Gmail use an <span className="text-blue-400">App Password</span> (Google Account → Security → 2-Step → App Passwords).
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">From Email</Label>
+            <Input data-testid="smtp-from-email" type="email" value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} placeholder="noreply@yourdomain.com" className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">From Name</Label>
+            <Input data-testid="smtp-from-name" value={fromName} onChange={(e) => setFromName(e.target.value)} placeholder="Better Social" className="bg-[#0d0a14] border-white/10 mt-1" />
+          </div>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-white/70 cursor-pointer pt-1">
+          <input type="checkbox" checked={useTls} onChange={(e) => setUseTls(e.target.checked)} data-testid="smtp-use-tls" /> Use TLS/STARTTLS (recommended)
+        </label>
+        <button type="submit" disabled={saving} data-testid="email-config-save" className="px-5 py-2 bg-blue-500 hover:bg-blue-400 text-black rounded-sm font-bold text-xs uppercase tracking-wider disabled:opacity-50 inline-flex items-center gap-2">
+          {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+          Save SMTP Settings
+        </button>
+      </form>
+
+      {cfg?.configured && (
+        <div className="mt-6 pt-5 border-t border-white/5">
+          <div className="text-[11px] uppercase tracking-wider text-white/60 mb-2">Send a Test Email</div>
+          <div className="flex gap-2">
+            <Input data-testid="smtp-test-to" type="email" value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="recipient@example.com" className="bg-[#0d0a14] border-white/10 flex-1 font-mono text-xs" />
+            <button onClick={sendTest} disabled={testing || !testTo.includes("@")} data-testid="smtp-test-send" className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-50 inline-flex items-center gap-2">
+              {testing ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+              Send Test
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1218,6 +1368,101 @@ function SellyConfigPanel({ token }) {
         </button>
       </div>
     </form>
+  );
+}
+
+function ManualServiceQuickAdd({ token, onAdded }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState("Custom");
+  const [price, setPrice] = useState("");
+  const [deliveryMinutes, setDeliveryMinutes] = useState(60);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!name.trim() || !(Number(price) > 0)) {
+      toast.error("Name and price (> 0) required");
+      return;
+    }
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/services/manual", {
+        name: name.trim(),
+        description: description.trim(),
+        category: category.trim() || "Custom",
+        price_usd: Number(price),
+        delivery_minutes: Number(deliveryMinutes) || 60,
+      });
+      toast.success("Manual service added");
+      setName("");
+      setDescription("");
+      setPrice("");
+      setDeliveryMinutes(60);
+      setOpen(false);
+      onAdded && onAdded();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        data-testid="add-manual-service-btn"
+        className="px-3 py-2 bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 rounded-sm text-xs font-bold uppercase tracking-wider hover:bg-emerald-500/25"
+      >
+        + Manual service
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => !saving && setOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="bg-[#1a1525] border border-emerald-500/30 rounded-sm p-6 max-w-lg w-full max-h-[90vh] overflow-auto">
+            <h3 className="font-display font-bold text-lg mb-1">Add Manual Service</h3>
+            <p className="text-[11px] text-white/50 mb-4">
+              No SMM API needed — you fulfill orders for this service manually. Set your title, description, flat price, and delivery time.
+            </p>
+            <form onSubmit={submit} data-testid="manual-service-form" className="space-y-3">
+              <div>
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">Service Title *</Label>
+                <Input data-testid="manual-name" value={name} onChange={(e) => setName(e.target.value)} required maxLength={200} placeholder="e.g. Custom YouTube thumbnail design" className="bg-[#0d0a14] border-white/10 mt-1" />
+              </div>
+              <div>
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">Description</Label>
+                <textarea data-testid="manual-description" value={description} onChange={(e) => setDescription(e.target.value)} maxLength={2000} rows={3} placeholder="Describe what the customer gets, examples, deliverables…" className="w-full bg-[#0d0a14] border border-white/10 rounded-sm mt-1 px-3 py-2 text-sm outline-none focus:border-emerald-400 resize-none" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <Label className="text-[11px] uppercase tracking-wider text-white/60">Category</Label>
+                  <Input data-testid="manual-category" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Custom" className="bg-[#0d0a14] border-white/10 mt-1" />
+                </div>
+                <div>
+                  <Label className="text-[11px] uppercase tracking-wider text-white/60">Price (USD) *</Label>
+                  <Input data-testid="manual-price" type="number" min="0.01" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} required placeholder="29.99" className="bg-[#0d0a14] border-white/10 mt-1 font-mono" />
+                </div>
+                <div>
+                  <Label className="text-[11px] uppercase tracking-wider text-white/60">Delivery (minutes)</Label>
+                  <Input data-testid="manual-delivery" type="number" min="0" value={deliveryMinutes} onChange={(e) => setDeliveryMinutes(e.target.value)} placeholder="60" className="bg-[#0d0a14] border-white/10 mt-1 font-mono" />
+                </div>
+              </div>
+              <div className="flex gap-2 justify-end pt-2">
+                <button type="button" onClick={() => setOpen(false)} disabled={saving} className="px-4 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5">
+                  Cancel
+                </button>
+                <button type="submit" disabled={saving} data-testid="manual-save" className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-black rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-50 inline-flex items-center gap-2">
+                  {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                  Create Service
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

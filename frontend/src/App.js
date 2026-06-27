@@ -6,6 +6,7 @@ import Admin from "@/pages/Admin";
 import OrderPage from "@/pages/OrderPage";
 import StatusPage from "@/pages/StatusPage";
 import ClientAuth from "@/pages/ClientAuth";
+import ResetPassword from "@/pages/ResetPassword";
 import ClientDashboard from "@/pages/ClientDashboard";
 import Splash from "@/components/Splash";
 import { AuthProvider } from "@/context/AuthContext";
@@ -30,6 +31,8 @@ function App() {
             <Route path="/order/:serviceId" element={<OrderPage />} />
             <Route path="/status/:orderId" element={<StatusPage />} />
             <Route path="/client" element={<ClientAuth />} />
+            <Route path="/client/login" element={<ClientAuth />} />
+            <Route path="/reset" element={<ResetPassword />} />
             <Route path="/client/dashboard" element={<ClientDashboard />} />
             <Route path="/admin" element={<Admin />} />
           </Routes>

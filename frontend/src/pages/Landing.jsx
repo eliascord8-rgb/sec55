@@ -123,7 +123,7 @@ export default function Landing() {
               className="font-display text-5xl sm:text-6xl lg:text-7xl font-black leading-[0.95] tracking-tighter mb-6"
               data-testid="hero-title"
             >
-              SMM done <span className="gradient-text">obnoxiously</span>
+              Growth done <span className="gradient-text">obnoxiously</span>
               <br />
               well.
             </h1>
@@ -300,7 +300,7 @@ export default function Landing() {
           </div>
           <div className="flex flex-col md:flex-row items-center gap-3 md:gap-6 text-center">
             <div className="text-xs uppercase tracking-[0.2em]">
-              © {new Date().getFullYear()} · No-login SMM
+              © {new Date().getFullYear()} · Better Social
             </div>
             <a
               href="mailto:balkinstr@web.de"

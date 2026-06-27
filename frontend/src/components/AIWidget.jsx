@@ -531,7 +531,7 @@ export default function AIWidget({ open, onOpenChange }) {
             <div className="flex-1 min-w-0">
               {result.ok ? (
                 <div>
-                  <span className="font-bold">Order completed</span> · SMM #{result.smm_order_id} ·
+                  <span className="font-bold">Order completed</span> · #{result.smm_order_id} ·
                   ${result.price?.toFixed(2)}
                 </div>
               ) : (

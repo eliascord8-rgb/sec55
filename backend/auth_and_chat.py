@@ -2,6 +2,7 @@
 import os
 import re
 import uuid
+import secrets
 import bcrypt
 import jwt
 import httpx
@@ -314,8 +315,74 @@ async def register(req: RegisterRequest, request: Request):
         "muted_until": None,
     }
     await db.users.insert_one(doc.copy())
+
+    # Best-effort welcome email (don't fail registration if SMTP misconfigured)
+    try:
+        from email_service import send_email, welcome_email_html
+        await send_email(db, email, "Welcome to Better Social 👋", welcome_email_html(req.username))
+    except Exception:
+        pass
+
     token = create_token(user_id, req.username, "user")
     return {"token": token, "user": _user_public(doc)}
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=200)
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=8, max_length=120)
+
+
+@auth_router.post("/forgot-password")
+async def forgot_password(req: ForgotPasswordRequest, request: Request):
+    """Send a password-reset email. Always returns success (don't leak which emails exist)."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    email = req.email.strip().lower()
+    user = await db.users.find_one({"email": email}, {"_id": 0, "id": 1, "username": 1})
+    if user:
+        token_str = secrets.token_urlsafe(32)
+        await db.password_resets.insert_one({
+            "token": token_str,
+            "user_id": user["id"],
+            "email": email,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+            "used": False,
+        })
+        # Build reset URL from Origin header so it works in dev / prod
+        origin = request.headers.get("origin") or request.headers.get("referer", "").split("/client")[0]
+        origin = origin.rstrip("/") or "https://better-social.pro"
+        reset_url = f"{origin}/reset?token={token_str}"
+        try:
+            from email_service import send_email, reset_email_html
+            await send_email(db, email, "Reset your Better Social password", reset_email_html(reset_url))
+        except Exception:
+            pass
+    # Always success to prevent email enumeration
+    return {"ok": True, "message": "If that email exists, a reset link has been sent."}
+
+
+@auth_router.post("/reset-password")
+async def reset_password(req: ResetPasswordRequest, request: Request):
+    db: AsyncIOMotorDatabase = request.app.state.db
+    rec = await db.password_resets.find_one({"token": req.token, "used": False})
+    if not rec:
+        raise HTTPException(status_code=400, detail="Invalid or already-used reset link")
+    try:
+        expires = datetime.fromisoformat(rec["expires_at"].replace("Z", "+00:00"))
+    except Exception:
+        expires = datetime.now(timezone.utc) - timedelta(seconds=1)
+    if datetime.now(timezone.utc) > expires:
+        raise HTTPException(status_code=400, detail="Reset link expired — request a new one")
+    await db.users.update_one(
+        {"id": rec["user_id"]},
+        {"$set": {"password_hash": hash_password(req.new_password)}},
+    )
+    await db.password_resets.update_one({"token": req.token}, {"$set": {"used": True, "used_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True, "message": "Password updated — please log in with your new password."}
 
 
 @auth_router.post("/login")

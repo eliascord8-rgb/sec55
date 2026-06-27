@@ -1,0 +1,140 @@
+"""SMTP email service — sends transactional emails (welcome, password reset, etc.).
+All SMTP credentials are stored in the `email_config` Mongo collection (set via admin UI).
+"""
+from __future__ import annotations
+
+import logging
+import ssl
+from email.message import EmailMessage
+from typing import Optional
+
+import aiosmtplib
+from motor.motor_asyncio import AsyncIOMotorDatabase
+
+logger = logging.getLogger("email_service")
+
+
+async def get_email_config(db: AsyncIOMotorDatabase) -> Optional[dict]:
+    cfg = await db.email_config.find_one({"_id": "singleton"}, {"_id": 0})
+    if not cfg or not cfg.get("smtp_host") or not cfg.get("smtp_user"):
+        return None
+    return cfg
+
+
+async def send_email(
+    db: AsyncIOMotorDatabase,
+    to_email: str,
+    subject: str,
+    html: str,
+    text_alt: Optional[str] = None,
+) -> dict:
+    """Send a transactional email using the admin-configured SMTP server.
+    Returns {ok: bool, error?: str}."""
+    cfg = await get_email_config(db)
+    if not cfg:
+        return {"ok": False, "error": "SMTP not configured"}
+
+    host = cfg["smtp_host"]
+    port = int(cfg.get("smtp_port", 587))
+    user = cfg["smtp_user"]
+    password = cfg.get("smtp_password", "")
+    from_email = (cfg.get("from_email") or user).strip()
+    from_name = (cfg.get("from_name") or "Better Social").strip()
+    use_tls = bool(cfg.get("use_tls", True))  # port 465 = SSL, 587 = STARTTLS
+
+    msg = EmailMessage()
+    msg["From"] = f"{from_name} <{from_email}>"
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    # Fallback plain-text body
+    msg.set_content(text_alt or _html_to_text(html))
+    msg.add_alternative(html, subtype="html")
+
+    try:
+        # Port 465 = SSL on connect; 587 = STARTTLS
+        if port == 465:
+            await aiosmtplib.send(
+                msg,
+                hostname=host,
+                port=port,
+                username=user,
+                password=password,
+                use_tls=True,
+                timeout=15,
+            )
+        else:
+            await aiosmtplib.send(
+                msg,
+                hostname=host,
+                port=port,
+                username=user,
+                password=password,
+                start_tls=use_tls,
+                timeout=15,
+            )
+        return {"ok": True}
+    except Exception as e:
+        logger.exception("send_email failed: %s", e)
+        return {"ok": False, "error": str(e)[:200]}
+
+
+def _html_to_text(html: str) -> str:
+    """Very rough HTML→text fallback for clients that don't render HTML."""
+    import re
+
+    txt = re.sub(r"<\s*br\s*/?>", "\n", html, flags=re.I)
+    txt = re.sub(r"<\s*/?p[^>]*>", "\n", txt, flags=re.I)
+    txt = re.sub(r"<[^>]+>", "", txt)
+    return txt.strip()
+
+
+# ============== Email Templates ==============
+
+def _wrap(content: str, brand: str = "Better Social") -> str:
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>{brand}</title></head>
+<body style="margin:0;padding:0;background:#0d0a14;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#eeeeee;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background:#0d0a14;padding:32px 16px;">
+    <tr><td align="center">
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="max-width:560px;background:#1a1525;border:1px solid #2a2235;border-radius:6px;overflow:hidden;">
+        <tr><td style="padding:24px 28px;border-bottom:1px solid #2a2235;background:linear-gradient(90deg,#FF007F,#7B2CBF);">
+          <h1 style="margin:0;font-size:20px;font-weight:900;color:#fff;letter-spacing:-0.5px;">{brand}</h1>
+        </td></tr>
+        <tr><td style="padding:28px;color:#eaeaea;line-height:1.55;font-size:15px;">
+          {content}
+        </td></tr>
+        <tr><td style="padding:18px 28px;border-top:1px solid #2a2235;font-size:11px;color:#777;background:#15101e;">
+          You received this email because an account exists with this address at {brand}.<br>
+          If this wasn&#39;t you, you can safely ignore it.
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+
+def welcome_email_html(username: str, brand: str = "Better Social") -> str:
+    body = f"""
+    <h2 style="margin:0 0 12px;font-size:22px;color:#fff;">Welcome, @{username} 👋</h2>
+    <p style="margin:0 0 16px;">Your account is live. You can now log in, top up your balance and place orders directly from your dashboard.</p>
+    <p style="margin:0 0 24px;">
+      <a href="https://better-social.pro/client/login" style="display:inline-block;background:linear-gradient(90deg,#FF007F,#7B2CBF);color:#fff;text-decoration:none;padding:12px 22px;border-radius:4px;font-weight:700;font-size:13px;letter-spacing:0.5px;text-transform:uppercase;">Open Dashboard</a>
+    </p>
+    <p style="margin:0;color:#999;font-size:13px;">Need help? Just reply to this email or open the live chat on our website — our team typically replies within minutes.</p>
+    """
+    return _wrap(body, brand)
+
+
+def reset_email_html(reset_url: str, brand: str = "Better Social") -> str:
+    body = f"""
+    <h2 style="margin:0 0 12px;font-size:22px;color:#fff;">Reset your password</h2>
+    <p style="margin:0 0 16px;">We received a request to reset the password for your {brand} account. Click the button below to choose a new password. This link expires in <strong>30 minutes</strong>.</p>
+    <p style="margin:0 0 24px;">
+      <a href="{reset_url}" style="display:inline-block;background:linear-gradient(90deg,#FF007F,#7B2CBF);color:#fff;text-decoration:none;padding:12px 22px;border-radius:4px;font-weight:700;font-size:13px;letter-spacing:0.5px;text-transform:uppercase;">Reset Password</a>
+    </p>
+    <p style="margin:0 0 8px;color:#999;font-size:12px;">Or copy &amp; paste this link into your browser:</p>
+    <p style="margin:0;color:#FF007F;font-size:12px;word-break:break-all;">{reset_url}</p>
+    """
+    return _wrap(body, brand)
