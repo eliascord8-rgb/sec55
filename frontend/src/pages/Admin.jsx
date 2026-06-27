@@ -1121,6 +1121,7 @@ function SettingsPanel({ token }) {
 
 function EmailConfigPanel({ token }) {
   const [cfg, setCfg] = useState(null);
+  const [msKey, setMsKey] = useState("");
   const [host, setHost] = useState("");
   const [port, setPort] = useState(587);
   const [user, setUser] = useState("");
@@ -1150,12 +1151,8 @@ function EmailConfigPanel({ token }) {
 
   const save = async (e) => {
     e.preventDefault();
-    if (!host.trim() || !user.trim()) {
-      toast.error("Host and username are required");
-      return;
-    }
-    if (!cfg?.password_set && !pw) {
-      toast.error("Password is required on first save");
+    if (!fromEmail.trim()) {
+      toast.error("From-email is required (must be on a verified domain)");
       return;
     }
     setSaving(true);
@@ -1164,14 +1161,16 @@ function EmailConfigPanel({ token }) {
         smtp_host: host.trim(),
         smtp_port: Number(port),
         smtp_user: user.trim(),
-        from_email: fromEmail.trim() || user.trim(),
+        from_email: fromEmail.trim(),
         from_name: fromName.trim() || "Better Social",
         use_tls: useTls,
       };
       if (pw) body.smtp_password = pw;
+      if (msKey) body.mailersend_api_key = msKey.trim();
       await adminApi(token).post("/admin/email-config", body);
-      toast.success("SMTP saved");
+      toast.success("Email config saved");
       setPw("");
+      setMsKey("");
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed");
@@ -1190,7 +1189,7 @@ function EmailConfigPanel({ token }) {
       await adminApi(token).post("/admin/email-config/test", { to: testTo.trim() });
       toast.success(`Test email sent to ${testTo}`);
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Send failed — check host/port/password");
+      toast.error(e.response?.data?.detail || "Send failed — check credentials & verified domain");
     } finally {
       setTesting(false);
     }
@@ -1200,54 +1199,82 @@ function EmailConfigPanel({ token }) {
     <div className="bg-[#1a1525] border border-blue-400/30 rounded-sm p-8 max-w-2xl">
       <div className="flex items-center gap-3 mb-2">
         <Send className="w-5 h-5 text-blue-400" />
-        <h2 className="font-display font-bold text-lg">Email (SMTP) Configuration</h2>
+        <h2 className="font-display font-bold text-lg">Email Configuration</h2>
       </div>
       <p className="text-xs text-white/50 mb-5">
-        Used for welcome emails after registration and password reset links. Compatible with Gmail, Outlook, SendGrid SMTP relay, custom mailservers, etc.
+        Used for welcome emails after registration and password reset links. <span className="text-blue-300">MailerSend is recommended</span> — simpler than SMTP and free 3,000 emails/month.
       </p>
       {cfg && (
         <div className={`mb-4 p-3 rounded-sm text-xs ${cfg.configured ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" : "bg-amber-500/10 border border-amber-500/30 text-amber-300"}`}>
-          {cfg.configured ? `Active · ${cfg.smtp_user} via ${cfg.smtp_host}:${cfg.smtp_port}` : "Not configured — welcome emails & password reset are disabled."}
+          {cfg.configured
+            ? cfg.provider === "mailersend"
+              ? `Active · MailerSend API · key ${cfg.mailersend_api_key_masked}`
+              : `Active · SMTP · ${cfg.smtp_user} via ${cfg.smtp_host}:${cfg.smtp_port}`
+            : "Not configured — welcome emails & password reset are disabled."}
         </div>
       )}
-      <form onSubmit={save} className="space-y-3" data-testid="email-config-form">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="sm:col-span-2">
-            <Label className="text-[11px] uppercase tracking-wider text-white/60">SMTP Host</Label>
-            <Input data-testid="smtp-host" value={host} onChange={(e) => setHost(e.target.value)} placeholder="smtp.gmail.com" className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
+
+      <form onSubmit={save} className="space-y-4" data-testid="email-config-form">
+        {/* MailerSend — recommended */}
+        <div className="bg-[#0d0a14] border border-blue-400/20 rounded-sm p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="px-2 py-0.5 bg-blue-500/20 text-blue-300 text-[10px] font-bold uppercase tracking-wider rounded-sm">Recommended</div>
+            <h3 className="font-bold text-sm">MailerSend API</h3>
           </div>
           <div>
-            <Label className="text-[11px] uppercase tracking-wider text-white/60">Port</Label>
-            <Input data-testid="smtp-port" type="number" value={port} onChange={(e) => setPort(e.target.value)} placeholder="587" className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">MailerSend API Token</Label>
+            <Input data-testid="mailersend-api-key" type="password" value={msKey} onChange={(e) => setMsKey(e.target.value)} placeholder={cfg?.mailersend_set ? `••••••••${cfg.mailersend_api_key_masked.slice(-4)} (saved — re-enter to update)` : "mlsn.xxxxxxxxxxxxxxxxxxxxxxxxxxxx"} className="bg-[#1a1525] border-white/10 mt-1 font-mono text-xs" />
+            <div className="text-[10px] text-white/40 mt-1">
+              Get from <span className="font-mono text-blue-400">mailersend.com → Settings → API Tokens</span>. Make sure your sender domain is <span className="text-emerald-400">verified</span> first.
+            </div>
           </div>
         </div>
-        <div>
-          <Label className="text-[11px] uppercase tracking-wider text-white/60">Username (Email)</Label>
-          <Input data-testid="smtp-user" type="email" value={user} onChange={(e) => setUser(e.target.value)} placeholder="you@gmail.com" className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
-        </div>
-        <div>
-          <Label className="text-[11px] uppercase tracking-wider text-white/60">Password / App Password</Label>
-          <Input data-testid="smtp-password" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder={cfg?.password_set ? "•••••••• (saved — re-enter to update)" : "App password or SMTP key"} className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
-          <div className="text-[10px] text-white/40 mt-1">
-            For Gmail use an <span className="text-blue-400">App Password</span> (Google Account → Security → 2-Step → App Passwords).
-          </div>
-        </div>
+
+        {/* Sender identity — used by both */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <Label className="text-[11px] uppercase tracking-wider text-white/60">From Email</Label>
-            <Input data-testid="smtp-from-email" type="email" value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} placeholder="noreply@yourdomain.com" className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">From Email *</Label>
+            <Input data-testid="smtp-from-email" type="email" value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} placeholder="noreply@yourdomain.com" required className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs" />
           </div>
           <div>
             <Label className="text-[11px] uppercase tracking-wider text-white/60">From Name</Label>
             <Input data-testid="smtp-from-name" value={fromName} onChange={(e) => setFromName(e.target.value)} placeholder="Better Social" className="bg-[#0d0a14] border-white/10 mt-1" />
           </div>
         </div>
-        <label className="flex items-center gap-2 text-xs text-white/70 cursor-pointer pt-1">
-          <input type="checkbox" checked={useTls} onChange={(e) => setUseTls(e.target.checked)} data-testid="smtp-use-tls" /> Use TLS/STARTTLS (recommended)
-        </label>
+
+        {/* SMTP — alternative */}
+        <details className="bg-[#0d0a14] border border-white/5 rounded-sm">
+          <summary className="px-4 py-3 cursor-pointer text-xs uppercase tracking-wider text-white/60 hover:text-white">
+            Or use SMTP instead (advanced)
+          </summary>
+          <div className="px-4 pb-4 space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">SMTP Host</Label>
+                <Input data-testid="smtp-host" value={host} onChange={(e) => setHost(e.target.value)} placeholder="smtp.gmail.com" className="bg-[#1a1525] border-white/10 mt-1 font-mono text-xs" />
+              </div>
+              <div>
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">Port</Label>
+                <Input data-testid="smtp-port" type="number" value={port} onChange={(e) => setPort(e.target.value)} placeholder="587" className="bg-[#1a1525] border-white/10 mt-1 font-mono text-xs" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-[11px] uppercase tracking-wider text-white/60">SMTP Username</Label>
+              <Input data-testid="smtp-user" type="email" value={user} onChange={(e) => setUser(e.target.value)} placeholder="you@gmail.com" className="bg-[#1a1525] border-white/10 mt-1 font-mono text-xs" />
+            </div>
+            <div>
+              <Label className="text-[11px] uppercase tracking-wider text-white/60">SMTP Password</Label>
+              <Input data-testid="smtp-password" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder={cfg?.password_set ? "•••••••• (saved — re-enter to update)" : "App password or SMTP key"} className="bg-[#1a1525] border-white/10 mt-1 font-mono text-xs" />
+            </div>
+            <label className="flex items-center gap-2 text-xs text-white/70 cursor-pointer pt-1">
+              <input type="checkbox" checked={useTls} onChange={(e) => setUseTls(e.target.checked)} data-testid="smtp-use-tls" /> Use TLS/STARTTLS (recommended)
+            </label>
+          </div>
+        </details>
+
         <button type="submit" disabled={saving} data-testid="email-config-save" className="px-5 py-2 bg-blue-500 hover:bg-blue-400 text-black rounded-sm font-bold text-xs uppercase tracking-wider disabled:opacity-50 inline-flex items-center gap-2">
           {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-          Save SMTP Settings
+          Save Email Settings
         </button>
       </form>
 

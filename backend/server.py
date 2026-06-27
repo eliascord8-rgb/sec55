@@ -1738,13 +1738,14 @@ async def selly_webhook(request: Request):
 
 
 class EmailConfig(BaseModel):
-    smtp_host: str = Field(..., min_length=2, max_length=200)
+    smtp_host: Optional[str] = ""
     smtp_port: int = Field(587, ge=1, le=65535)
-    smtp_user: str = Field(..., min_length=2, max_length=200)
+    smtp_user: Optional[str] = ""
     smtp_password: Optional[str] = ""
     from_email: Optional[str] = ""
     from_name: Optional[str] = "Better Social"
     use_tls: bool = True
+    mailersend_api_key: Optional[str] = ""
 
 
 @api_router.get("/admin/email-config")
@@ -1752,8 +1753,10 @@ async def admin_get_email_config(x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
     cfg = await db.email_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
     pw = cfg.get("smtp_password", "")
+    ms_key = cfg.get("mailersend_api_key", "")
     return {
-        "configured": bool(cfg.get("smtp_host") and cfg.get("smtp_user")),
+        "configured": bool(ms_key or (cfg.get("smtp_host") and cfg.get("smtp_user"))),
+        "provider": "mailersend" if ms_key else ("smtp" if cfg.get("smtp_host") else ""),
         "smtp_host": cfg.get("smtp_host", ""),
         "smtp_port": cfg.get("smtp_port", 587),
         "smtp_user": cfg.get("smtp_user", ""),
@@ -1761,6 +1764,8 @@ async def admin_get_email_config(x_admin_token: Optional[str] = Header(None)):
         "from_email": cfg.get("from_email", ""),
         "from_name": cfg.get("from_name", "Better Social"),
         "use_tls": cfg.get("use_tls", True),
+        "mailersend_set": bool(ms_key),
+        "mailersend_api_key_masked": ("*" * 8 + ms_key[-4:]) if ms_key else "",
     }
 
 
@@ -1768,10 +1773,10 @@ async def admin_get_email_config(x_admin_token: Optional[str] = Header(None)):
 async def admin_set_email_config(payload: EmailConfig, x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
     upd = {
-        "smtp_host": payload.smtp_host.strip(),
+        "smtp_host": (payload.smtp_host or "").strip(),
         "smtp_port": int(payload.smtp_port),
-        "smtp_user": payload.smtp_user.strip(),
-        "from_email": (payload.from_email or payload.smtp_user).strip(),
+        "smtp_user": (payload.smtp_user or "").strip(),
+        "from_email": (payload.from_email or payload.smtp_user or "").strip(),
         "from_name": (payload.from_name or "Better Social").strip(),
         "use_tls": bool(payload.use_tls),
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1779,6 +1784,8 @@ async def admin_set_email_config(payload: EmailConfig, x_admin_token: Optional[s
     # Only update password if a new non-empty one is provided (preserve existing on edits)
     if payload.smtp_password:
         upd["smtp_password"] = payload.smtp_password
+    if payload.mailersend_api_key:
+        upd["mailersend_api_key"] = payload.mailersend_api_key.strip()
     await db.email_config.update_one(
         {"_id": "singleton"},
         {"$set": upd},

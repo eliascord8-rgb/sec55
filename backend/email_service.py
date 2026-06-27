@@ -28,11 +28,47 @@ async def send_email(
     html: str,
     text_alt: Optional[str] = None,
 ) -> dict:
-    """Send a transactional email using the admin-configured SMTP server.
+    """Send a transactional email. Prefers MailerSend API if configured, else falls back to SMTP.
     Returns {ok: bool, error?: str}."""
-    cfg = await get_email_config(db)
-    if not cfg:
-        return {"ok": False, "error": "SMTP not configured"}
+    cfg = await db.email_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+
+    # ---- MailerSend API path (recommended) ----
+    ms_key = cfg.get("mailersend_api_key", "").strip()
+    if ms_key:
+        from_email = (cfg.get("from_email") or "").strip()
+        from_name = (cfg.get("from_name") or "Better Social").strip()
+        if not from_email:
+            return {"ok": False, "error": "MailerSend: from_email is required (must be on a verified domain)"}
+        import httpx
+        payload = {
+            "from": {"email": from_email, "name": from_name},
+            "to": [{"email": to_email}],
+            "subject": subject,
+            "html": html,
+            "text": text_alt or _html_to_text(html),
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as c:
+                r = await c.post(
+                    "https://api.mailersend.com/v1/email",
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {ms_key}",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                )
+            if r.status_code in (200, 201, 202):
+                return {"ok": True, "provider": "mailersend"}
+            return {"ok": False, "error": f"MailerSend {r.status_code}: {r.text[:300]}"}
+        except Exception as e:
+            logger.exception("MailerSend send failed: %s", e)
+            return {"ok": False, "error": f"MailerSend: {str(e)[:200]}"}
+
+    # ---- SMTP fallback ----
+    if not cfg.get("smtp_host") or not cfg.get("smtp_user"):
+        return {"ok": False, "error": "Email not configured (no MailerSend key and no SMTP host)"}
 
     host = cfg["smtp_host"]
     port = int(cfg.get("smtp_port", 587))
@@ -40,39 +76,21 @@ async def send_email(
     password = cfg.get("smtp_password", "")
     from_email = (cfg.get("from_email") or user).strip()
     from_name = (cfg.get("from_name") or "Better Social").strip()
-    use_tls = bool(cfg.get("use_tls", True))  # port 465 = SSL, 587 = STARTTLS
+    use_tls = bool(cfg.get("use_tls", True))
 
     msg = EmailMessage()
     msg["From"] = f"{from_name} <{from_email}>"
     msg["To"] = to_email
     msg["Subject"] = subject
-    # Fallback plain-text body
     msg.set_content(text_alt or _html_to_text(html))
     msg.add_alternative(html, subtype="html")
 
     try:
-        # Port 465 = SSL on connect; 587 = STARTTLS
         if port == 465:
-            await aiosmtplib.send(
-                msg,
-                hostname=host,
-                port=port,
-                username=user,
-                password=password,
-                use_tls=True,
-                timeout=15,
-            )
+            await aiosmtplib.send(msg, hostname=host, port=port, username=user, password=password, use_tls=True, timeout=15)
         else:
-            await aiosmtplib.send(
-                msg,
-                hostname=host,
-                port=port,
-                username=user,
-                password=password,
-                start_tls=use_tls,
-                timeout=15,
-            )
-        return {"ok": True}
+            await aiosmtplib.send(msg, hostname=host, port=port, username=user, password=password, start_tls=use_tls, timeout=15)
+        return {"ok": True, "provider": "smtp"}
     except Exception as e:
         logger.exception("send_email failed: %s", e)
         return {"ok": False, "error": str(e)[:200]}
