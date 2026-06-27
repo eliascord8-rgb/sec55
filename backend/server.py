@@ -104,6 +104,16 @@ class ServiceUpdate(BaseModel):
     custom_name: Optional[str] = None
     needs_custom_text: Optional[bool] = None
     provider_id: Optional[str] = None
+    description: Optional[str] = None
+    delivery_minutes: Optional[int] = None
+
+
+class ManualServiceCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=200)
+    description: Optional[str] = ""
+    category: Optional[str] = "Custom"
+    price_usd: float = Field(..., gt=0, le=100000)
+    delivery_minutes: Optional[int] = Field(60, ge=0, le=100000)
 
 
 class AdminLogin(BaseModel):
@@ -209,6 +219,39 @@ async def root():
     return {"app": "Better Social", "status": "ok"}
 
 
+def _parse_delivery_minutes(text: str) -> Optional[int]:
+    """Try to extract a delivery time (in minutes) from a free-form description.
+    Looks for patterns like 'Start time: 0-1H', 'Speed: 1k/24h', '5 min start', '~2 hours' etc.
+    Returns None if nothing parseable found."""
+    if not text:
+        return None
+    import re as _re
+    t = text.lower()
+    # Direct: "30 minute(s)" / "2 hour(s)" / "1 day"
+    m = _re.search(r"(\d+)\s*(min|minute|hour|hr|day|d)\b", t)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2)
+        if unit.startswith("min"):
+            return n
+        if unit.startswith("hr") or unit.startswith("hour"):
+            return n * 60
+        if unit.startswith("d"):
+            return n * 60 * 24
+    # Range like "0-1h" or "1-6 hours"
+    m = _re.search(r"(\d+)\s*-\s*(\d+)\s*(h|hour|m|min|d|day)", t)
+    if m:
+        hi = int(m.group(2))
+        unit = m.group(3)
+        if unit.startswith("h"):
+            return hi * 60
+        if unit.startswith("m"):
+            return hi
+        if unit.startswith("d"):
+            return hi * 60 * 24
+    return None
+
+
 @api_router.get("/services")
 async def list_services():
     """Public catalog: only curated enabled services with admin's custom price."""
@@ -225,6 +268,10 @@ async def list_services():
             "needs_custom_text": bool(s.get("needs_custom_text", False)),
             "provider_id": s.get("provider_id"),
             "provider_name": s.get("provider_name", ""),
+            "description": s.get("description", "") or "",
+            "delivery_minutes": s.get("delivery_minutes"),
+            "manual": bool(s.get("manual", False)),
+            "price_flat": s.get("price_flat"),  # for manual services, total price (not per 1k)
         }
         for s in items
     ]
@@ -251,9 +298,10 @@ async def checkout(req: CheckoutRequest, request: Request):
     # Look up service to get provider_id and check comment requirement
     svc = await db.curated_services.find_one(
         {"service_id": req.service_id, "enabled": True},
-        {"_id": 0, "provider_id": 1, "needs_custom_text": 1, "name": 1},
+        {"_id": 0, "provider_id": 1, "needs_custom_text": 1, "name": 1, "manual": 1},
     )
     provider_id = svc.get("provider_id") if svc else None
+    is_manual = bool(svc.get("manual")) if svc else False
     needs_custom = bool(svc.get("needs_custom_text")) if svc else False
     comments = (req.comments or "").strip() or None
     if needs_custom and not comments:
@@ -276,6 +324,7 @@ async def checkout(req: CheckoutRequest, request: Request):
         "smm_response": None,
         "comments": comments,
         "provider_id": provider_id,
+        "manual": is_manual,
     }
 
     # ----- Coupon flow -----
@@ -293,16 +342,28 @@ async def checkout(req: CheckoutRequest, request: Request):
                 raise HTTPException(status_code=404, detail="Invalid coupon code")
             raise HTTPException(status_code=400, detail=f"Insufficient coupon balance (${existing['balance']:.2f})")
 
-        # Place SMM order; refund on failure
+        # Manual service → don't call provider API; mark as awaiting manual fulfillment
+        if is_manual:
+            base_doc.update({
+                "status": "awaiting_manual_fulfillment",
+                "coupon_code": code,
+            })
+            await db.orders.insert_one(base_doc.copy())
+            remaining = await db.coupons.find_one({"code": code}, {"_id": 0, "balance": 1})
+            if remaining and remaining.get("balance", 0) <= 0.005:
+                await db.coupons.delete_one({"code": code})
+            return {"status": "success", "order_id": order_id, "manual": True}
+
+        # Place provider order; refund on failure
         try:
             smm_resp = await place_smm_order(req.service_id, req.link, req.quantity, comments=comments, provider_id=provider_id)
         except Exception as e:
             await db.coupons.update_one({"code": code}, {"$inc": {"balance": req.price_usd}})
-            raise HTTPException(status_code=502, detail=f"SMM API error: {e}")
+            raise HTTPException(status_code=502, detail=f"Provider API error: {e}")
 
         if "error" in smm_resp:
             await db.coupons.update_one({"code": code}, {"$inc": {"balance": req.price_usd}})
-            raise HTTPException(status_code=400, detail=f"SMM error: {smm_resp['error']}")
+            raise HTTPException(status_code=400, detail=f"Provider error: {smm_resp['error']}")
 
         base_doc.update({
             "status": "completed",
@@ -1017,25 +1078,72 @@ class BuyWithBalanceRequest(BaseModel):
 
 @client_router.post("/order-with-balance")
 async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
-    """Place an SMM order paying with the user's account balance."""
+    """Place an order paying with the user's account balance."""
     db: AsyncIOMotorDatabase = request.app.state.db
     # Look up curated service
     svc = await db.curated_services.find_one({"service_id": body.service_id, "enabled": True}, {"_id": 0})
     if not svc:
         raise HTTPException(status_code=404, detail="Service not available")
-    rate = float(svc.get("custom_rate", 0))
-    if rate <= 0:
-        raise HTTPException(status_code=400, detail="Service price not set")
-    if body.quantity < int(svc.get("min", 1) or 1) or body.quantity > int(svc.get("max", 100000) or 100000):
-        raise HTTPException(status_code=400, detail=f"Quantity must be between {svc.get('min')} and {svc.get('max')}")
+    is_manual = bool(svc.get("manual"))
+    if is_manual:
+        # Manual services use a flat price (price_flat), not per-1k rate
+        charge = round(float(svc.get("price_flat") or 0), 2)
+        if charge <= 0:
+            raise HTTPException(status_code=400, detail="Service price not set")
+    else:
+        rate = float(svc.get("custom_rate", 0))
+        if rate <= 0:
+            raise HTTPException(status_code=400, detail="Service price not set")
+        if body.quantity < int(svc.get("min", 1) or 1) or body.quantity > int(svc.get("max", 100000) or 100000):
+            raise HTTPException(status_code=400, detail=f"Quantity must be between {svc.get('min')} and {svc.get('max')}")
+        charge = round((rate * body.quantity) / 1000.0, 4)
     needs_custom = bool(svc.get("needs_custom_text"))
     comments = (body.comments or "").strip() or None
     if needs_custom and not comments:
         raise HTTPException(status_code=400, detail="This service requires custom comments — please enter them.")
-    charge = round((rate * body.quantity) / 1000.0, 4)
     balance = await _get_user_balance(user.id)
     if balance < charge:
         raise HTTPException(status_code=402, detail=f"Not enough balance — needs ${charge:.2f}, you have ${balance:.2f}")
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    if is_manual:
+        # Skip provider API — admin will fulfill manually
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user.id,
+            "username": user.username,
+            "amount": -charge,
+            "method": "balance",
+            "status": "approved",
+            "type": "order",
+            "service_id": body.service_id,
+            "created_at": now,
+            "approved_at": now,
+        })
+        order_doc = {
+            "id": str(uuid.uuid4()),
+            "smm_order_id": None,
+            "service_id": body.service_id,
+            "service_name": (svc.get("custom_name") or svc.get("name") or ""),
+            "link": body.link,
+            "quantity": body.quantity,
+            "charge": charge,
+            "customer_email": "",
+            "user_id": user.id,
+            "username": user.username,
+            "payment_method": "balance",
+            "source": "dashboard",
+            "status": "awaiting_manual_fulfillment",
+            "manual": True,
+            "delivery_minutes": svc.get("delivery_minutes"),
+            "created_at": now,
+            "comments": comments,
+            "provider_id": None,
+        }
+        await db.orders.insert_one(order_doc.copy())
+        new_balance = await _get_user_balance(user.id)
+        return {"ok": True, "manual": True, "charge": charge, "balance": new_balance}
 
     # Place order via SMM provider through the helper exposed on app.state
     place_smm_order = request.app.state.place_smm_order
@@ -1056,7 +1164,6 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
     if not smm_order_id:
         raise HTTPException(status_code=502, detail=f"Provider error: {smm_resp.get('error') or smm_resp}")
 
-    now = datetime.now(timezone.utc).isoformat()
     # Debit balance via negative transaction
     await db.transactions.insert_one({
         "id": str(uuid.uuid4()),
@@ -2199,6 +2306,12 @@ async def sync_provider_services(pid: str, x_admin_token: Optional[str] = Header
         # Auto-detect "needs custom text" (custom comments / mentions etc.)
         # Heuristic: contains "custom" AND NOT "random" / "emoji"
         needs_custom = ("custom" in name_lower) and ("random" not in name_lower) and ("emoji" not in name_lower)
+        # Try to capture provider description & parse delivery time
+        api_desc = str(s.get("description") or "").strip()
+        # Common alternate fields some providers use
+        speed_hint = str(s.get("average_time") or s.get("speed") or s.get("delivery") or "").strip()
+        combined_hint = " · ".join(x for x in [api_desc, speed_hint] if x)
+        parsed_delivery = _parse_delivery_minutes(combined_hint)
         # Composite key: (provider_id, service_id) — but since service_ids can collide across providers we namespace
         existing = await db.curated_services.find_one({"provider_id": pid, "service_id": sid})
         update_doc = {
@@ -2212,12 +2325,17 @@ async def sync_provider_services(pid: str, x_admin_token: Optional[str] = Header
             "type": s.get("type", "Default"),
             "synced_at": datetime.now(timezone.utc).isoformat(),
         }
+        if api_desc:
+            update_doc["api_description"] = api_desc[:2000]
         if not existing:
             new_doc = {
                 "service_id": sid,
                 "enabled": False,
+                "manual": False,
                 "custom_rate": provider_rate,
                 "needs_custom_text": needs_custom,
+                "description": api_desc[:2000],
+                "delivery_minutes": parsed_delivery,
                 **update_doc,
             }
             await db.curated_services.insert_one(new_doc.copy())
@@ -2226,6 +2344,11 @@ async def sync_provider_services(pid: str, x_admin_token: Optional[str] = Header
             # Only auto-set needs_custom_text on first sync — admin can override later
             if "needs_custom_text" not in existing:
                 update_doc["needs_custom_text"] = needs_custom
+            # Only auto-set description / delivery on first sync, don't overwrite admin's edits
+            if not existing.get("description") and api_desc:
+                update_doc["description"] = api_desc[:2000]
+            if existing.get("delivery_minutes") is None and parsed_delivery is not None:
+                update_doc["delivery_minutes"] = parsed_delivery
             await db.curated_services.update_one(
                 {"provider_id": pid, "service_id": sid},
                 {"$set": update_doc},
@@ -2330,6 +2453,52 @@ async def list_curated(x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
     items = await db.curated_services.find({}, {"_id": 0}).sort("service_id", 1).to_list(5000)
     return {"services": items}
+
+
+@api_router.post("/admin/services/manual")
+async def create_manual_service(payload: ManualServiceCreate, x_admin_token: Optional[str] = Header(None)):
+    """Create a custom/manual service that isn't tied to any SMM API provider.
+    Admin manually fulfills the order after payment confirms."""
+    check_admin(x_admin_token)
+    # Pick a unique negative service_id (so it never collides with provider IDs which are positive)
+    last = await db.curated_services.find_one(
+        {"manual": True}, {"_id": 0, "service_id": 1}, sort=[("service_id", 1)]
+    )
+    next_sid = -1
+    if last and isinstance(last.get("service_id"), int):
+        next_sid = min(-1, int(last["service_id"]) - 1)
+    doc = {
+        "service_id": next_sid,
+        "manual": True,
+        "enabled": True,
+        "name": payload.name.strip()[:200],
+        "custom_name": "",
+        "description": (payload.description or "").strip()[:2000],
+        "category": (payload.category or "Custom").strip()[:60],
+        "price_flat": round(float(payload.price_usd), 2),
+        "custom_rate": 0,
+        "provider_rate": 0,
+        "delivery_minutes": int(payload.delivery_minutes or 60),
+        "min": 1,
+        "max": 1,
+        "type": "manual",
+        "needs_custom_text": False,
+        "provider_id": None,
+        "provider_name": "Manual",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.curated_services.insert_one(doc.copy())
+    return {"service_id": next_sid, "name": doc["name"]}
+
+
+@api_router.delete("/admin/services/{service_id}")
+async def delete_service(service_id: int, x_admin_token: Optional[str] = Header(None)):
+    """Delete any service (manual or API) from the catalog."""
+    check_admin(x_admin_token)
+    res = await db.curated_services.delete_one({"service_id": service_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Service not found")
+    return {"deleted": True}
 
 
 @api_router.patch("/admin/services/{service_id}")
