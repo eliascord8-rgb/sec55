@@ -1918,7 +1918,7 @@ function CoinPaymentsPanel({ token }) {
 }
 
 
-function AIInboxPanel({ token }) {
+function AIInboxPanel({ token, displayName }) {
   const [sessions, setSessions] = useState([]);
   const [waiting, setWaiting] = useState(0);
   const [activeId, setActiveId] = useState(null);
@@ -2605,26 +2605,32 @@ function AIInboxPanel({ token }) {
 
               <form
                 onSubmit={send}
-                className="border-t border-white/5 p-3 flex items-center gap-2 bg-[#050505]"
+                className="border-t border-white/5 p-3 bg-[#050505]"
               >
-                <input
-                  data-testid="inbox-input"
-                  value={text}
-                  onChange={(e) => {
-                    setText(e.target.value);
-                    if (e.target.value.trim()) pingTyping();
-                  }}
-                  placeholder={isHuman ? `Reply as "${staffName}"…` : "Click Take Over first to reply…"}
-                  className="flex-1 bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-[#FF007F]"
-                />
-                <button
-                  type="submit"
-                  disabled={sending || !text.trim() || !isHuman}
-                  data-testid="inbox-send"
-                  className="px-4 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-40"
-                >
-                  {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : "Send"}
-                </button>
+                <div className="text-[10px] uppercase tracking-wider text-emerald-400/80 mb-1.5 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Replying as <span className="text-white font-bold">{displayName || staffName}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    data-testid="inbox-input"
+                    value={text}
+                    onChange={(e) => {
+                      setText(e.target.value);
+                      if (e.target.value.trim()) pingTyping();
+                    }}
+                    placeholder={isHuman ? `Reply as "${displayName || staffName}"…` : "Click Take Over first to reply…"}
+                    className="flex-1 bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-[#FF007F]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={sending || !text.trim() || !isHuman}
+                    data-testid="inbox-send"
+                    className="px-4 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-40"
+                  >
+                    {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : "Send"}
+                  </button>
+                </div>
               </form>
             </>
           )}
@@ -3328,7 +3334,7 @@ function WithdrawalsAdminPanel({ token }) {
 
 
 
-function TicketsAdminPanel({ token }) {
+function TicketsAdminPanel({ token, displayName }) {
   const [tickets, setTickets] = useState([]);
   const [waiting, setWaiting] = useState(0);
   const [open, setOpen] = useState(null);
@@ -3372,7 +3378,7 @@ function TicketsAdminPanel({ token }) {
     if (!r || !open) return;
     setSending(true);
     try {
-      await adminApi(token).post(`/admin/tickets/${open.ticket.id}/reply`, { message: r, staff_name: "Support" });
+      await adminApi(token).post(`/admin/tickets/${open.ticket.id}/reply`, { message: r });
       setReply("");
       openTicket(open.ticket.id);
       load();
@@ -3517,22 +3523,28 @@ function TicketsAdminPanel({ token }) {
               })}
             </div>
             {open.ticket.status !== "closed" && (
-              <form onSubmit={send} className="border-t border-white/5 p-3 flex gap-2 bg-[#050505]">
-                <Input
-                  data-testid="admin-ticket-reply-input"
-                  placeholder="Your reply…"
-                  value={reply}
-                  onChange={(e) => setReply(e.target.value)}
-                  className="bg-[#1a1525] border-white/10 flex-1"
-                />
-                <button
-                  type="submit"
-                  disabled={sending || !reply.trim()}
-                  data-testid="admin-ticket-send"
-                  className="px-4 gradient-pp rounded-sm font-bold disabled:opacity-40 inline-flex items-center"
-                >
-                  {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                </button>
+              <form onSubmit={send} className="border-t border-white/5 p-3 bg-[#050505]">
+                <div className="text-[10px] uppercase tracking-wider text-emerald-400/80 mb-1.5 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Replying as <span className="text-white font-bold">{displayName || "Support"}</span>
+                </div>
+                <div className="flex gap-2">
+                  <Input
+                    data-testid="admin-ticket-reply-input"
+                    placeholder={`Reply as "${displayName || "Support"}"…`}
+                    value={reply}
+                    onChange={(e) => setReply(e.target.value)}
+                    className="bg-[#1a1525] border-white/10 flex-1"
+                  />
+                  <button
+                    type="submit"
+                    disabled={sending || !reply.trim()}
+                    data-testid="admin-ticket-send"
+                    className="px-4 gradient-pp rounded-sm font-bold disabled:opacity-40 inline-flex items-center"
+                  >
+                    {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  </button>
+                </div>
               </form>
             )}
           </>
