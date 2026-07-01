@@ -577,12 +577,54 @@ async def cryptomus_webhook(request: Request):
 
 
 # ============ ADMIN ROUTES ============
+
+# Per-IP failed-login tracker for brute-force protection
+# {ip: {"fails": int, "locked_until": iso_datetime or None}}
+_ADMIN_LOGIN_ATTEMPTS: dict = {}
+MAX_ADMIN_LOGIN_FAILS = 5
+LOCKOUT_MINUTES = 15
+
+
+def _check_admin_login_rate(request: Request) -> None:
+    """Raise 429 if this IP is currently locked out from too many failed admin logins."""
+    ip = get_client_ip(request)
+    rec = _ADMIN_LOGIN_ATTEMPTS.get(ip)
+    if not rec:
+        return
+    locked = rec.get("locked_until")
+    if locked:
+        try:
+            when = datetime.fromisoformat(locked.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) < when:
+                secs = int((when - datetime.now(timezone.utc)).total_seconds())
+                raise HTTPException(status_code=429, detail=f"Too many failed attempts. Locked for {secs}s.")
+            # Lock expired — reset
+            _ADMIN_LOGIN_ATTEMPTS.pop(ip, None)
+        except ValueError:
+            _ADMIN_LOGIN_ATTEMPTS.pop(ip, None)
+
+
+def _record_admin_login_fail(request: Request) -> None:
+    ip = get_client_ip(request)
+    rec = _ADMIN_LOGIN_ATTEMPTS.setdefault(ip, {"fails": 0, "locked_until": None})
+    rec["fails"] += 1
+    if rec["fails"] >= MAX_ADMIN_LOGIN_FAILS:
+        rec["locked_until"] = (datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_MINUTES)).isoformat()
+
+
+def _clear_admin_login_fails(request: Request) -> None:
+    _ADMIN_LOGIN_ATTEMPTS.pop(get_client_ip(request), None)
+
+
 @api_router.post("/admin/login")
-async def admin_login(payload: AdminLogin):
+async def admin_login(payload: AdminLogin, request: Request):
+    _check_admin_login_rate(request)
     # Case-insensitive username + strip whitespace to forgive typos
     if (payload.username or "").strip().lower() != ADMIN_USER.lower() or \
        (payload.password or "") != ADMIN_PASS:
+        _record_admin_login_fail(request)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    _clear_admin_login_fails(request)
     token = secrets.token_urlsafe(24)
     ADMIN_SESSIONS.add(token)
     return {"token": token}
@@ -593,13 +635,16 @@ class AdminSecretLogin(BaseModel):
 
 
 @api_router.post("/admin/login-secret")
-async def admin_login_secret(payload: AdminSecretLogin):
+async def admin_login_secret(payload: AdminSecretLogin, request: Request):
     """Bypass username/password by providing a pre-shared URL secret.
     Configure by setting ADMIN_URL_SECRET in backend/.env."""
+    _check_admin_login_rate(request)
     if not ADMIN_URL_SECRET:
         raise HTTPException(status_code=404, detail="Not configured")
     if not secrets.compare_digest((payload.secret or "").strip(), ADMIN_URL_SECRET):
+        _record_admin_login_fail(request)
         raise HTTPException(status_code=401, detail="Invalid secret")
+    _clear_admin_login_fails(request)
     token = secrets.token_urlsafe(24)
     ADMIN_SESSIONS.add(token)
     return {"token": token}
@@ -696,11 +741,14 @@ async def update_staff(staff_id: str, payload: StaffUpdate, x_admin_token: Optio
 
 
 @api_router.post("/admin/staff/login")
-async def staff_login(payload: StaffLogin):
+async def staff_login(payload: StaffLogin, request: Request):
     """Staff login — returns a token they use with x-admin-token header (subset of admin perms)."""
+    _check_admin_login_rate(request)
     user = await db.staff_users.find_one({"username": payload.username.strip().lower(), "active": True})
     if not user or not _verify_password(payload.password, user["password_hash"]):
+        _record_admin_login_fail(request)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    _clear_admin_login_fails(request)
     token = secrets.token_urlsafe(24)
     STAFF_SESSIONS[token] = {
         "id": user["id"],
