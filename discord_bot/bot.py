@@ -44,6 +44,25 @@ SERVICE_CHOICES = [
 ]
 
 
+# Per-user cooldown: max 3 /buy commands per 60 seconds
+_BUY_HISTORY: dict = {}  # {user_id: [timestamps]}
+BUY_MAX = 3
+BUY_WINDOW_SEC = 60
+
+
+def _check_buy_cooldown(user_id: int) -> Optional[int]:
+    """Returns seconds-to-wait if user is rate-limited, else None."""
+    import time
+    now = time.time()
+    history = [t for t in _BUY_HISTORY.get(user_id, []) if now - t < BUY_WINDOW_SEC]
+    if len(history) >= BUY_MAX:
+        wait = int(BUY_WINDOW_SEC - (now - history[0]))
+        return max(wait, 1)
+    history.append(now)
+    _BUY_HISTORY[user_id] = history
+    return None
+
+
 @tree.command(name="buy", description="Place an order via Better Social")
 @app_commands.describe(
     service="What to order",
@@ -60,6 +79,15 @@ async def buy(
     coupon: Optional[str] = None,
 ):
     await interaction.response.defer(thinking=True, ephemeral=True)
+
+    # Anti-spam cooldown
+    wait = _check_buy_cooldown(interaction.user.id)
+    if wait:
+        await interaction.followup.send(
+            f"⏳ Slow down — you can place another order in **{wait}s**. (Max {BUY_MAX} orders per {BUY_WINDOW_SEC}s.)",
+            ephemeral=True,
+        )
+        return
 
     # Role check
     is_developer = False
