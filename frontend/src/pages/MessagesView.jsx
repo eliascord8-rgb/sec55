@@ -99,7 +99,10 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
           const r = await authedApi().get(path);
           if (r.data.messages?.length) {
             setMessages((m) => {
-              const combined = lastSince ? [...m, ...r.data.messages] : r.data.messages;
+              const raw = lastSince ? [...m, ...r.data.messages] : r.data.messages;
+              // De-duplicate by id — the /since delta can overlap with the initial load
+              // and cause React "duplicate key" warnings otherwise.
+              const combined = Array.from(new Map(raw.map((x) => [x.id, x])).values());
               lastSince = combined[combined.length - 1]?.created_at || lastSince;
               return combined;
             });
