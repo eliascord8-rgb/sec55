@@ -293,7 +293,31 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
   };
 
   // ============ WebRTC ============
-  const rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+  // Public TURN + STUN mix. STUN alone fails when either party is behind a
+  // symmetric NAT (very common on mobile networks) — TURN is the relay fallback
+  // that makes video/audio actually reach the other side.
+  const rtcConfig = {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      // OpenRelay free public TURN — good enough for testing / low-volume prod.
+      // For higher reliability replace with your own Twilio / Xirsys credentials.
+      { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+    ],
+    iceCandidatePoolSize: 4,
+  };
+
+  // Attach the LOCAL preview stream when the <video> mounts. Without this,
+  // the ref could still be null when startCall/acceptCall assigns srcObject,
+  // leaving the user staring at a black tile.
+  useEffect(() => {
+    if (call?.video && localVideoRef.current && localStreamRef.current && localVideoRef.current.srcObject !== localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+      localVideoRef.current.play?.().catch(() => {});
+    }
+  }, [call?.video, call?.active, call?.incoming]);
 
   const startCall = async (video = false) => {
     if (!activeUser) return toast.error("Open a chat first");
@@ -306,8 +330,12 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
       if (video && localVideoRef.current) localVideoRef.current.srcObject = stream;
       const pc = new RTCPeerConnection(rtcConfig);
       pcRef.current = pc;
+      pc.onconnectionstatechange = () => console.log("[call] connectionState:", pc.connectionState);
+      pc.oniceconnectionstatechange = () => console.log("[call] iceConnectionState:", pc.iceConnectionState);
+      pc.onicegatheringstatechange = () => console.log("[call] iceGatheringState:", pc.iceGatheringState);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       pc.ontrack = (ev) => {
+        console.log("[call] ontrack fired — tracks:", ev.streams[0]?.getTracks().map(t=>t.kind));
         // Cache the remote stream — refs may not exist yet.
         remoteStreamRef.current = ev.streams[0];
         attachRemoteStream();
@@ -336,8 +364,12 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
       if (call.video && localVideoRef.current) localVideoRef.current.srcObject = stream;
       const pc = new RTCPeerConnection(rtcConfig);
       pcRef.current = pc;
+      pc.onconnectionstatechange = () => console.log("[call] connectionState:", pc.connectionState);
+      pc.oniceconnectionstatechange = () => console.log("[call] iceConnectionState:", pc.iceConnectionState);
+      pc.onicegatheringstatechange = () => console.log("[call] iceGatheringState:", pc.iceGatheringState);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       pc.ontrack = (ev) => {
+        console.log("[call] ontrack fired — tracks:", ev.streams[0]?.getTracks().map(t=>t.kind));
         remoteStreamRef.current = ev.streams[0];
         attachRemoteStream();
       };

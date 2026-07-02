@@ -1,0 +1,46 @@
+{
+  "summary": "Follow-up frontend test of the WebRTC TURN + localVideoRef fixes in MessagesView.jsx. All STATIC checks pass. All UI-level regressions pass. End-to-end media flow (mic/cam) cannot be exercised in headless Chromium (no devices) — main agent must confirm on a real client machine.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "static_verification": {
+    "rtcConfig_has_STUN": "PASS — stun:stun.l.google.com:19302 + stun1 (lines 301-302)",
+    "rtcConfig_has_TURN_openrelay": "PASS — turn:openrelay.metered.ca:80 + :443 + :443?transport=tcp (lines 305-307), username/credential 'openrelayproject'",
+    "iceCandidatePoolSize": "4 — reasonable",
+    "localVideoRef_useEffect": "PASS — useEffect at lines 315-320 watches [call?.video, call?.active, call?.incoming] and assigns localStreamRef.current -> localVideoRef.current.srcObject (with a race-safe `srcObject !== localStreamRef.current` guard)",
+    "debug_logs_wired": "PASS — pc.onconnectionstatechange / oniceconnectionstatechange / onicegatheringstatechange / ontrack all console.log with '[call] …' prefix in BOTH startCall (lines 333-338) and acceptCall (lines 367-372)",
+    "poller_dedupe": "PASS — messages merged via Array.from(new Map(raw.map(x=>[x.id,x])).values()) at line 105",
+    "grid_layout": "PASS — <video> grid renders only when call.video === true (line 618). remoteVideoRef is NOT muted, localVideoRef IS muted (line 621) — correct for echo avoidance."
+  },
+  "runtime_verification": {
+    "login_and_navigation": "PASS — testbugfix1 / password1 login with math captcha (12-9=3) → /client/dashboard, then sidebar Messages opens /messages-user-search",
+    "case_insensitive_search_balkin": "PASS — typing 'balkin' shows Balkin OWNER row in dropdown (regression check for Bug 3 still green)",
+    "text_dm_right_aligned": "PASS — 'regression hello owner' bubble renders inside .justify-end container",
+    "duplicate_key_warnings": "0 warnings across the whole run — dedup fix holds",
+    "call_audio_btn_click": "Toast 'Can\\'t access mic/cam: Requested device not found' appears then modal auto-closes via endCall(). Expected in headless (no mic device). Graceful error path confirmed.",
+    "call_video_btn_click": "Same behaviour — toast + modal auto-closes. Two <video> elements ONLY render when getUserMedia succeeds, which is never in headless; static file check confirms they are wired.",
+    "iceGatheringState_debug_log_observed": "NOT OBSERVED at runtime — because pcRef is created AFTER the awaited getUserMedia call, and getUserMedia rejects in headless. This is by design; on a real machine with mic/cam these logs will fire. Static wiring is correct."
+  },
+  "test_report_links": [],
+  "action_items": [
+    "END-TO-END call test can only be done with two real browser sessions on machines with mic/cam. Main agent should ask the user (or run on the VPS staging) to open the app in two browsers as two users and verify: (a) [call] iceGatheringState / iceConnectionState / connectionState / ontrack logs appear in DevTools, (b) both local & remote video tiles show live video, (c) remote audio is audible.",
+    "OpenRelay is a public shared TURN — under load it can rate-limit. If production video calls occasionally fail, replace with Twilio Network Traversal or Metered.ca paid credentials via ENV vars instead of hardcoding in MessagesView.jsx.",
+    "Minor: rtcConfig currently lives in the render body — it's re-created on every render. Move it to module scope (outside the component) to avoid needless object churn on each RTCPeerConnection instantiation."
+  ],
+  "critical_code_review_comments": [
+    "TURN credentials 'openrelayproject/openrelayproject' are hardcoded in the JS bundle. That's public info for OpenRelay so acceptable, but consider moving to REACT_APP_TURN_URL / _USERNAME / _CREDENTIAL env vars so production can switch providers without a code change.",
+    "startCall/acceptCall silently swallow errors on sendSignal via .catch(()=>{}) — an authenticated session that has expired mid-call would cause silent failure. Consider surfacing 401 as a toast.",
+    "The [call] console.log spam is fine for debugging but should be gated behind a debug flag (e.g., if (window.__DEBUG_CALL) console.log(...)) before production release — otherwise every user session logs iceGatheringState transitions to the DevTools console.",
+    "rtcConfig object literal is inside the component — moves it to module scope for a small perf win and to make it easier to override for tests."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only run)", "frontend": "Static checks: 100% PASS. UI/regressions: 100% PASS. E2E media-flow: INCONCLUSIVE (no hardware in headless — expected)."},
+  "test_credentials": "testbugfix1 / password1 — verified. Login route is /client/login, dashboard is /client/dashboard.",
+  "seed_data_creation": "Sent one DM ('regression hello owner') from testbugfix1 to Balkin during the run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Login route is /client/login, dashboard is /client/dashboard (NOT /login and /dashboard). Sidebar has a 'Messages' link that goes to MessagesView. Math captcha renders inside [data-testid=login-captcha] .select-none (question text) and [data-testid=login-captcha-answer] (input). Headless Chromium in this sandbox has NO mic/cam — getUserMedia always rejects NotFoundError, so any WebRTC end-to-end path (PC creation, ICE, ontrack, media playback) CANNOT be verified here. Verify statically in MessagesView.jsx or ask user to test on real hardware."
+}
