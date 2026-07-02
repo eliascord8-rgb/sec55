@@ -33,7 +33,10 @@ import {
   Calendar,
   MessageSquare,
   Bell,
+  Menu,
+  FileText,
 } from "lucide-react";
+import SlotsView from "./SlotsView";
 import { toast } from "sonner";
 
 const POLL_MS = 3000;
@@ -46,11 +49,27 @@ export default function ClientDashboard() {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [view, setView] = useState("home"); // home | funds | tickets | buy | redeem | casino | withdraw
+  const [view, setView] = useState("home"); // home | funds | tickets | buy | redeem | slots | withdraw | tos
+  const [viewLoading, setViewLoading] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const [balance, setBalance] = useState(0);
   const [withdrawable, setWithdrawable] = useState(0);
   const [unreadTickets, setUnreadTickets] = useState(0);
   const chatEndRef = useRef(null);
+
+  // Smooth-preloader when switching tabs (short delay for perceived polish, no full-page reload)
+  const changeView = (v) => {
+    if (v === view) {
+      setSidebarOpen(false);
+      return;
+    }
+    setViewLoading(true);
+    setSidebarOpen(false);
+    setTimeout(() => {
+      setView(v);
+      setTimeout(() => setViewLoading(false), 150);
+    }, 220);
+  };
 
   const loadBalance = async () => {
     try {
@@ -177,6 +196,14 @@ export default function ClientDashboard() {
             <span className="font-display font-black text-base text-white">Better<span className="text-white/70">Social</span></span>
           </div>
           <div className="lg:hidden flex items-center gap-2 px-4">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              data-testid="mobile-menu-btn"
+              className="w-8 h-8 rounded-md hover:bg-white/15 flex items-center justify-center"
+              title="Open menu"
+            >
+              <Menu className="w-5 h-5 text-white" />
+            </button>
             <div className="w-7 h-7 rounded-md bg-white/20 flex items-center justify-center">
               <Sparkles className="w-3.5 h-3.5 text-white" />
             </div>
@@ -232,33 +259,35 @@ export default function ClientDashboard() {
       </header>
 
       <div className="flex">
-        {/* SIDEBAR — fixed left, dark */}
+        {/* SIDEBAR — desktop (fixed) + mobile (drawer overlay) */}
         <aside
           data-testid="dashboard-sidebar"
-          className="hidden lg:flex flex-col w-[240px] min-h-[calc(100vh-4rem)] bg-[#0a0a14] border-r border-white/5 sticky top-16 self-start"
+          className={`${sidebarOpen ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0 fixed lg:sticky top-16 left-0 h-[calc(100vh-4rem)] w-[280px] lg:w-[240px] bg-[#0a0a14] border-r border-white/5 flex flex-col z-40 transition-transform duration-300 self-start overflow-y-auto`}
         >
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">
             Main Menu
           </div>
           <nav className="px-3 space-y-0.5">
-            <SideLinkV2 icon={LayoutDashboard} label="Dashboard" active={view === "home"} onClick={() => setView("home")} testId="nav-home" />
+            <SideLinkV2 icon={LayoutDashboard} label="Dashboard" active={view === "home"} onClick={() => changeView("home")} testId="nav-home" />
           </nav>
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Wallet</div>
           <nav className="px-3 space-y-0.5">
-            <SideLinkV2 icon={CreditCard} label="Add Funds" active={view === "funds"} onClick={() => setView("funds")} testId="nav-funds" badge={`$${balance.toFixed(2)}`} />
-            <SideLinkV2 icon={Ticket} label="Redeem Coupon" active={view === "redeem"} onClick={() => setView("redeem")} testId="nav-redeem" />
-            <SideLinkV2 icon={ArrowUpRight} label="Withdraw" active={view === "withdraw"} onClick={() => setView("withdraw")} testId="nav-withdraw" badge={withdrawable > 0 ? `$${withdrawable.toFixed(2)}` : null} />
+            <SideLinkV2 icon={CreditCard} label="Add Funds" active={view === "funds"} onClick={() => changeView("funds")} testId="nav-funds" badge={`$${balance.toFixed(2)}`} />
+            <SideLinkV2 icon={Ticket} label="Redeem Coupon" active={view === "redeem"} onClick={() => changeView("redeem")} testId="nav-redeem" />
+            <SideLinkV2 icon={ArrowUpRight} label="Withdraw" active={view === "withdraw"} onClick={() => changeView("withdraw")} testId="nav-withdraw" badge={withdrawable > 0 ? `$${withdrawable.toFixed(2)}` : null} />
           </nav>
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Shop</div>
           <nav className="px-3 space-y-0.5">
-            <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => setView("buy")} testId="nav-buy" />
+            <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => changeView("buy")} testId="nav-buy" />
+            <SideLinkV2 icon={Dices} label="Slot Machine" active={view === "slots"} onClick={() => changeView("slots")} testId="nav-slots" />
           </nav>
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Support</div>
           <nav className="px-3 space-y-0.5 pb-6">
-            <SideLinkV2 icon={LifeBuoy} label="Tickets" active={view === "tickets"} onClick={() => setView("tickets")} testId="nav-tickets" badge={unreadTickets > 0 ? unreadTickets : null} badgeKind="alert" />
+            <SideLinkV2 icon={LifeBuoy} label="Tickets" active={view === "tickets"} onClick={() => changeView("tickets")} testId="nav-tickets" badge={unreadTickets > 0 ? unreadTickets : null} badgeKind="alert" />
+            <SideLinkV2 icon={FileText} label="Terms of Service" active={view === "tos"} onClick={() => changeView("tos")} testId="nav-tos" />
             <Link
               to="/"
               className="flex items-center gap-3 px-4 py-2.5 rounded-md text-sm text-white/55 hover:text-white hover:bg-white/[0.04] transition"
@@ -282,51 +311,48 @@ export default function ClientDashboard() {
           </div>
         </aside>
 
-        {/* Mobile bottom-nav alternative (simple inline) */}
-        <div className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-[#0a0a14] border-t border-white/10 flex justify-around py-2">
-          {[
-            { v: "home", icon: LayoutDashboard, label: "Home" },
-            { v: "funds", icon: CreditCard, label: "Funds" },
-            { v: "buy", icon: ShoppingBag, label: "Buy" },
-            { v: "tickets", icon: LifeBuoy, label: "Help" },
-          ].map((t) => (
-            <button
-              key={t.v}
-              onClick={() => setView(t.v)}
-              data-testid={`mobile-nav-${t.v}`}
-              className={`flex flex-col items-center gap-0.5 px-3 py-1 text-[10px] uppercase tracking-wider ${
-                view === t.v ? "text-[#3b82f6]" : "text-white/40"
-              }`}
-            >
-              <t.icon className="w-4 h-4" />
-              {t.label}
-            </button>
-          ))}
-        </div>
+        {/* Mobile drawer backdrop */}
+        {sidebarOpen && (
+          <div
+            onClick={() => setSidebarOpen(false)}
+            data-testid="sidebar-backdrop"
+            className="lg:hidden fixed inset-0 top-16 z-30 bg-black/60 backdrop-blur-sm"
+          />
+        )}
 
         {/* MAIN CONTENT */}
         <main className="flex-1 px-4 md:px-8 lg:px-10 py-6 md:py-10 pb-24 lg:pb-10">
-          <div>
-            {view === "home" && (
-              <HomeView user={user} stats={stats} />
-            )}
-            {view === "funds" && (
-              <FundsView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
-            )}
-            {view === "buy" && (
-              <BuyView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
-            )}
-            {view === "redeem" && (
-              <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
-            )}
-            {view === "casino" && (
-              <CasinoView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
-            )}
-            {view === "withdraw" && (
-              <WithdrawView authedApi={authedApi} balance={balance} withdrawable={withdrawable} reloadBalance={loadBalance} />
-            )}
-            {view === "tickets" && <TicketsView authedApi={authedApi} />}
-          </div>
+          {viewLoading ? (
+            <div className="flex items-center justify-center py-24" data-testid="view-preloader">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-10 h-10 border-2 border-white/10 border-t-[#3b82f6] rounded-full animate-spin" />
+                <div className="text-xs text-white/40 uppercase tracking-widest">Loading</div>
+              </div>
+            </div>
+          ) : (
+            <div className="animate-in fade-in duration-200">
+              {view === "home" && (
+                <HomeView user={user} stats={stats} />
+              )}
+              {view === "funds" && (
+                <FundsView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
+              )}
+              {view === "buy" && (
+                <BuyView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
+              )}
+              {view === "redeem" && (
+                <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
+              )}
+              {view === "slots" && (
+                <SlotsView authedApi={authedApi} balance={balance} withdrawable={withdrawable} onBalanceChange={loadBalance} />
+              )}
+              {view === "withdraw" && (
+                <WithdrawView authedApi={authedApi} balance={balance} withdrawable={withdrawable} reloadBalance={loadBalance} />
+              )}
+              {view === "tickets" && <TicketsView authedApi={authedApi} />}
+              {view === "tos" && <TermsOfServiceView />}
+            </div>
+          )}
         </main>
       </div>
 
@@ -471,6 +497,48 @@ function SideLinkV2({ icon: Icon, label, active, onClick, testId, badge, badgeKi
         <span className="text-[10px] font-mono text-emerald-400">{badge}</span>
       )}
     </button>
+  );
+}
+
+function TermsOfServiceView() {
+  return (
+    <div className="max-w-3xl space-y-6">
+      <div>
+        <h1 className="font-display text-3xl md:text-4xl font-black tracking-tight">Terms of Service</h1>
+        <p className="text-white/50 text-sm mt-2">Last updated: {new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</p>
+      </div>
+
+      <div className="bg-[#13091a] border border-white/5 rounded-lg p-6 md:p-8 space-y-6 text-sm leading-relaxed text-white/75">
+        <section>
+          <h2 className="font-display font-bold text-lg text-white mb-2">1. Acceptance of Terms</h2>
+          <p>By creating an account, placing an order, or otherwise using Better Social (&quot;the Service&quot;), you agree to be bound by these Terms of Service. If you do not agree, please do not use the Service.</p>
+        </section>
+        <section>
+          <h2 className="font-display font-bold text-lg text-white mb-2">2. Services Provided</h2>
+          <p>Better Social provides social-media growth services, custom orders, and related digital products. Delivery times are estimates; actual completion may vary based on the target platform, network conditions, and provider availability.</p>
+        </section>
+        <section>
+          <h2 className="font-display font-bold text-lg text-white mb-2">3. Payments &amp; Refunds</h2>
+          <p>Payments are processed via third-party providers (Selly.io, coupons, or account balance). Once an order has been submitted to the provider network, it cannot be cancelled. Refund requests must be sent to <span className="text-emerald-400 font-mono">billrelevant@better-social.pro</span> within 7 days and are reviewed case-by-case.</p>
+        </section>
+        <section>
+          <h2 className="font-display font-bold text-lg text-white mb-2">4. Prohibited Uses</h2>
+          <p>You may not use the Service to violate any platform&apos;s terms of service, harass others, place fraudulent orders, or use stolen payment methods. Doing so will result in immediate account termination and forfeiture of balance.</p>
+        </section>
+        <section>
+          <h2 className="font-display font-bold text-lg text-white mb-2">5. Slot Machine &amp; Rewards</h2>
+          <p>The Slot Machine minigame is provided for entertainment. Winnings are credited to your withdrawable balance and can be cashed out subject to a $10 minimum. Deposits are non-refundable once used for spins.</p>
+        </section>
+        <section>
+          <h2 className="font-display font-bold text-lg text-white mb-2">6. Account Security</h2>
+          <p>You are responsible for keeping your login credentials confidential. Use the &quot;Forgot password?&quot; link on the login page if you suspect compromise. We will never ask you for your password.</p>
+        </section>
+        <section>
+          <h2 className="font-display font-bold text-lg text-white mb-2">7. Contact</h2>
+          <p>General support: <span className="text-emerald-400 font-mono">support@better-social.pro</span><br />Billing &amp; refunds: <span className="text-emerald-400 font-mono">billrelevant@better-social.pro</span></p>
+        </section>
+      </div>
+    </div>
   );
 }
 

@@ -368,6 +368,15 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
             )}
             {role === "owner" && (
             <TabsTrigger
+              value="mailer"
+              data-testid="tab-mailer"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Mass Mail
+            </TabsTrigger>
+            )}
+            {role === "owner" && (
+            <TabsTrigger
               value="providers"
               data-testid="tab-providers"
               className="data-[state=active]:bg-[#FF007F] rounded-sm"
@@ -418,6 +427,9 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
           </TabsContent>
           <TabsContent value="settings">
             <SettingsPanel token={token} />
+          </TabsContent>
+          <TabsContent value="mailer">
+            <MassMailPanel token={token} />
           </TabsContent>
           <TabsContent value="providers">
             <ProvidersPanel token={token} />
@@ -1108,6 +1120,137 @@ function ServicesPanel({ token }) {
     </div>
   );
 }
+function MassMailPanel({ token }) {
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [onlyRole, setOnlyRole] = useState("");
+  const [sending, setSending] = useState(false);
+  const [preview, setPreview] = useState(false);
+  const [lastResult, setLastResult] = useState(null);
+
+  const send = async () => {
+    if (subject.trim().length < 2 || body.trim().length < 2) {
+      toast.error("Subject and body are required");
+      return;
+    }
+    if (!window.confirm(`Send this email to ALL ${onlyRole || "users"}? This cannot be undone.`)) return;
+    setSending(true);
+    try {
+      const r = await adminApi(token).post("/admin/mass-mail", {
+        subject: subject.trim(),
+        body_html: body,
+        only_role: onlyRole || null,
+      });
+      setLastResult(r.data);
+      toast.success(`Sent to ${r.data.sent}/${r.data.total} (${r.data.failed} failed)`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Send failed — check Email Settings first");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-blue-400/30 rounded-sm p-6 md:p-8 max-w-3xl">
+      <div className="flex items-center gap-3 mb-2">
+        <Send className="w-5 h-5 text-blue-400" />
+        <h2 className="font-display font-bold text-lg">Mass Mail Campaign</h2>
+      </div>
+      <p className="text-xs text-white/50 mb-6">
+        Send a broadcast email to all users. Uses the email provider configured in <span className="text-blue-300">Settings → Email</span> (MailerSend or SMTP). Emails are sent one-by-one; the counter shows successful sends.
+      </p>
+
+      <div className="space-y-4">
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">Recipients</Label>
+          <select
+            data-testid="mass-mail-role"
+            value={onlyRole}
+            onChange={(e) => setOnlyRole(e.target.value)}
+            className="w-full bg-[#0d0a14] border border-white/10 rounded-sm px-3 py-2 mt-1 text-sm outline-none"
+          >
+            <option value="">All registered users</option>
+            <option value="user">Only regular users</option>
+            <option value="admin">Only admins</option>
+          </select>
+        </div>
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">Subject</Label>
+          <Input
+            data-testid="mass-mail-subject"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            maxLength={200}
+            placeholder="e.g. 🎉 New services just launched"
+            className="bg-[#0d0a14] border-white/10 mt-1"
+          />
+        </div>
+        <div>
+          <div className="flex items-center justify-between">
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Body (HTML supported)</Label>
+            <button
+              type="button"
+              onClick={() => setPreview(!preview)}
+              data-testid="mass-mail-preview-toggle"
+              className="text-[10px] uppercase tracking-wider text-blue-400 hover:text-blue-300"
+            >
+              {preview ? "Edit" : "Preview"}
+            </button>
+          </div>
+          {preview ? (
+            <div
+              data-testid="mass-mail-preview"
+              className="w-full mt-1 min-h-[240px] p-4 bg-white text-black rounded-sm border border-white/10 text-sm"
+              dangerouslySetInnerHTML={{ __html: body || "<em>(nothing yet)</em>" }}
+            />
+          ) : (
+            <textarea
+              data-testid="mass-mail-body"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={12}
+              maxLength={50000}
+              placeholder="<h2>Hey everyone!</h2><p>We just launched TikTok Shares...</p>"
+              className="w-full mt-1 px-3 py-2 bg-[#0d0a14] border border-white/10 rounded-sm text-sm font-mono outline-none focus:border-blue-400 resize-y"
+            />
+          )}
+          <div className="text-[10px] text-white/40 mt-1">
+            Content is wrapped in the Better Social email template automatically. Basic HTML like <span className="font-mono">&lt;h2&gt;</span>, <span className="font-mono">&lt;p&gt;</span>, <span className="font-mono">&lt;strong&gt;</span>, <span className="font-mono">&lt;a href&gt;</span> works.
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={send}
+            disabled={sending || subject.length < 2 || body.length < 2}
+            data-testid="mass-mail-send"
+            className="px-5 py-2.5 bg-blue-500 hover:bg-blue-400 text-black rounded-sm font-bold text-xs uppercase tracking-wider disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+            {sending ? "Sending…" : "Send Campaign"}
+          </button>
+        </div>
+
+        {lastResult && (
+          <div className="mt-4 p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-sm text-xs" data-testid="mass-mail-result">
+            ✅ Sent to <span className="font-bold text-emerald-300">{lastResult.sent}</span> of{" "}
+            <span className="font-bold">{lastResult.total}</span> users
+            {lastResult.failed > 0 && (
+              <span className="text-amber-300"> · {lastResult.failed} failed</span>
+            )}
+            {lastResult.errors?.length > 0 && (
+              <div className="mt-2 text-amber-300 font-mono text-[10px]">
+                Sample errors: {lastResult.errors.join(" · ")}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 
 function SettingsPanel({ token }) {
   return (
