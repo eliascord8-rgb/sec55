@@ -37,6 +37,7 @@ import {
   FileText,
 } from "lucide-react";
 import SlotsView from "./SlotsView";
+import MessagesView from "./MessagesView";
 import { toast } from "sonner";
 
 const POLL_MS = 3000;
@@ -278,6 +279,12 @@ export default function ClientDashboard() {
             <SideLinkV2 icon={ArrowUpRight} label="Withdraw" active={view === "withdraw"} onClick={() => changeView("withdraw")} testId="nav-withdraw" badge={withdrawable > 0 ? `$${withdrawable.toFixed(2)}` : null} />
           </nav>
 
+          <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Community</div>
+          <nav className="px-3 space-y-0.5">
+            <SideLinkV2 icon={MessageSquare} label="Messages" active={view === "messages"} onClick={() => changeView("messages")} testId="nav-messages" />
+          </nav>
+
+
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Shop</div>
           <nav className="px-3 space-y-0.5">
             <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => changeView("buy")} testId="nav-buy" />
@@ -350,6 +357,7 @@ export default function ClientDashboard() {
                 <WithdrawView authedApi={authedApi} balance={balance} withdrawable={withdrawable} reloadBalance={loadBalance} />
               )}
               {view === "tickets" && <TicketsView authedApi={authedApi} />}
+              {view === "messages" && <MessagesView authedApi={authedApi} me={user} />}
               {view === "tos" && <TermsOfServiceView />}
             </div>
           )}
@@ -814,15 +822,6 @@ function FundsView({ authedApi, balance, reloadBalance }) {
           >
             {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <span className="text-base">₿</span>}
             Pay ${Number(amount) || 0} with Crypto (300+ coins · No KYC)
-          </button>
-          <button
-            onClick={paySelly}
-            disabled={creating || Number(amount) < 5}
-            data-testid="funds-pay-selly"
-            className="w-full py-3.5 rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40 bg-gradient-to-r from-emerald-500 via-emerald-400 to-emerald-500 text-black hover:scale-[1.01] transition shadow-lg shadow-emerald-500/20"
-          >
-            {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-            Pay ${Number(amount) || 0} via Selly · {gateway.toUpperCase().replace("_", " ")}
           </button>
           <div className="text-[10px] text-center text-white/40 uppercase tracking-wider">
             Min $5 · Instant credit after payment confirmation

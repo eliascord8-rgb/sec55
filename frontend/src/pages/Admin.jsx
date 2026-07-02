@@ -1257,7 +1257,6 @@ function SettingsPanel({ token }) {
     <div className="space-y-6">
       <SmmConfigPanel token={token} />
       <NowpaymentsConfigPanel token={token} />
-      <SellyConfigPanel token={token} />
       <EmailConfigPanel token={token} />
     </div>
   );

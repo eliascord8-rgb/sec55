@@ -3089,6 +3089,11 @@ app.include_router(chat_router)
 app.include_router(client_router)
 app.include_router(ai_router)
 
+# Direct messaging + WebRTC call signaling
+from messaging import msg_router, calls_router  # noqa: E402
+app.include_router(msg_router, prefix="/api")
+app.include_router(calls_router, prefix="/api")
+
 app.state.db = db
 app.state.place_smm_order = place_smm_order
 app.state.check_admin = check_admin
