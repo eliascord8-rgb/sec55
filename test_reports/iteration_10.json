@@ -1,0 +1,35 @@
+{
+  "summary": "Retest of iteration 9 admin UI flows after messaging.py._admin_dep fix (X-Admin-Token support). ALL previously-failing admin UI flows now PASS end-to-end. Reports tab renders, view-chat modal opens with correct header + message history, Reviewed/Close status transitions work (with correct toasts and pill color changes), status filter dropdown filters correctly, and TURN config save/reload/clear all work with proper persistence.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin > Reports tab", "issues": ["Persistent React hydration warning: '<span> cannot be a child of <option>' (originates from the visualize/x-editable dev overlay wrapping the <option> children with a <span style=display:contents>). Cosmetic only – dropdown functions correctly. Low priority."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Admin.jsx is 4922 lines – strongly recommend splitting into per-panel modules (ReportsPanel, TicketsAdminPanel, etc.) for maintainability.",
+    "The <option><span>...</span></option> hydration warning is caused by the visualize instrumentation wrapping dynamic text nodes; if the instrumentation cannot be disabled, use static text (e.g. `All ({reports.length})` becomes `{`All (${reports.length})`}`) or coerce with String() so the visualize plugin doesn't emit a wrapper span inside <option>."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only retest)", "frontend": "100% (all 6 requested flows passed)"},
+  "test_credentials": "/admin?haha123 (owner secret URL); admin_token via POST /api/admin/login-secret {\"secret\":\"haha123\"} for backend verification",
+  "seed_data_creation": "None – used the 3 existing testbugfix1 -> Balkin reports. Note: current DB state now: report 72f0f09b=closed, 759f04ff=reviewed, 5db5cd96=open (was all open before this run).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Radix Tabs triggers on this build sometimes require dispatching a full pointerdown+mousedown+click sequence via page.evaluate to activate (a plain playwright click on data-testid tab occasionally no-ops on first attempt after hard reload – likely a race with hydration/visualize overlay). If a tab-* click doesn't switch, dispatch PointerEvent('pointerdown') then MouseEvent('mousedown') then .click() and retry with 1.5s waits. All admin messaging/calls endpoints now accept X-Admin-Token via messaging.py._admin_dep – both auth headers verified.",
+  "detailed_flow_results": {
+    "1_admin_login_secret_url": "PASS – /admin?haha123 loads Admin Console, Reports tab visible in tab bar (bs_admin_token stored in localStorage).",
+    "2_reports_tab_render": "PASS – 3 rows visible with columns When | Reporter | Reported user | Reason | Status | Actions. All 3 reports show @testbugfix1 -> @Balkin. Each open row has View chat, Reviewed, and Close buttons; each report-view button carries data-testid='report-view-<uuid>'.",
+    "3_view_chat_modal": "PASS – clicking View chat opens modal with header '@testbugfix1 ↔ @Balkin', subtitle 'Reason: harassment test iter9 UI', and full message thread including an audio message + 3 text messages ('hi owner, testing DM to staff', 'hello owner', 'regression hello owner'). Modal dismisses on Escape/backdrop.",
+    "4_reviewed_transition": "PASS – Clicking 'Reviewed' fires POST /api/admin/messages/reports/<id>/status -> 200, toast 'Marked reviewed' shown, row pill turns blue and reads 'REVIEWED'.",
+    "5_close_transition": "PASS – Clicking 'Close' fires the same endpoint with status=closed, row pill turns grey and reads 'CLOSED'. Reviewed/Close buttons correctly hide once terminal.",
+    "6_status_filter": "PASS – Selecting 'open' from data-testid='report-status-filter' filters table to only OPEN rows; REVIEWED/CLOSED rows correctly excluded. Switching back to 'all' restores all 3.",
+    "7_turn_save": "PASS – Filling turn-urls='turn:my.example.com:3478', turn-username='user1', turn-credential='pass1' then clicking data-testid='turn-save' -> toast 'TURN config saved. Users’ next call will use these servers.'",
+    "8_turn_persistence": "PASS – After page reload the three fields reload with the saved values (verified via input.value read).",
+    "9_turn_clear_and_openrelay_fallback": "PASS – Clearing all three inputs and saving again yields the same success toast (200 response). GET /api/calls/ice-config requires user JWT (returns 401 without auth) so full OpenRelay fallback assertion left to backend regression test – backend curl by main agent already confirmed the endpoint returns OpenRelay when config is blank."
+  }
+}

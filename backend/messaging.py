@@ -419,10 +419,36 @@ async def report_chat(payload: ReportRequest, request: Request, user: CurrentUse
 
 # ============ Admin endpoints (reports + call config) ============
 
-async def _admin_dep(user: CurrentUser = Depends(current_user_dep)) -> CurrentUser:
-    if user.role not in ("owner", "admin", "staff"):
-        raise HTTPException(status_code=403, detail="Admins only")
-    return user
+async def _admin_dep(request: Request) -> CurrentUser:
+    """Admin auth for /admin/messages/* and /admin/calls/*.
+    Accepts EITHER the panel's X-Admin-Token (owner/staff session) OR a JWT for role owner/admin/staff.
+    This bridges the two auth systems used across the app (JWT for users, ADMIN_SESSIONS for the admin UI)."""
+    # 1) Admin panel session header (used by /app/frontend/src/lib/api.js -> adminApi)
+    x_admin = request.headers.get("X-Admin-Token") or request.headers.get("x-admin-token")
+    if x_admin:
+        ADMIN_SESSIONS: set = set()
+        STAFF_SESSIONS: dict = {}
+        owner_name = "owner"
+        try:
+            import server as _srv  # local import avoids cycles
+            ADMIN_SESSIONS = getattr(_srv, "ADMIN_SESSIONS", set())
+            STAFF_SESSIONS = getattr(_srv, "STAFF_SESSIONS", {})
+            owner_name = getattr(_srv, "ADMIN_USER", None) or getattr(_srv, "OWNER_USERNAME", "owner")
+        except Exception:
+            pass
+        if x_admin in ADMIN_SESSIONS:
+            return CurrentUser(id="__owner__", username=owner_name, role="owner")
+        staff = STAFF_SESSIONS.get(x_admin)
+        if staff:
+            return CurrentUser(id=staff.get("id", "__staff__"), username=staff.get("username", "staff"), role="staff")
+    # 2) JWT fallback (Authorization: Bearer <jwt> OR access_token cookie)
+    try:
+        user = await current_user_dep(request)
+        if user.role in ("owner", "admin", "staff", "moderator"):
+            return user
+    except HTTPException:
+        pass
+    raise HTTPException(status_code=401, detail="Admin auth required")
 
 
 admin_msg_router = APIRouter(prefix="/admin/messages")
