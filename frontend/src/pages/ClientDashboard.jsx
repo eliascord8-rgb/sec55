@@ -281,7 +281,7 @@ export default function ClientDashboard() {
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Shop</div>
           <nav className="px-3 space-y-0.5">
             <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => changeView("buy")} testId="nav-buy" />
-            <SideLinkV2 icon={Dices} label="Slot Machine" active={view === "slots"} onClick={() => changeView("slots")} testId="nav-slots" />
+            <SideLinkV2 icon={Dices} label="Try a Chance" active={view === "slots"} onClick={() => changeView("slots")} testId="nav-slots" />
           </nav>
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Support</div>
@@ -703,6 +703,22 @@ function FundsView({ authedApi, balance, reloadBalance }) {
     }
   };
 
+  const payNowpayments = async () => {
+    const a = Number(amount) || 0;
+    if (a < 5) {
+      toast.error("Min $5 for crypto checkout");
+      return;
+    }
+    setCreating(true);
+    try {
+      const r = await authedApi().post("/client/funds/nowpayments-create", { amount: a });
+      window.location.href = r.data.checkout_url;
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to start crypto checkout");
+      setCreating(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -790,6 +806,15 @@ function FundsView({ authedApi, balance, reloadBalance }) {
           </div>
         </div>
         <div className="flex flex-col gap-2">
+          <button
+            onClick={payNowpayments}
+            disabled={creating || Number(amount) < 5}
+            data-testid="funds-pay-nowpayments"
+            className="w-full py-3.5 rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40 bg-gradient-to-r from-amber-400 via-amber-300 to-amber-400 text-black hover:scale-[1.01] transition shadow-lg shadow-amber-500/20"
+          >
+            {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <span className="text-base">₿</span>}
+            Pay ${Number(amount) || 0} with Crypto (300+ coins · No KYC)
+          </button>
           <button
             onClick={paySelly}
             disabled={creating || Number(amount) < 5}

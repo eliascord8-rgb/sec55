@@ -1098,17 +1098,56 @@ SLOT_ICONS = [
     {"id": "bell", "emoji": "🔔", "weight": 8},
     {"id": "diamond", "emoji": "💎", "weight": 3},
     {"id": "seven", "emoji": "7️⃣", "weight": 1},
+    {"id": "wild", "emoji": "⭐", "weight": 2},  # X / Wild — substitutes for any icon
 ]
 
-SLOT_ROWS = 8
-SLOT_COLS = 6  # 8×6 = 48 boxes
+SLOT_ROWS = 4
+SLOT_COLS = 6  # 4×6 = 24 boxes
 
 # Payouts per matched-count in ANY single row (looking left-to-right runs of same icon)
 # Very stingy: 3 in a row pays back only 0.5x the bet, 4 = 1.5x, 5 = 4x, 6 = 40x
 SLOT_RUN_PAYOUTS = {3: 0.5, 4: 1.5, 5: 4.0, 6: 40.0}
 
-# Special multiplier: diamond & seven double their winnings if part of a run
+# Special multiplier: rare icons multiply their run's payout
 SLOT_ICON_MULT = {"diamond": 2.0, "seven": 5.0}
+
+
+def _evaluate_slot_grid(grid: list, bet: float) -> tuple:
+    """Return (payout_usd, winning_cells_list). Only pays for horizontal runs of 3+.
+    Wild (⭐) substitutes for any icon — a run of any icon + wilds counts as that icon."""
+    payout = 0.0
+    winning_cells = []
+    for r, row in enumerate(grid):
+        c = 0
+        while c < len(row):
+            # Start of a potential run: skip if starting on pure wild (still valid, use next)
+            base = row[c] if row[c] != "wild" else None
+            run_end = c
+            for k in range(c + 1, len(row)):
+                cell = row[k]
+                if cell == "wild":
+                    run_end = k
+                    continue
+                if base is None:
+                    base = cell
+                    run_end = k
+                    continue
+                if cell == base:
+                    run_end = k
+                    continue
+                break
+            run_len = run_end - c + 1
+            if run_len >= 3 and base is not None:
+                base_mult = SLOT_RUN_PAYOUTS.get(min(run_len, 6), 0)
+                icon_bonus = SLOT_ICON_MULT.get(base, 1.0)
+                # Any wild in the run adds an extra ×2 boost
+                if any(row[x] == "wild" for x in range(c, run_end + 1)):
+                    icon_bonus *= 2.0
+                run_pay = bet * base_mult * icon_bonus
+                payout += run_pay
+                winning_cells.extend([[r, x] for x in range(c, run_end + 1)])
+            c = run_end + 1
+    return round(payout, 2), winning_cells
 
 
 class SlotSpinRequest(BaseModel):
@@ -1126,28 +1165,6 @@ def _slot_random_icon() -> str:
         if r <= acc:
             return icon["id"]
     return SLOT_ICONS[0]["id"]
-
-
-def _evaluate_slot_grid(grid: list, bet: float) -> tuple:
-    """Return (payout_usd, winning_cells_list). Only pays for horizontal runs of 3+."""
-    payout = 0.0
-    winning_cells = []
-    for r, row in enumerate(grid):
-        c = 0
-        while c < len(row):
-            icon = row[c]
-            run_end = c
-            while run_end + 1 < len(row) and row[run_end + 1] == icon:
-                run_end += 1
-            run_len = run_end - c + 1
-            if run_len >= 3:
-                base_mult = SLOT_RUN_PAYOUTS.get(min(run_len, 6), 0)
-                icon_bonus = SLOT_ICON_MULT.get(icon, 1.0)
-                run_pay = bet * base_mult * icon_bonus
-                payout += run_pay
-                winning_cells.extend([[r, x] for x in range(c, run_end + 1)])
-            c = run_end + 1
-    return round(payout, 2), winning_cells
 
 
 @client_router.get("/slots/config")
@@ -1749,6 +1766,158 @@ async def request_funds(body: FundRequest, user: CurrentUser = Depends(current_u
     }
     await db.transactions.insert_one(doc.copy())
     return {"ok": True, "id": doc["id"], "status": "pending"}
+
+
+# ============ NOWPAYMENTS (Crypto — no KYC) ============
+
+NOWPAYMENTS_API_BASE = "https://api.nowpayments.io/v1"
+
+
+async def _get_nowpayments_config() -> dict:
+    cfg = await db.nowpayments_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    if not cfg.get("api_key"):
+        raise HTTPException(status_code=503, detail="NOWPayments not configured — admin must add API key in Settings")
+    return cfg
+
+
+async def _create_nowpayments_invoice(amount_usd: float, order_id: str, description: str, ipn_url: str, success_url: str, cancel_url: str) -> dict:
+    """Create a hosted NOWPayments invoice and return {invoice_id, invoice_url}."""
+    cfg = await _get_nowpayments_config()
+    payload = {
+        "price_amount": round(float(amount_usd), 2),
+        "price_currency": "usd",
+        "order_id": order_id,
+        "order_description": description[:200],
+        "ipn_callback_url": ipn_url,
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+    }
+    async with httpx.AsyncClient(timeout=20.0) as c:
+        r = await c.post(
+            f"{NOWPAYMENTS_API_BASE}/invoice",
+            json=payload,
+            headers={"x-api-key": cfg["api_key"], "Content-Type": "application/json"},
+        )
+        if r.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"NOWPayments {r.status_code}: {r.text[:300]}")
+        data = r.json()
+    if not data.get("invoice_url"):
+        raise HTTPException(status_code=502, detail=f"NOWPayments — no invoice_url: {str(data)[:200]}")
+    return {"invoice_id": str(data.get("id")), "invoice_url": data["invoice_url"]}
+
+
+def _verify_nowpayments_signature(body_bytes: bytes, ipn_secret: str, signature: str) -> bool:
+    """HMAC-SHA512 verification of NOWPayments webhook.
+    NOWPayments sorts the JSON body keys alphabetically before signing."""
+    import hmac, hashlib
+    try:
+        data = jsonlib.loads(body_bytes.decode("utf-8"))
+        sorted_json = jsonlib.dumps(data, sort_keys=True, separators=(",", ":"))
+        expected = hmac.new(ipn_secret.encode(), sorted_json.encode(), hashlib.sha512).hexdigest()
+        return hmac.compare_digest(expected, (signature or "").lower())
+    except Exception:
+        return False
+
+
+class NowpaymentsConfig(BaseModel):
+    api_key: str = Field(..., min_length=10, max_length=200)
+    ipn_secret: Optional[str] = ""
+
+
+@api_router.get("/admin/nowpayments-config")
+async def admin_get_nowpayments_config(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.nowpayments_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    key = cfg.get("api_key", "")
+    return {
+        "configured": bool(key),
+        "api_key_masked": ("*" * 6 + key[-6:]) if key else "",
+        "ipn_secret_set": bool(cfg.get("ipn_secret")),
+    }
+
+
+@api_router.post("/admin/nowpayments-config")
+async def admin_set_nowpayments_config(payload: NowpaymentsConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    upd = {"api_key": payload.api_key.strip(), "updated_at": datetime.now(timezone.utc).isoformat()}
+    if payload.ipn_secret:
+        upd["ipn_secret"] = payload.ipn_secret.strip()
+    await db.nowpayments_config.update_one({"_id": "singleton"}, {"$set": upd}, upsert=True)
+    return {"configured": True}
+
+
+class NowpaymentsFundsRequest(BaseModel):
+    amount: float = Field(..., ge=5, le=10000)
+
+
+@client_router.post("/funds/nowpayments-create")
+async def nowpayments_create_funds(body: NowpaymentsFundsRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    tx_id = str(uuid.uuid4())
+    amount = round(float(body.amount), 2)
+    origin = request.headers.get("origin", "").rstrip("/") or request.headers.get("referer", "").split("/api")[0]
+    await db.transactions.insert_one({
+        "id": tx_id,
+        "user_id": user.id,
+        "username": user.username,
+        "amount": amount,
+        "method": "nowpayments",
+        "status": "pending",
+        "type": "deposit",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    # IPN callback URL uses the backend's public URL
+    backend_url = origin  # same origin serves both /api and /client
+    invoice = await _create_nowpayments_invoice(
+        amount_usd=amount,
+        order_id=f"funds_{tx_id}",
+        description=f"Better Social — Add ${amount:.2f} for @{user.username}",
+        ipn_url=f"{backend_url}/api/nowpayments/webhook",
+        success_url=f"{origin}/client/dashboard?nowpay=1&tx={tx_id}",
+        cancel_url=f"{origin}/client/dashboard?nowpay=cancel",
+    )
+    await db.transactions.update_one(
+        {"id": tx_id},
+        {"$set": {"nowpayments_invoice_id": invoice["invoice_id"], "nowpayments_url": invoice["invoice_url"]}},
+    )
+    return {"id": tx_id, "checkout_url": invoice["invoice_url"]}
+
+
+@api_router.post("/nowpayments/webhook")
+async def nowpayments_webhook(request: Request):
+    """Called by NOWPayments when payment status changes. Credits balance on 'finished' status."""
+    body = await request.body()
+    signature = request.headers.get("x-nowpayments-sig", "")
+    cfg = await db.nowpayments_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    ipn_secret = cfg.get("ipn_secret", "")
+    if ipn_secret and not _verify_nowpayments_signature(body, ipn_secret, signature):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    try:
+        data = jsonlib.loads(body.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    order_id = str(data.get("order_id", ""))
+    status = (data.get("payment_status") or "").lower()
+    logger.info(f"NOWPayments webhook: order={order_id} status={status}")
+
+    # Only credit on 'finished' — other statuses are transitional
+    if not order_id.startswith("funds_") or status != "finished":
+        return {"ok": True, "ignored": True, "status": status}
+
+    tx_id = order_id.replace("funds_", "", 1)
+    tx = await db.transactions.find_one({"id": tx_id})
+    if not tx:
+        return {"ok": True, "unknown_tx": tx_id}
+    if tx.get("status") == "approved":
+        return {"ok": True, "already_credited": True}
+    await db.transactions.update_one(
+        {"id": tx_id},
+        {"$set": {
+            "status": "approved",
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "nowpayments_payload": data,
+        }},
+    )
+    return {"ok": True, "credited": tx_id}
 
 
 # ============ SELLY.IO PAYMENTS ============
