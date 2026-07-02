@@ -393,6 +393,15 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
               Team
             </TabsTrigger>
             )}
+            {(role === "owner" || role === "admin") && (
+            <TabsTrigger
+              value="reports"
+              data-testid="tab-reports"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Reports
+            </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="orders">
@@ -436,6 +445,9 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
           </TabsContent>
           <TabsContent value="staff">
             <StaffPanel token={token} />
+          </TabsContent>
+          <TabsContent value="reports">
+            <ReportsPanel token={token} />
           </TabsContent>
         </Tabs>
       </main>
@@ -4721,4 +4733,189 @@ function StaffPanel({ token }) {
     </div>
   );
 }
+
+function ReportsPanel({ token }) {
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [active, setActive] = useState(null); // {report, messages}
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [turnCfg, setTurnCfg] = useState({ urls: "", username: "", credential: "" });
+  const [turnSaving, setTurnSaving] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await adminApi(token).get("/admin/messages/reports");
+      setReports(r.data.reports || []);
+    } catch {
+      toast.error("Failed to load reports");
+    }
+    setLoading(false);
+  };
+
+  const loadTurn = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/calls/turn-config");
+      setTurnCfg({ urls: r.data.urls || "", username: r.data.username || "", credential: r.data.credential || "" });
+    } catch {}
+  };
+
+  useEffect(() => { load(); loadTurn(); }, [token]);
+
+  const openThread = async (report) => {
+    try {
+      const r = await adminApi(token).get(`/admin/messages/reports/${report.id}/thread`);
+      setActive({ report: r.data.report, messages: r.data.messages || [] });
+    } catch {
+      toast.error("Failed to load conversation");
+    }
+  };
+
+  const setStatus = async (id, status) => {
+    try {
+      await adminApi(token).post(`/admin/messages/reports/${id}/status`, { status });
+      toast.success(`Marked ${status}`);
+      load();
+      if (active?.report?.id === id) setActive((a) => ({ ...a, report: { ...a.report, status } }));
+    } catch {
+      toast.error("Failed to update status");
+    }
+  };
+
+  const saveTurn = async () => {
+    setTurnSaving(true);
+    try {
+      await adminApi(token).post("/admin/calls/turn-config", turnCfg);
+      toast.success("TURN config saved. Users' next call will use these servers.");
+    } catch {
+      toast.error("Failed to save TURN config");
+    }
+    setTurnSaving(false);
+  };
+
+  const filtered = statusFilter === "all" ? reports : reports.filter((r) => r.status === statusFilter);
+
+  return (
+    <div className="space-y-6">
+      {/* Chat reports */}
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+          <div>
+            <h2 className="font-display font-bold text-lg">Reported Chats</h2>
+            <p className="text-xs text-white/50 mt-1">Only chats that users report show up here. Everything else stays private.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select data-testid="report-status-filter" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-[#0d0a14] border border-white/10 rounded px-2 py-1 text-xs">
+              <option value="all">All ({reports.length})</option>
+              <option value="open">Open</option>
+              <option value="reviewed">Reviewed</option>
+              <option value="closed">Closed</option>
+            </select>
+            <button onClick={load} data-testid="reports-refresh" className="text-xs px-3 py-1 bg-[#FF007F] rounded">Refresh</button>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-black/40 text-[10px] uppercase tracking-wider text-white/50">
+              <tr>
+                <th className="px-4 py-3 text-left">When</th>
+                <th className="px-4 py-3 text-left">Reporter</th>
+                <th className="px-4 py-3 text-left">Reported user</th>
+                <th className="px-4 py-3 text-left">Reason</th>
+                <th className="px-4 py-3 text-left">Status</th>
+                <th className="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr><td colSpan={6} className="px-4 py-6 text-center text-white/40">Loading…</td></tr>
+              )}
+              {!loading && filtered.length === 0 && (
+                <tr><td colSpan={6} className="px-4 py-6 text-center text-white/40">No reports yet.</td></tr>
+              )}
+              {filtered.map((r) => (
+                <tr key={r.id} className="border-t border-white/5 hover:bg-white/[0.02]">
+                  <td className="px-4 py-3 text-xs text-white/60 whitespace-nowrap">{new Date(r.created_at).toLocaleString("en-GB", { timeZone: "Europe/Berlin" })}</td>
+                  <td className="px-4 py-3">@{r.reporter_username}</td>
+                  <td className="px-4 py-3">@{r.reported_username}</td>
+                  <td className="px-4 py-3 max-w-sm truncate text-white/70">{r.reason || <span className="text-white/30">—</span>}</td>
+                  <td className="px-4 py-3">
+                    <span className={`text-[10px] px-2 py-1 rounded uppercase font-bold ${r.status === "open" ? "bg-amber-500/20 text-amber-400" : r.status === "reviewed" ? "bg-blue-500/20 text-blue-400" : "bg-white/10 text-white/50"}`}>{r.status}</span>
+                  </td>
+                  <td className="px-4 py-3 text-right space-x-1">
+                    <button onClick={() => openThread(r)} data-testid={`report-view-${r.id}`} className="text-xs px-3 py-1 bg-[#FF007F] rounded">View chat</button>
+                    {r.status === "open" && <button onClick={() => setStatus(r.id, "reviewed")} className="text-xs px-3 py-1 bg-blue-500 rounded">Reviewed</button>}
+                    {r.status !== "closed" && <button onClick={() => setStatus(r.id, "closed")} className="text-xs px-3 py-1 bg-white/10 rounded">Close</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Report reader modal */}
+      {active && (
+        <div className="fixed inset-0 z-[95] bg-black/85 backdrop-blur flex items-center justify-center p-4" onClick={() => setActive(null)}>
+          <div className="bg-[#0d0a14] border border-white/10 rounded-lg max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between">
+              <div>
+                <h3 className="font-display font-bold text-lg">@{active.report.reporter_username} ↔ @{active.report.reported_username}</h3>
+                <p className="text-xs text-white/50">Reason: {active.report.reason || "—"}</p>
+              </div>
+              <button onClick={() => setActive(null)} className="w-8 h-8 rounded hover:bg-white/10 flex items-center justify-center">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {active.messages.length === 0 && <div className="text-center text-white/40 text-sm py-8">No messages in this thread.</div>}
+              {active.messages.map((m) => (
+                <div key={m.id} className="border border-white/10 rounded-md p-2.5 text-sm">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-white/50 mb-1">
+                    <span className="font-bold">@{m.from_username}</span>
+                    <span>{new Date(m.created_at).toLocaleString("en-GB", { timeZone: "Europe/Berlin" })}</span>
+                  </div>
+                  {m.text && <div className="text-white/90 whitespace-pre-wrap break-words">{m.text}</div>}
+                  {m.attachment_url && m.attachment_kind === "voice" && <audio src={m.attachment_url} controls className="mt-2 max-w-full" />}
+                  {m.attachment_url && m.attachment_kind === "image" && <a href={m.attachment_url} target="_blank" rel="noreferrer"><img src={m.attachment_url} alt="" className="mt-2 max-w-full rounded" /></a>}
+                  {m.attachment_url && m.attachment_kind === "file" && <a href={m.attachment_url} target="_blank" rel="noreferrer" className="mt-2 underline text-blue-400 text-xs block">{m.attachment_name}</a>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TURN / ICE server config for calls */}
+      <div className="bg-[#1a1525] border border-white/5 rounded-sm">
+        <div className="px-6 py-4 border-b border-white/5">
+          <h2 className="font-display font-bold text-lg">Voice / Video call TURN servers</h2>
+          <p className="text-xs text-white/50 mt-1">Configure your own TURN provider (Twilio, Metered.ca, Xirsys) for reliable calls behind NAT. Leave blank to use the free public OpenRelay fallback.</p>
+        </div>
+        <div className="p-6 space-y-3">
+          <label className="block text-xs uppercase tracking-wider text-white/50 font-bold">TURN URLs (comma-separated)</label>
+          <input
+            data-testid="turn-urls"
+            value={turnCfg.urls}
+            onChange={(e) => setTurnCfg((c) => ({ ...c, urls: e.target.value }))}
+            placeholder="turn:global.turn.twilio.com:3478?transport=udp, turn:global.turn.twilio.com:443?transport=tcp"
+            className="w-full bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm font-mono"
+          />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">Username</label>
+              <input data-testid="turn-username" value={turnCfg.username} onChange={(e) => setTurnCfg((c) => ({ ...c, username: e.target.value }))} className="w-full bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">Credential (password)</label>
+              <input data-testid="turn-credential" type="password" value={turnCfg.credential} onChange={(e) => setTurnCfg((c) => ({ ...c, credential: e.target.value }))} className="w-full bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm" />
+            </div>
+          </div>
+          <button onClick={saveTurn} disabled={turnSaving} data-testid="turn-save" className="mt-3 px-5 py-2 bg-[#FF007F] rounded font-bold text-sm disabled:opacity-50">
+            {turnSaving ? "Saving…" : "Save TURN config"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
