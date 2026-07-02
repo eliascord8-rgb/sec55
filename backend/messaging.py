@@ -30,34 +30,79 @@ def _pair_key(a: str, b: str) -> str:
 
 @msg_router.get("/search")
 async def search_users(q: str, request: Request, user: CurrentUser = Depends(current_user_dep)):
-    if not q or len(q.strip()) < 1:
+    """PRIVACY: only reveal users if the caller enters an EXACT username match.
+    Partial / random typing returns an empty list so nobody can enumerate users."""
+    if not q or len(q.strip()) < 3:
         return {"users": []}
     q_norm = q.strip().lower()
     db = request.app.state.db
-    import re
-    cursor = db.users.find(
-        {
-            "username": {"$regex": f"^{re.escape(q_norm)}", "$options": "i"},
-            "id": {"$ne": user.id},
-        },
-        {"_id": 0, "id": 1, "username": 1, "role": 1},
-    ).limit(20)
-    return {"users": await cursor.to_list(20)}
+    # Case-insensitive EXACT match on username (must equal, not prefix)
+    u = await db.users.find_one(
+        {"username": q_norm, "id": {"$ne": user.id}},
+        {"_id": 0, "id": 1, "username": 1, "role": 1, "last_seen": 1},
+    )
+    # Filter out users who blocked me
+    if u:
+        blocked = await db.user_blocks.find_one({"user_id": u["id"], "blocked_id": user.id})
+        if blocked:
+            return {"users": []}
+    return {"users": [u] if u else []}
 
 
 @msg_router.get("/user/{username}")
 async def get_user_by_username(username: str, request: Request, user: CurrentUser = Depends(current_user_dep)):
+    """Look up a single user by exact username. Also exposes last_seen and role.
+    Returns 404 if user has blocked the caller."""
     db = request.app.state.db
     uname = username.strip().lower()
     u = await db.users.find_one(
         {"username": uname},
-        {"_id": 0, "id": 1, "username": 1, "role": 1},
+        {"_id": 0, "id": 1, "username": 1, "role": 1, "last_seen": 1},
     )
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
     if u["id"] == user.id:
         raise HTTPException(status_code=400, detail="Can't message yourself")
+    # If the other user blocked me, pretend they don't exist
+    blocked = await db.user_blocks.find_one({"user_id": u["id"], "blocked_id": user.id})
+    if blocked:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Have I blocked them?
+    i_blocked = await db.user_blocks.find_one({"user_id": user.id, "blocked_id": u["id"]})
+    u["i_blocked"] = bool(i_blocked)
     return u
+
+
+class BlockRequest(BaseModel):
+    user_id: str
+
+
+@msg_router.post("/block")
+async def block_user(payload: BlockRequest, request: Request, user: CurrentUser = Depends(current_user_dep)):
+    db = request.app.state.db
+    if payload.user_id == user.id:
+        raise HTTPException(status_code=400, detail="Can't block yourself")
+    await db.user_blocks.update_one(
+        {"user_id": user.id, "blocked_id": payload.user_id},
+        {"$set": {"user_id": user.id, "blocked_id": payload.user_id, "created_at": _now()}},
+        upsert=True,
+    )
+    return {"blocked": True}
+
+
+@msg_router.post("/unblock")
+async def unblock_user(payload: BlockRequest, request: Request, user: CurrentUser = Depends(current_user_dep)):
+    db = request.app.state.db
+    await db.user_blocks.delete_one({"user_id": user.id, "blocked_id": payload.user_id})
+    return {"unblocked": True}
+
+
+@msg_router.get("/blocks")
+async def list_blocks(request: Request, user: CurrentUser = Depends(current_user_dep)):
+    db = request.app.state.db
+    cursor = db.user_blocks.find({"user_id": user.id}, {"_id": 0, "blocked_id": 1})
+    ids = [r["blocked_id"] async for r in cursor]
+    return {"blocked_ids": ids}
 
 
 # ============ Threads ============
@@ -115,7 +160,12 @@ async def get_thread(other_id: str, request: Request, user: CurrentUser = Depend
 
 class SendMessage(BaseModel):
     to_id: str
-    text: str = Field(..., min_length=1, max_length=4000)
+    text: Optional[str] = ""
+    # attachment metadata (populated by /messages/upload)
+    attachment_url: Optional[str] = None
+    attachment_kind: Optional[str] = None  # "voice" | "image" | "file"
+    attachment_name: Optional[str] = None
+    attachment_size: Optional[int] = None
 
 
 @msg_router.post("/send")
@@ -126,6 +176,13 @@ async def send_message(payload: SendMessage, request: Request, user: CurrentUser
     other = await db.users.find_one({"id": payload.to_id}, {"_id": 0, "id": 1, "username": 1})
     if not other:
         raise HTTPException(status_code=404, detail="Recipient not found")
+    # Blocked either direction?
+    if await db.user_blocks.find_one({"user_id": payload.to_id, "blocked_id": user.id}):
+        raise HTTPException(status_code=403, detail="This user isn't accepting messages from you.")
+    if await db.user_blocks.find_one({"user_id": user.id, "blocked_id": payload.to_id}):
+        raise HTTPException(status_code=403, detail="You've blocked this user — unblock them first.")
+    if not (payload.text or "").strip() and not payload.attachment_url:
+        raise HTTPException(status_code=400, detail="Empty message")
     doc = {
         "id": str(uuid.uuid4()),
         "thread_key": _pair_key(user.id, payload.to_id),
@@ -133,7 +190,11 @@ async def send_message(payload: SendMessage, request: Request, user: CurrentUser
         "from_username": user.username,
         "to_id": payload.to_id,
         "to_username": other["username"],
-        "text": payload.text.strip()[:4000],
+        "text": (payload.text or "").strip()[:4000],
+        "attachment_url": payload.attachment_url,
+        "attachment_kind": payload.attachment_kind,
+        "attachment_name": payload.attachment_name,
+        "attachment_size": payload.attachment_size,
         "created_at": _now(),
         "read": False,
     }
@@ -190,3 +251,52 @@ async def poll_signals(request: Request, user: CurrentUser = Depends(current_use
             {"$set": {"consumed": True, "consumed_at": _now()}},
         )
     return {"signals": signals}
+
+
+# ============ File / voice attachment upload ============
+import os as _os
+from fastapi import UploadFile, File, Form
+
+UPLOAD_DIR = _os.environ.get("UPLOAD_DIR", "/app/backend/uploads")
+_os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+@msg_router.post("/upload")
+async def upload_attachment(
+    request: Request,
+    file: UploadFile = File(...),
+    kind: str = Form("file"),
+    user: CurrentUser = Depends(current_user_dep),
+):
+    """Upload a voice-note, image, or generic file. Returns URL + metadata to attach to a message."""
+    if kind not in ("voice", "image", "file"):
+        kind = "file"
+    # Read + size-limit (20MB)
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 20 MB)")
+    ext = _os.path.splitext(file.filename or "")[1][:8].lower() or (".webm" if kind == "voice" else ".bin")
+    fname = f"{uuid.uuid4().hex}{ext}"
+    fpath = _os.path.join(UPLOAD_DIR, fname)
+    with open(fpath, "wb") as f:
+        f.write(data)
+    url = f"/api/messages/file/{fname}"
+    return {
+        "url": url,
+        "kind": kind,
+        "name": (file.filename or fname)[:120],
+        "size": len(data),
+        "content_type": file.content_type,
+    }
+
+
+@msg_router.get("/file/{fname}")
+async def get_attachment(fname: str):
+    """Serve an uploaded file."""
+    from fastapi.responses import FileResponse
+    # Sanitize filename — no path traversal
+    safe = _os.path.basename(fname)
+    fpath = _os.path.join(UPLOAD_DIR, safe)
+    if not _os.path.exists(fpath):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(fpath)
