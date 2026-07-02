@@ -1039,6 +1039,190 @@ async def admin_delete_user(user_id: str, x_admin_token: Optional[str] = Header(
     return {"deleted": True, "username": doc.get("username")}
 
 
+# ============ MASS MAIL ============
+
+class MassMailRequest(BaseModel):
+    subject: str = Field(..., min_length=2, max_length=200)
+    body_html: str = Field(..., min_length=2, max_length=50000)
+    only_role: Optional[str] = None  # None = all users, "user" / "admin" etc to filter
+
+
+@api_router.post("/admin/mass-mail")
+async def admin_mass_mail(payload: MassMailRequest, x_admin_token: Optional[str] = Header(None)):
+    """Send a custom email to every registered user (or a subset by role).
+    Uses the configured email provider (MailerSend or SMTP)."""
+    check_admin(x_admin_token)
+    from email_service import send_email, _wrap
+    q = {}
+    if payload.only_role:
+        q["role"] = payload.only_role
+    users = await db.users.find(q, {"_id": 0, "email": 1, "username": 1}).to_list(10000)
+    if not users:
+        raise HTTPException(status_code=400, detail="No recipients")
+    sent = 0
+    failed = 0
+    errors = []
+    wrapped = _wrap(payload.body_html)
+    for u in users:
+        em = (u.get("email") or "").strip()
+        if not em or "@" not in em:
+            continue
+        res = await send_email(db, em, payload.subject, wrapped)
+        if res.get("ok"):
+            sent += 1
+        else:
+            failed += 1
+            if len(errors) < 5:
+                errors.append(f"{em}: {res.get('error')}")
+    # Log this campaign
+    await db.mass_mail_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "subject": payload.subject,
+        "recipients_total": len(users),
+        "sent": sent,
+        "failed": failed,
+        "actor": await get_actor_display_name(x_admin_token),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"sent": sent, "failed": failed, "total": len(users), "errors": errors}
+
+
+# ============ SLOT MACHINE (Casino) ============
+
+# Fruit pool with weighted rarity (higher weight = more common = harder to win big matches)
+SLOT_ICONS = [
+    {"id": "cherry", "emoji": "🍒", "weight": 30},
+    {"id": "lemon", "emoji": "🍋", "weight": 28},
+    {"id": "grape", "emoji": "🍇", "weight": 22},
+    {"id": "watermelon", "emoji": "🍉", "weight": 15},
+    {"id": "bell", "emoji": "🔔", "weight": 8},
+    {"id": "diamond", "emoji": "💎", "weight": 3},
+    {"id": "seven", "emoji": "7️⃣", "weight": 1},
+]
+
+SLOT_ROWS = 8
+SLOT_COLS = 6  # 8×6 = 48 boxes
+
+# Payouts per matched-count in ANY single row (looking left-to-right runs of same icon)
+# Very stingy: 3 in a row pays back only 0.5x the bet, 4 = 1.5x, 5 = 4x, 6 = 40x
+SLOT_RUN_PAYOUTS = {3: 0.5, 4: 1.5, 5: 4.0, 6: 40.0}
+
+# Special multiplier: diamond & seven double their winnings if part of a run
+SLOT_ICON_MULT = {"diamond": 2.0, "seven": 5.0}
+
+
+class SlotSpinRequest(BaseModel):
+    bet: float = Field(..., ge=0.05, le=100.0)
+
+
+def _slot_random_icon() -> str:
+    """Pick a weighted random icon."""
+    import random
+    total = sum(i["weight"] for i in SLOT_ICONS)
+    r = random.uniform(0, total)
+    acc = 0
+    for icon in SLOT_ICONS:
+        acc += icon["weight"]
+        if r <= acc:
+            return icon["id"]
+    return SLOT_ICONS[0]["id"]
+
+
+def _evaluate_slot_grid(grid: list, bet: float) -> tuple:
+    """Return (payout_usd, winning_cells_list). Only pays for horizontal runs of 3+."""
+    payout = 0.0
+    winning_cells = []
+    for r, row in enumerate(grid):
+        c = 0
+        while c < len(row):
+            icon = row[c]
+            run_end = c
+            while run_end + 1 < len(row) and row[run_end + 1] == icon:
+                run_end += 1
+            run_len = run_end - c + 1
+            if run_len >= 3:
+                base_mult = SLOT_RUN_PAYOUTS.get(min(run_len, 6), 0)
+                icon_bonus = SLOT_ICON_MULT.get(icon, 1.0)
+                run_pay = bet * base_mult * icon_bonus
+                payout += run_pay
+                winning_cells.extend([[r, x] for x in range(c, run_end + 1)])
+            c = run_end + 1
+    return round(payout, 2), winning_cells
+
+
+@client_router.get("/slots/config")
+async def slots_config(user: CurrentUser = Depends(current_user_dep)):
+    """Return the icon pool and rules so the client can render the machine."""
+    return {
+        "icons": SLOT_ICONS,
+        "rows": SLOT_ROWS,
+        "cols": SLOT_COLS,
+        "min_bet": 0.05,
+        "max_bet": 100.0,
+        "payouts": SLOT_RUN_PAYOUTS,
+        "special_multipliers": SLOT_ICON_MULT,
+    }
+
+
+@client_router.post("/slots/spin")
+async def slots_spin(body: SlotSpinRequest, user: CurrentUser = Depends(current_user_dep)):
+    """Deduct bet from user balance, roll the grid, and credit any winnings.
+    Payouts go to withdrawable_balance (like the old Try Chance) so users can cash out."""
+    bet = round(float(body.bet), 2)
+    if bet < 0.05 or bet > 100.0:
+        raise HTTPException(status_code=400, detail="Bet must be between $0.05 and $100")
+
+    balance = await _get_user_balance(user.id)
+    if balance < bet:
+        raise HTTPException(status_code=402, detail=f"Not enough balance — you have ${balance:.2f}")
+
+    # Deduct bet
+    now = datetime.now(timezone.utc).isoformat()
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "username": user.username,
+        "amount": -bet,
+        "method": "balance",
+        "status": "approved",
+        "type": "slot_bet",
+        "created_at": now,
+        "approved_at": now,
+    })
+
+    # Generate grid
+    grid = [[_slot_random_icon() for _ in range(SLOT_COLS)] for _ in range(SLOT_ROWS)]
+    payout, winning_cells = _evaluate_slot_grid(grid, bet)
+
+    # Credit winnings to withdrawable_balance
+    if payout > 0:
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user.id,
+            "username": user.username,
+            "amount": payout,
+            "method": "casino_win",
+            "status": "approved",
+            "type": "slot_win",
+            "withdrawable": True,
+            "created_at": now,
+            "approved_at": now,
+        })
+
+    new_balance = await _get_user_balance(user.id)
+    new_withdrawable = await _get_user_withdrawable(user.id)
+
+    return {
+        "grid": grid,
+        "bet": bet,
+        "payout": payout,
+        "net": round(payout - bet, 2),
+        "winning_cells": winning_cells,
+        "balance": new_balance,
+        "withdrawable_balance": new_withdrawable,
+    }
+
+
 class MuteRequest(BaseModel):
     minutes: int = Field(default=60, ge=1, le=43200)  # 1 min to 30 days
 
