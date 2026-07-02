@@ -50,12 +50,13 @@ export default function ClientDashboard() {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [view, setView] = useState("home"); // home | funds | tickets | buy | redeem | slots | withdraw | tos
+  const [view, setView] = useState("home"); // home | funds | tickets | buy | redeem | slots | withdraw | tos | messages
   const [viewLoading, setViewLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const [balance, setBalance] = useState(0);
   const [withdrawable, setWithdrawable] = useState(0);
   const [unreadTickets, setUnreadTickets] = useState(0);
+  const [unreadDms, setUnreadDms] = useState(0);
   const chatEndRef = useRef(null);
 
   // Smooth-preloader when switching tabs (short delay for perceived polish, no full-page reload)
@@ -87,11 +88,20 @@ export default function ClientDashboard() {
     } catch {}
   };
 
+  const loadUnreadDms = async () => {
+    try {
+      const r = await authedApi().get("/messages/unread-count");
+      setUnreadDms(r.data.unread || 0);
+    } catch {}
+  };
+
   useEffect(() => {
     if (user) {
       loadUnreadTickets();
-      const t = setInterval(loadUnreadTickets, 15000);
-      return () => clearInterval(t);
+      loadUnreadDms();
+      const t1 = setInterval(loadUnreadTickets, 15000);
+      const t2 = setInterval(loadUnreadDms, 10000);
+      return () => { clearInterval(t1); clearInterval(t2); };
     }
     // eslint-disable-next-line
   }, [user]);
@@ -226,13 +236,19 @@ export default function ClientDashboard() {
           {/* Right cluster */}
           <div className="flex items-center gap-2 md:gap-3 px-4 md:px-6 ml-auto">
             <button
+              onClick={() => unreadDms > 0 ? changeView("messages") : (unreadTickets > 0 && changeView("tickets"))}
               data-testid="header-bell"
               className="relative w-9 h-9 rounded-md hover:bg-white/15 flex items-center justify-center transition"
-              title="Notifications"
+              title={unreadDms > 0 ? `${unreadDms} unread message${unreadDms > 1 ? "s" : ""}` : unreadTickets > 0 ? `${unreadTickets} ticket update${unreadTickets > 1 ? "s" : ""}` : "No new notifications"}
             >
               <Bell className="w-4 h-4 text-white" />
-              {unreadTickets > 0 && (
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500 ring-2 ring-[#2563eb]" />
+              {(unreadDms > 0 || unreadTickets > 0) && (
+                <>
+                  <span className="absolute top-0.5 right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 ring-2 ring-[#2563eb] text-[9px] font-bold text-white flex items-center justify-center leading-none">
+                    {unreadDms + unreadTickets}
+                  </span>
+                  <span className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-red-500 ring-2 ring-[#2563eb] animate-ping opacity-60" />
+                </>
               )}
             </button>
             <div className="hidden sm:flex items-center gap-2 pl-3 ml-1 border-l border-white/15">
@@ -281,14 +297,13 @@ export default function ClientDashboard() {
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Community</div>
           <nav className="px-3 space-y-0.5">
-            <SideLinkV2 icon={MessageSquare} label="Messages" active={view === "messages"} onClick={() => changeView("messages")} testId="nav-messages" />
+            <SideLinkV2 icon={MessageSquare} label="Messages" active={view === "messages"} onClick={() => changeView("messages")} testId="nav-messages" badge={unreadDms > 0 ? unreadDms : null} badgeKind="alert" />
           </nav>
 
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Shop</div>
           <nav className="px-3 space-y-0.5">
             <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => changeView("buy")} testId="nav-buy" />
-            <SideLinkV2 icon={Dices} label="Try a Chance" active={view === "slots"} onClick={() => changeView("slots")} testId="nav-slots" />
           </nav>
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Support</div>
@@ -357,7 +372,7 @@ export default function ClientDashboard() {
                 <WithdrawView authedApi={authedApi} balance={balance} withdrawable={withdrawable} reloadBalance={loadBalance} />
               )}
               {view === "tickets" && <TicketsView authedApi={authedApi} />}
-              {view === "messages" && <MessagesView authedApi={authedApi} me={user} />}
+              {view === "messages" && <MessagesView authedApi={authedApi} me={user} onReadMessages={loadUnreadDms} />}
               {view === "tos" && <TermsOfServiceView />}
             </div>
           )}
@@ -681,7 +696,7 @@ function FundsView({ authedApi, balance, reloadBalance }) {
   const [amount, setAmount] = useState(10);
   const [txns, setTxns] = useState([]);
   const [creating, setCreating] = useState(false);
-  const [gateway, setGateway] = useState("bitcoin");
+  const [gateway] = useState("bitcoin");
 
   const loadTxns = async () => {
     try {
@@ -713,8 +728,8 @@ function FundsView({ authedApi, balance, reloadBalance }) {
 
   const payNowpayments = async () => {
     const a = Number(amount) || 0;
-    if (a < 5) {
-      toast.error("Min $5 for crypto checkout");
+    if (a < 1) {
+      toast.error("Min $1 for crypto checkout");
       return;
     }
     setCreating(true);
@@ -816,7 +831,7 @@ function FundsView({ authedApi, balance, reloadBalance }) {
         <div className="flex flex-col gap-2">
           <button
             onClick={payNowpayments}
-            disabled={creating || Number(amount) < 5}
+            disabled={creating || Number(amount) < 1}
             data-testid="funds-pay-nowpayments"
             className="w-full py-3.5 rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40 bg-gradient-to-r from-amber-400 via-amber-300 to-amber-400 text-black hover:scale-[1.01] transition shadow-lg shadow-amber-500/20"
           >
@@ -824,7 +839,7 @@ function FundsView({ authedApi, balance, reloadBalance }) {
             Pay ${Number(amount) || 0} with Crypto (300+ coins · No KYC)
           </button>
           <div className="text-[10px] text-center text-white/40 uppercase tracking-wider">
-            Min $5 · Instant credit after payment confirmation
+            Min $1 · Instant credit after payment confirmation
           </div>
         </div>
       </div>

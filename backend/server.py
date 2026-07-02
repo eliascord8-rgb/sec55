@@ -1865,7 +1865,7 @@ async def admin_set_nowpayments_config(payload: NowpaymentsConfig, x_admin_token
 
 
 class NowpaymentsFundsRequest(BaseModel):
-    amount: float = Field(..., ge=5, le=10000)
+    amount: float = Field(..., ge=1, le=10000)
 
 
 @client_router.post("/funds/nowpayments-create")
