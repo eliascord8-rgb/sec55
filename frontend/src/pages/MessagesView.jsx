@@ -24,7 +24,7 @@ const fmtLastSeen = (iso) => {
  * MessagesView — 1-on-1 DMs between registered users + WebRTC voice/video calls.
  * Uses polling (2s) for message + call signal delivery.
  */
-export default function MessagesView({ authedApi, me }) {
+export default function MessagesView({ authedApi, me, onReadMessages }) {
   const [threads, setThreads] = useState([]);
   const [activeUser, setActiveUser] = useState(null); // {id, username}
   const [messages, setMessages] = useState([]);
@@ -81,6 +81,7 @@ export default function MessagesView({ authedApi, me }) {
               lastSince = combined[combined.length - 1]?.created_at || lastSince;
               return combined;
             });
+            onReadMessages && onReadMessages();
           }
         } catch {}
       }
