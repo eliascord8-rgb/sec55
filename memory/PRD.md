@@ -3,6 +3,15 @@
 ## Original Problem Statement
 "Make a normal SMM landing page but better. When someone wants to buy, press checkout button → redirects to the purchase box. No login — peoples buy directly. They can pay using a generated gift card from us (use coupon to pay) or pay by CoinPayments. List all offers from smmcost.com API (key 47b5c3b01e4b5ecd1e53b39baef31a6e). When the user presses order, take the money via the API. If pay using CoinPayments, after complete status show a sweet alert success message and send the API request immediately. Site title and on-site name: 'Better Social'. Make a separate page with admin panel access (username: DEMO, password: DEMO). On admin panel: only order logs (with IP of buyers) and generated coupons with custom amount."
 
+## Recent Updates (Jul 2, 2026 — later)
+- ✅ **Report chat** — Users can flag a chat via the Flag icon in the DM header + reason textarea. Admin panel gains a **Reports** tab that shows every reported thread; only reported chats are readable by admin (privacy-first). Reports can be marked Reviewed / Closed.
+- ✅ **Cross-platform voice messages** — Server-side ffmpeg transcoder converts every uploaded voice note to universal **MP3**. iOS Safari, Android Chrome, and Firefox all play them now.
+- ✅ **Typing indicator** — Facebook-Messenger-style three bouncing dots. Debounced POST `/api/messages/typing` every 2s while typing; peer polls every 1.5s. 5-second TTL on the server.
+- ✅ **Admin-configurable TURN servers** — New `GET/POST /api/admin/calls/turn-config` + a section in the **Reports** tab lets the owner drop in Twilio/Metered/Xirsys TURN credentials. Clients fetch via `GET /api/calls/ice-config` and fall back to OpenRelay public TURN when blank.
+- ✅ **Call debug overlay** — Small monospace `conn: / ice: / gather:` bar inside the call modal for real-time diagnostics.
+- ✅ **Admin auth bridge** — `messaging.py._admin_dep` now accepts both `X-Admin-Token` (admin panel) and JWT (regular user role owner/admin/staff).
+
+
 ## Recent Updates (Jul 2, 2026)
 - ✅ **DM staff / owner** — Fixed case-insensitive username search in `/api/messages/search` and `/api/messages/user/{username}`. Users can now DM `Balkin` regardless of casing (`balkin`, `BALKIN`, `Balkin`).
 - ✅ **Voice message recording rewrite** — Changed from hold-to-record (onMouseDown/Up) to click-toggle (Click → red pulse → Click again to send). Auto-negotiates supported MediaRecorder mimeType (webm/opus → webm → mp4 → ogg fallback). Explicit user-friendly errors on NotAllowedError / NotFoundError.

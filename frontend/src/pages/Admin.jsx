@@ -4806,7 +4806,7 @@ function ReportsPanel({ token }) {
           </div>
           <div className="flex items-center gap-2">
             <select data-testid="report-status-filter" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-[#0d0a14] border border-white/10 rounded px-2 py-1 text-xs">
-              <option value="all">All ({reports.length})</option>
+              <option value="all">{`All (${reports.length})`}</option>
               <option value="open">Open</option>
               <option value="reviewed">Reviewed</option>
               <option value="closed">Closed</option>
