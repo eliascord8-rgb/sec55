@@ -1360,9 +1360,27 @@ async def redeem_coupon(body: RedeemCouponRequest, user: CurrentUser = Depends(c
         "approved_at": now,
     }
     await db.transactions.insert_one(tx.copy())
+
+    # 40% bonus on coupons of $100 or more
+    bonus = 0.0
+    if bal >= 100:
+        bonus = round(bal * 0.40, 2)
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user.id,
+            "username": user.username,
+            "amount": bonus,
+            "method": "bonus",
+            "status": "approved",
+            "type": "coupon_bonus",
+            "note": f"+40% bonus for redeeming a ${bal:.2f} coupon",
+            "coupon_code": code,
+            "created_at": now,
+            "approved_at": now,
+        })
     await db.coupons.delete_one({"code": code})
     new_balance = await _get_user_balance(user.id)
-    return {"ok": True, "amount": round(bal, 2), "balance": new_balance, "code": code}
+    return {"ok": True, "amount": round(bal, 2), "bonus": bonus, "balance": new_balance, "code": code}
 
 
 class BuyWithBalanceRequest(BaseModel):
@@ -1909,15 +1927,34 @@ async def nowpayments_webhook(request: Request):
         return {"ok": True, "unknown_tx": tx_id}
     if tx.get("status") == "approved":
         return {"ok": True, "already_credited": True}
+    amount = float(tx.get("amount", 0))
+    # 70% bonus on every NOWPayments deposit
+    bonus = round(amount * 0.70, 2)
+    now = datetime.now(timezone.utc).isoformat()
     await db.transactions.update_one(
         {"id": tx_id},
         {"$set": {
             "status": "approved",
-            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "approved_at": now,
             "nowpayments_payload": data,
+            "bonus_applied": bonus,
         }},
     )
-    return {"ok": True, "credited": tx_id}
+    if bonus > 0:
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": tx["user_id"],
+            "username": tx.get("username"),
+            "amount": bonus,
+            "method": "bonus",
+            "status": "approved",
+            "type": "deposit_bonus",
+            "note": f"+70% crypto deposit bonus on ${amount:.2f}",
+            "created_at": now,
+            "approved_at": now,
+            "linked_tx": tx_id,
+        })
+    return {"ok": True, "credited": tx_id, "bonus": bonus}
 
 
 # ============ SELLY.IO PAYMENTS ============

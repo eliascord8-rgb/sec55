@@ -1,6 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Search, Send, Phone, PhoneOff, Video, VideoOff, MicOff, Mic } from "lucide-react";
+import { Loader2, Search, Send, Phone, PhoneOff, Video, Mic, MicOff, Paperclip, Ban, X, Play, Pause } from "lucide-react";
+
+// Format a UTC ISO date as Europe/Berlin time for last-seen display
+const fmtLastSeen = (iso) => {
+  if (!iso) return "never";
+  try {
+    const d = new Date(iso);
+    const diffMin = (Date.now() - d.getTime()) / 60000;
+    if (diffMin < 1) return "online now";
+    if (diffMin < 60) return `${Math.floor(diffMin)} min ago`;
+    return d.toLocaleString("en-GB", {
+      timeZone: "Europe/Berlin",
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+  } catch {
+    return "unknown";
+  }
+};
 
 /**
  * MessagesView — 1-on-1 DMs between registered users + WebRTC voice/video calls.
@@ -14,6 +32,11 @@ export default function MessagesView({ authedApi, me }) {
   const [sending, setSending] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   const [searchResults, setSearchResults] = useState([]);
+  const [activeUserInfo, setActiveUserInfo] = useState(null); // full info with last_seen + i_blocked
+  const [recording, setRecording] = useState(false);
+  const recorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
   const [call, setCall] = useState(null); // {peerId, incoming, video, active, callId}
   const pcRef = useRef(null);
@@ -100,6 +123,92 @@ export default function MessagesView({ authedApi, me }) {
       const r = await authedApi().get(`/messages/search?q=${encodeURIComponent(q)}`);
       setSearchResults(r.data.users || []);
     } catch {}
+  };
+
+  // Load full active user info (last seen, block state)
+  useEffect(() => {
+    if (!activeUser) { setActiveUserInfo(null); return; }
+    authedApi()
+      .get(`/messages/user/${activeUser.username}`)
+      .then((r) => setActiveUserInfo(r.data))
+      .catch(() => setActiveUserInfo(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeUser?.id]);
+
+  const toggleBlock = async () => {
+    if (!activeUserInfo) return;
+    try {
+      if (activeUserInfo.i_blocked) {
+        await authedApi().post("/messages/unblock", { user_id: activeUserInfo.id });
+        toast.success(`Unblocked @${activeUserInfo.username}`);
+      } else {
+        if (!window.confirm(`Block @${activeUserInfo.username}? They won't be able to message you.`)) return;
+        await authedApi().post("/messages/block", { user_id: activeUserInfo.id });
+        toast.success(`Blocked @${activeUserInfo.username}`);
+      }
+      const r = await authedApi().get(`/messages/user/${activeUserInfo.username}`);
+      setActiveUserInfo(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    }
+  };
+
+  // Voice recorder
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      rec.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        const file = new File([blob], `voice-${Date.now()}.webm`, { type: "audio/webm" });
+        await uploadAndSend(file, "voice");
+      };
+      rec.start();
+      recorderRef.current = rec;
+      setRecording(true);
+    } catch (e) {
+      toast.error("Can't access microphone");
+    }
+  };
+
+  const stopRecording = () => {
+    if (recorderRef.current && recording) {
+      recorderRef.current.stop();
+      setRecording(false);
+    }
+  };
+
+  const uploadAndSend = async (file, kind = "file") => {
+    if (!activeUser) return;
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("kind", kind);
+      const up = await authedApi().post("/messages/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      const r = await authedApi().post("/messages/send", {
+        to_id: activeUser.id,
+        text: "",
+        attachment_url: up.data.url,
+        attachment_kind: up.data.kind,
+        attachment_name: up.data.name,
+        attachment_size: up.data.size,
+      });
+      setMessages((m) => [...m, r.data]);
+      loadThreads();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Upload failed");
+    }
+  };
+
+  const onFilePick = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const kind = f.type.startsWith("image/") ? "image" : "file";
+    uploadAndSend(f, kind);
+    e.target.value = "";
   };
 
   const send = async (e) => {
@@ -247,7 +356,7 @@ export default function MessagesView({ authedApi, me }) {
           value={searchQ}
           onChange={(e) => searchUsers(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && openUserByName(searchQ)}
-          placeholder="Search or type exact username… (press Enter to open chat)"
+          placeholder="Enter the exact username to open their chat (privacy: partial names are hidden)"
           className="w-full bg-[#13091a] border border-white/10 rounded-md pl-10 pr-4 py-3 text-sm outline-none focus:border-[#3b82f6]"
         />
         {searchResults.length > 0 && (
@@ -306,7 +415,9 @@ export default function MessagesView({ authedApi, me }) {
                 <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#3b82f6] to-[#7c3aed] flex items-center justify-center text-xs font-bold">{activeUser.username.slice(0,2).toUpperCase()}</div>
                 <div className="flex-1">
                   <div className="font-bold text-sm">@{activeUser.username}</div>
-                  <div className="text-[10px] uppercase tracking-wider text-emerald-400">● online</div>
+                  <div className="text-[10px] uppercase tracking-wider text-white/50" data-testid="last-seen">
+                    Last seen · {fmtLastSeen(activeUserInfo?.last_seen)}
+                  </div>
                 </div>
                 <button onClick={() => startCall(false)} data-testid="call-audio-btn" className="w-9 h-9 rounded-md hover:bg-emerald-500/20 flex items-center justify-center text-emerald-400" title="Voice call">
                   <Phone className="w-4 h-4" />
@@ -314,25 +425,47 @@ export default function MessagesView({ authedApi, me }) {
                 <button onClick={() => startCall(true)} data-testid="call-video-btn" className="w-9 h-9 rounded-md hover:bg-blue-500/20 flex items-center justify-center text-blue-400" title="Video call">
                   <Video className="w-4 h-4" />
                 </button>
+                <button onClick={toggleBlock} data-testid="block-btn" className={`w-9 h-9 rounded-md flex items-center justify-center ${activeUserInfo?.i_blocked ? "bg-red-500/20 text-red-400" : "hover:bg-red-500/20 text-white/50"}`} title={activeUserInfo?.i_blocked ? "Unblock user" : "Block user"}>
+                  <Ban className="w-4 h-4" />
+                </button>
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-2">
                 {messages.length === 0 && <div className="text-center text-white/30 text-xs py-8">Start the conversation…</div>}
                 {messages.map((m) => (
                   <div key={m.id} className={`flex ${m.from_id === me.id ? "justify-end" : "justify-start"}`}>
                     <div className={`max-w-[70%] px-3 py-2 rounded-lg text-sm ${m.from_id === me.id ? "bg-[#3b82f6] text-white" : "bg-white/10 text-white"}`}>
-                      {m.text}
-                      <div className="text-[9px] opacity-60 mt-0.5">{new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                      {m.attachment_url && m.attachment_kind === "voice" && (
+                        <audio src={m.attachment_url} controls preload="metadata" className="max-w-[240px] mb-1" data-testid="voice-msg" />
+                      )}
+                      {m.attachment_url && m.attachment_kind === "image" && (
+                        <a href={m.attachment_url} target="_blank" rel="noreferrer"><img src={m.attachment_url} alt={m.attachment_name} className="max-w-full rounded-md" /></a>
+                      )}
+                      {m.attachment_url && m.attachment_kind === "file" && (
+                        <a href={m.attachment_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 underline">
+                          <Paperclip className="w-3 h-3" /> {m.attachment_name}
+                        </a>
+                      )}
+                      {m.text && <div>{m.text}</div>}
+                      <div className="text-[9px] opacity-60 mt-0.5">{new Date(m.created_at).toLocaleTimeString("en-GB", {hour:'2-digit', minute:'2-digit', timeZone:'Europe/Berlin'})}</div>
                     </div>
                   </div>
                 ))}
                 <div ref={chatEndRef} />
               </div>
-              <form onSubmit={send} className="border-t border-white/5 p-3 flex gap-2">
+              <form onSubmit={send} className="border-t border-white/5 p-3 flex gap-2 items-center">
+                <input type="file" ref={fileInputRef} onChange={onFilePick} className="hidden" data-testid="file-input" />
+                <button type="button" onClick={() => fileInputRef.current?.click()} data-testid="attach-btn" className="w-9 h-9 rounded-md hover:bg-white/10 flex items-center justify-center text-white/60" title="Attach file">
+                  <Paperclip className="w-4 h-4" />
+                </button>
+                <button type="button" onMouseDown={startRecording} onMouseUp={stopRecording} onTouchStart={startRecording} onTouchEnd={stopRecording} data-testid="voice-btn" className={`w-9 h-9 rounded-md flex items-center justify-center ${recording ? "bg-red-500 text-white animate-pulse" : "hover:bg-white/10 text-white/60"}`} title="Hold to record voice">
+                  {recording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
                 <input
                   data-testid="dm-input"
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder="Type a message…"
+                  placeholder={recording ? "Recording… release to send" : "Type a message…"}
+                  disabled={recording}
                   className="flex-1 bg-[#1a1525] border border-white/10 rounded-md px-3 py-2 text-sm outline-none focus:border-[#3b82f6]"
                 />
                 <button type="submit" disabled={sending || !text.trim()} data-testid="dm-send" className="px-4 bg-[#3b82f6] hover:bg-[#2563eb] rounded-md disabled:opacity-40 inline-flex items-center">
