@@ -3,6 +3,13 @@
 ## Original Problem Statement
 "Make a normal SMM landing page but better. When someone wants to buy, press checkout button → redirects to the purchase box. No login — peoples buy directly. They can pay using a generated gift card from us (use coupon to pay) or pay by CoinPayments. List all offers from smmcost.com API (key 47b5c3b01e4b5ecd1e53b39baef31a6e). When the user presses order, take the money via the API. If pay using CoinPayments, after complete status show a sweet alert success message and send the API request immediately. Site title and on-site name: 'Better Social'. Make a separate page with admin panel access (username: DEMO, password: DEMO). On admin panel: only order logs (with IP of buyers) and generated coupons with custom amount."
 
+## Recent Updates (Jul 2, 2026)
+- ✅ **DM staff / owner** — Fixed case-insensitive username search in `/api/messages/search` and `/api/messages/user/{username}`. Users can now DM `Balkin` regardless of casing (`balkin`, `BALKIN`, `Balkin`).
+- ✅ **Voice message recording rewrite** — Changed from hold-to-record (onMouseDown/Up) to click-toggle (Click → red pulse → Click again to send). Auto-negotiates supported MediaRecorder mimeType (webm/opus → webm → mp4 → ogg fallback). Explicit user-friendly errors on NotAllowedError / NotFoundError.
+- ✅ **Call audio playback fix** — Added `remoteStreamRef` + `isVideoCallRef` so `pc.ontrack` reliably attaches the remote MediaStream to the audio/video element. `attachRemoteStream()` in a `useEffect` re-attaches when the modal mounts. Fixed offer-before-ring race that dropped SDP.
+- ✅ **DM poll de-duplication** — 2s poller now de-dupes messages by id when merging deltas — removes the "duplicate key" React warning.
+
+
 ## Recent Updates (Jun 27, 2026)
 - ✅ **SMTP email integration** — Welcome email on registration + Password reset flow (forgot-password modal, /reset page, reset_password endpoint). Admin configures SMTP host/port/user/password in Settings → Email (SMTP).
 - ✅ **Manual services** — Admin can add custom services (no API ID): title, description, flat price, delivery minutes. Doesn't call SMM API on order — flagged for manual fulfillment.
