@@ -4,7 +4,7 @@ import { adminApi, api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil, FileText, Bell, BellOff, Send, RotateCw } from "lucide-react";
+import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil, FileText, Bell, BellOff, Send, RotateCw, Coins } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Admin() {
@@ -1256,9 +1256,118 @@ function SettingsPanel({ token }) {
   return (
     <div className="space-y-6">
       <SmmConfigPanel token={token} />
+      <NowpaymentsConfigPanel token={token} />
       <SellyConfigPanel token={token} />
       <EmailConfigPanel token={token} />
     </div>
+  );
+}
+
+function NowpaymentsConfigPanel({ token }) {
+  const [cfg, setCfg] = useState(null);
+  const [apiKey, setApiKey] = useState("");
+  const [ipnSecret, setIpnSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/nowpayments-config");
+      setCfg(r.data);
+    } catch {}
+  };
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const save = async (e) => {
+    e.preventDefault();
+    if (apiKey.trim().length < 10) {
+      toast.error("Enter a valid NOWPayments API key");
+      return;
+    }
+    setSaving(true);
+    try {
+      const body = { api_key: apiKey.trim() };
+      if (ipnSecret) body.ipn_secret = ipnSecret.trim();
+      await adminApi(token).post("/admin/nowpayments-config", body);
+      toast.success("NOWPayments saved");
+      setApiKey("");
+      setIpnSecret("");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form
+      onSubmit={save}
+      data-testid="nowpayments-config-form"
+      className="bg-[#1a1525] border border-amber-400/30 rounded-sm p-8 max-w-2xl"
+    >
+      <div className="flex items-center gap-3 mb-2">
+        <Coins className="w-5 h-5 text-amber-400" />
+        <h2 className="font-display font-bold text-lg">NOWPayments (Crypto — No KYC)</h2>
+      </div>
+      <p className="text-xs text-white/50 mb-5">
+        Accepts 300+ cryptocurrencies (BTC, ETH, USDT, LTC, DOGE, TRX, TON, etc.) via NOWPayments&apos; hosted checkout.
+        No KYC required for merchants — just an API key.
+      </p>
+      {cfg && (
+        <div className={`mb-4 p-3 rounded-sm text-xs ${cfg.configured ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" : "bg-amber-500/10 border border-amber-500/30 text-amber-300"}`}>
+          {cfg.configured
+            ? `Active · key ${cfg.api_key_masked}${cfg.ipn_secret_set ? " · IPN verified" : " · ⚠️ IPN secret not set (webhooks won't be verified)"}`
+            : "Not configured — NOWPayments checkout is disabled until you add an API key."}
+        </div>
+      )}
+      <div className="space-y-4">
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">API Key *</Label>
+          <Input
+            data-testid="nowpayments-api-key"
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={cfg?.configured ? "re-enter to update" : "e.g. MVY817Z-31D4NKZ-JK40AC9-WN87CYX"}
+            className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+          />
+          <div className="text-[10px] text-white/40 mt-1">
+            From <span className="font-mono text-amber-400">nowpayments.io → Settings → API keys</span>
+          </div>
+        </div>
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">IPN Secret (recommended for webhook verification)</Label>
+          <Input
+            data-testid="nowpayments-ipn-secret"
+            type="password"
+            value={ipnSecret}
+            onChange={(e) => setIpnSecret(e.target.value)}
+            placeholder={cfg?.ipn_secret_set ? "•••••••• (saved — re-enter to update)" : "IPN secret from your dashboard"}
+            className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+          />
+          <div className="text-[10px] text-white/40 mt-1">
+            From <span className="font-mono text-amber-400">nowpayments.io → Settings → IPN</span>. Used to verify webhook payloads.
+          </div>
+        </div>
+        <div className="bg-[#0d0a14] border border-white/5 rounded-sm p-3 text-xs">
+          <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1">IPN Callback URL (set this in NOWPayments dashboard)</div>
+          <div className="font-mono text-amber-300 break-all">
+            https://better-social.pro/api/nowpayments/webhook
+          </div>
+        </div>
+        <button
+          type="submit"
+          disabled={saving}
+          data-testid="nowpayments-config-save"
+          className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-black rounded-sm font-bold text-xs uppercase tracking-wider disabled:opacity-50 inline-flex items-center gap-2"
+        >
+          {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+          Save NOWPayments
+        </button>
+      </div>
+    </form>
   );
 }
 
