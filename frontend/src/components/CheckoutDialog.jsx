@@ -414,20 +414,13 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                 )}
 
                 <Tabs value={method} onValueChange={setMethod} className="w-full">
-                  <TabsList className="grid grid-cols-2 bg-[#1a1525] rounded-sm">
+                  <TabsList className="grid grid-cols-1 bg-[#1a1525] rounded-sm">
                     <TabsTrigger
                       value="coupon"
                       data-testid="tab-coupon"
                       className="data-[state=active]:bg-[#FF007F] data-[state=active]:text-white rounded-sm"
                     >
-                      <Ticket className="w-4 h-4 mr-2" /> Coupon
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="selly"
-                      data-testid="tab-selly"
-                      className="data-[state=active]:bg-emerald-500 data-[state=active]:text-black rounded-sm"
-                    >
-                      <Bitcoin className="w-4 h-4 mr-2" /> Crypto / Card
+                      <Ticket className="w-4 h-4 mr-2" /> Pay with Coupon
                     </TabsTrigger>
                   </TabsList>
 
@@ -456,45 +449,40 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                     {couponInfo?.error && (
                       <div className="text-xs text-[#FF3B30]" data-testid="coupon-error">{couponInfo.error}</div>
                     )}
+                    <p className="text-[10px] text-white/40 mt-2">
+                      Want to pay with crypto? <a href="/client" className="text-emerald-400 underline">Create an account</a> — top up with BTC/ETH/USDT (300+ coins, no KYC).
+                    </p>
+                  </TabsContent>
+                </Tabs>
+
+                  <TabsContent value="coupon" className="space-y-2 mt-3">
+                    <div className="flex gap-2">
+                      <Input
+                        data-testid="coupon-input"
+                        placeholder="BS-XXXX-XXXX-XXXX"
+                        value={coupon}
+                        onChange={(e) => setCoupon(e.target.value.toUpperCase())}
+                        className="bg-[#1a1525] border-white/10 font-mono"
+                      />
+                      <button
+                        onClick={checkCoupon}
+                        data-testid="coupon-check-btn"
+                        className="px-4 bg-white/10 hover:bg-white/20 rounded-sm text-xs font-bold uppercase tracking-wider"
+                      >
+                        Check
+                      </button>
+                    </div>
+                    {couponInfo && !couponInfo.error && (
+                      <div className="text-xs text-[#00E5FF]" data-testid="coupon-balance">
+                        Balance: ${Number(couponInfo.balance).toFixed(2)}
+                      </div>
+                    )}
+                    {couponInfo?.error && (
+                      <div className="text-xs text-[#FF3B30]" data-testid="coupon-error">{couponInfo.error}</div>
+                    )}
                   </TabsContent>
 
-                  <TabsContent value="selly" className="mt-3">
-                    <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-sm p-3 space-y-3">
-                      <p className="text-xs text-white/80 leading-relaxed">
-                        Pay with <span className="font-bold text-emerald-400">BTC, ETH, LTC</span> or <span className="font-bold text-emerald-400">credit card</span> via secure Selly checkout.
-                      </p>
-                      <div>
-                        <div className="text-[10px] uppercase tracking-wider text-white/60 mb-2">Choose payment method</div>
-                        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
-                          {[
-                            { id: "bitcoin", label: "BTC" },
-                            { id: "ethereum", label: "ETH" },
-                            { id: "litecoin", label: "LTC" },
-                            { id: "bitcoin_cash", label: "BCH" },
-                            { id: "dogecoin", label: "DOGE" },
-                            { id: "stripe", label: "Card" },
-                          ].map((g) => (
-                            <button
-                              key={g.id}
-                              type="button"
-                              onClick={() => setSellyGateway(g.id)}
-                              data-testid={`selly-gateway-${g.id}`}
-                              className={`px-2 py-1.5 text-[11px] rounded-sm border transition ${
-                                sellyGateway === g.id
-                                  ? "border-emerald-400 bg-emerald-500/20 text-emerald-200 font-bold"
-                                  : "border-white/10 text-white/60 hover:bg-white/5"
-                              }`}
-                            >
-                              {g.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <p className="text-[10px] text-white/50">
-                        You&apos;ll be redirected to Selly&apos;s hosted page. After confirmation we&apos;ll auto-place your order.
-                      </p>
-                    </div>
-                  </TabsContent>
+                  <TabsContent value="selly" className="mt-3" />
                 </Tabs>
 
                 <div className="border-t border-white/5 pt-4">
@@ -512,8 +500,6 @@ export default function CheckoutDialog({ open, onOpenChange, initialService }) {
                   >
                     {submitting ? (
                       <Loader2 className="w-4 h-4 animate-spin mx-auto" />
-                    ) : method === "selly" ? (
-                      `Continue to Selly · ${fmt(price)}`
                     ) : (
                       `Place Order · ${fmt(price)}`
                     )}
