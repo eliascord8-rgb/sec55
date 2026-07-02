@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Search, Send, Phone, PhoneOff, Video, Mic, MicOff, Paperclip, Ban, X, Play, Pause } from "lucide-react";
+import { Loader2, Search, Send, Phone, PhoneOff, Video, Mic, MicOff, Paperclip, Ban, X, Play, Pause, Flag } from "lucide-react";
 
 // Format a UTC ISO date as Europe/Berlin time for last-seen display
 const fmtLastSeen = (iso) => {
@@ -39,10 +39,17 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
   const [call, setCall] = useState(null); // {peerId, incoming, video, active, callId}
+  const [callStats, setCallStats] = useState({ conn: "", ice: "", gather: "" }); // debug overlay
+  const [peerTyping, setPeerTyping] = useState(false); // is the OTHER user typing to me
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportReason, setReportReason] = useState("");
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const typingSentAtRef = useRef(0); // throttle outbound typing signals
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteStreamRef = useRef(null);
   const isVideoCallRef = useRef(false); // stable across renders for ontrack callbacks
+  const iceServersRef = useRef(null); // fetched from /api/calls/ice-config
   const remoteAudioRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -284,6 +291,8 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
       const r = await authedApi().post("/messages/send", { to_id: activeUser.id, text: text.trim() });
       setMessages((m) => [...m, r.data]);
       setText("");
+      // Stop the typing indicator on the other side
+      authedApi().post("/messages/typing", { to_id: activeUser.id, typing: false }).catch(() => {});
       loadThreads();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to send");
@@ -292,21 +301,76 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
     }
   };
 
+  // ============ Typing indicator ============
+  const onTextChange = (e) => {
+    const v = e.target.value;
+    setText(v);
+    if (!activeUser) return;
+    // Throttle to 1 signal every 2s
+    const now = Date.now();
+    if (v.trim().length > 0 && now - typingSentAtRef.current > 2000) {
+      typingSentAtRef.current = now;
+      authedApi().post("/messages/typing", { to_id: activeUser.id, typing: true }).catch(() => {});
+    }
+  };
+
+  // Poll if the other user is typing (every 1.5s)
+  useEffect(() => {
+    if (!activeUser) { setPeerTyping(false); return; }
+    let running = true;
+    const check = async () => {
+      try {
+        const r = await authedApi().get(`/messages/typing/${activeUser.id}`);
+        if (running) setPeerTyping(!!r.data.typing);
+      } catch {}
+    };
+    check();
+    const t = setInterval(check, 1500);
+    return () => { running = false; clearInterval(t); setPeerTyping(false); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeUser?.id]);
+
+  // ============ Report ============
+  const submitReport = async () => {
+    if (!activeUser) return;
+    setReportSubmitting(true);
+    try {
+      await authedApi().post("/messages/report", { reported_user_id: activeUser.id, reason: reportReason });
+      toast.success("Report submitted — an admin will review this chat.");
+      setReportOpen(false);
+      setReportReason("");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to send report");
+    } finally {
+      setReportSubmitting(false);
+    }
+  };
+
   // ============ WebRTC ============
-  // Public TURN + STUN mix. STUN alone fails when either party is behind a
-  // symmetric NAT (very common on mobile networks) — TURN is the relay fallback
-  // that makes video/audio actually reach the other side.
-  const rtcConfig = {
+  // ICE servers are fetched from the backend so an admin can override with a
+  // private TURN provider (Twilio / Metered.ca / Xirsys) without a frontend rebuild.
+  // Public OpenRelay + Google STUN are used as the fallback.
+  const DEFAULT_RTC_CONFIG = {
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
       { urls: "stun:stun1.l.google.com:19302" },
-      // OpenRelay free public TURN — good enough for testing / low-volume prod.
-      // For higher reliability replace with your own Twilio / Xirsys credentials.
       { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
       { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
       { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
     ],
     iceCandidatePoolSize: 4,
+  };
+
+  const getRtcConfig = async () => {
+    if (iceServersRef.current) return { iceServers: iceServersRef.current, iceCandidatePoolSize: 4 };
+    try {
+      const r = await authedApi().get("/calls/ice-config");
+      if (r.data?.iceServers?.length) {
+        iceServersRef.current = r.data.iceServers;
+        return { iceServers: r.data.iceServers, iceCandidatePoolSize: 4 };
+      }
+    } catch {}
+    return DEFAULT_RTC_CONFIG;
   };
 
   // Attach the LOCAL preview stream when the <video> mounts. Without this,
@@ -323,16 +387,18 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
     if (!activeUser) return toast.error("Open a chat first");
     const callId = crypto.randomUUID();
     isVideoCallRef.current = !!video;
+    setCallStats({ conn: "", ice: "", gather: "" });
     setCall({ peerId: activeUser.id, incoming: false, video, active: false, callId });
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video });
       localStreamRef.current = stream;
       if (video && localVideoRef.current) localVideoRef.current.srcObject = stream;
+      const rtcConfig = await getRtcConfig();
       const pc = new RTCPeerConnection(rtcConfig);
       pcRef.current = pc;
-      pc.onconnectionstatechange = () => console.log("[call] connectionState:", pc.connectionState);
-      pc.oniceconnectionstatechange = () => console.log("[call] iceConnectionState:", pc.iceConnectionState);
-      pc.onicegatheringstatechange = () => console.log("[call] iceGatheringState:", pc.iceGatheringState);
+      pc.onconnectionstatechange = () => { console.log("[call] connectionState:", pc.connectionState); setCallStats((s) => ({ ...s, conn: pc.connectionState })); };
+      pc.oniceconnectionstatechange = () => { console.log("[call] iceConnectionState:", pc.iceConnectionState); setCallStats((s) => ({ ...s, ice: pc.iceConnectionState })); };
+      pc.onicegatheringstatechange = () => { console.log("[call] iceGatheringState:", pc.iceGatheringState); setCallStats((s) => ({ ...s, gather: pc.iceGatheringState })); };
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       pc.ontrack = (ev) => {
         console.log("[call] ontrack fired — tracks:", ev.streams[0]?.getTracks().map(t=>t.kind));
@@ -358,12 +424,17 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
   const acceptCall = async () => {
     if (!call || !call.incoming) return;
     isVideoCallRef.current = !!call.video;
+    setCallStats({ conn: "", ice: "", gather: "" });
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: call.video });
       localStreamRef.current = stream;
       if (call.video && localVideoRef.current) localVideoRef.current.srcObject = stream;
+      const rtcConfig = await getRtcConfig();
       const pc = new RTCPeerConnection(rtcConfig);
       pcRef.current = pc;
+      pc.onconnectionstatechange = () => { console.log("[call] connectionState:", pc.connectionState); setCallStats((s) => ({ ...s, conn: pc.connectionState })); };
+      pc.oniceconnectionstatechange = () => { console.log("[call] iceConnectionState:", pc.iceConnectionState); setCallStats((s) => ({ ...s, ice: pc.iceConnectionState })); };
+      pc.onicegatheringstatechange = () => { console.log("[call] iceGatheringState:", pc.iceGatheringState); setCallStats((s) => ({ ...s, gather: pc.iceGatheringState })); };
       pc.onconnectionstatechange = () => console.log("[call] connectionState:", pc.connectionState);
       pc.oniceconnectionstatechange = () => console.log("[call] iceConnectionState:", pc.iceConnectionState);
       pc.onicegatheringstatechange = () => console.log("[call] iceGatheringState:", pc.iceGatheringState);
@@ -553,6 +624,9 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
                 <button onClick={toggleBlock} data-testid="block-btn" className={`w-9 h-9 rounded-md flex items-center justify-center ${activeUserInfo?.i_blocked ? "bg-red-500/20 text-red-400" : "hover:bg-red-500/20 text-white/50"}`} title={activeUserInfo?.i_blocked ? "Unblock user" : "Block user"}>
                   <Ban className="w-4 h-4" />
                 </button>
+                <button onClick={() => setReportOpen(true)} data-testid="report-btn" className="w-9 h-9 rounded-md hover:bg-amber-500/20 flex items-center justify-center text-amber-400" title="Report this chat to admins">
+                  <Flag className="w-4 h-4" />
+                </button>
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-2">
                 {messages.length === 0 && <div className="text-center text-white/30 text-xs py-8">Start the conversation…</div>}
@@ -575,6 +649,15 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
                     </div>
                   </div>
                 ))}
+                {peerTyping && (
+                  <div className="flex justify-start" data-testid="typing-indicator">
+                    <div className="bg-white/10 text-white rounded-full px-4 py-2.5 inline-flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-bounce" style={{ animationDelay: "0ms" }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-bounce" style={{ animationDelay: "150ms" }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-white/70 animate-bounce" style={{ animationDelay: "300ms" }} />
+                    </div>
+                  </div>
+                )}
                 <div ref={chatEndRef} />
               </div>
               <form onSubmit={send} className="border-t border-white/5 p-3 flex gap-2 items-center">
@@ -588,7 +671,7 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
                 <input
                   data-testid="dm-input"
                   value={text}
-                  onChange={(e) => setText(e.target.value)}
+                  onChange={onTextChange}
                   placeholder={recording ? "🔴 Recording… click mic again to send" : "Type a message…"}
                   disabled={recording}
                   className="flex-1 bg-[#1a1525] border border-white/10 rounded-md px-3 py-2 text-sm outline-none focus:border-[#3b82f6]"
@@ -615,6 +698,13 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
               {call.incoming ? "Incoming call" : call.active ? "In call" : "Calling…"}
             </h3>
             <div className="text-sm text-white/60 mt-1">@{call.peerName || activeUser?.username}</div>
+            {(callStats.conn || callStats.ice || callStats.gather) && (
+              <div className="mt-3 mx-auto text-[10px] font-mono text-white/50 bg-white/5 rounded-md px-3 py-1.5 inline-flex gap-3" data-testid="call-debug-overlay">
+                <span>conn:{callStats.conn || "–"}</span>
+                <span>ice:{callStats.ice || "–"}</span>
+                <span>gather:{callStats.gather || "–"}</span>
+              </div>
+            )}
             {call.video && (
               <div className="grid grid-cols-2 gap-2 mt-4">
                 <video ref={remoteVideoRef} autoPlay playsInline className="w-full aspect-video bg-black rounded-md" />
@@ -629,6 +719,37 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
               )}
               <button onClick={endCall} data-testid="end-call-btn" className="px-6 py-3 rounded-full bg-red-500 text-white font-bold uppercase text-xs tracking-wider inline-flex items-center gap-2 hover:bg-red-400">
                 <PhoneOff className="w-4 h-4" /> {call.active ? "Hang up" : call.incoming ? "Decline" : "Cancel"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Report dialog */}
+      {reportOpen && (
+        <div className="fixed inset-0 z-[95] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setReportOpen(false)}>
+          <div className="bg-[#0d0a14] border border-white/10 rounded-2xl p-6 max-w-md w-full shadow-2xl" onClick={(e) => e.stopPropagation()} data-testid="report-dialog">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-400">
+                <Flag className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-display font-black text-lg">Report chat with @{activeUser?.username}</h3>
+                <p className="text-xs text-white/50">An admin will be able to review your conversation with this user.</p>
+              </div>
+            </div>
+            <textarea
+              data-testid="report-reason"
+              value={reportReason}
+              onChange={(e) => setReportReason(e.target.value)}
+              placeholder="What happened? (harassment, scam, spam, other — optional but helpful)"
+              className="w-full bg-[#1a1525] border border-white/10 rounded-md px-3 py-2 text-sm outline-none focus:border-amber-500 min-h-[100px] resize-y"
+              maxLength={1000}
+            />
+            <div className="flex gap-2 justify-end mt-4">
+              <button onClick={() => { setReportOpen(false); setReportReason(""); }} data-testid="report-cancel" className="px-4 py-2 rounded-md hover:bg-white/5 text-sm text-white/70">Cancel</button>
+              <button onClick={submitReport} disabled={reportSubmitting} data-testid="report-submit" className="px-4 py-2 rounded-md bg-amber-500 hover:bg-amber-400 text-black font-bold text-sm inline-flex items-center gap-2 disabled:opacity-50">
+                {reportSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Flag className="w-4 h-4" />}
+                Submit report
               </button>
             </div>
           </div>
