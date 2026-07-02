@@ -41,9 +41,31 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
   const [call, setCall] = useState(null); // {peerId, incoming, video, active, callId}
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
+  const isVideoCallRef = useRef(false); // stable across renders for ontrack callbacks
   const remoteAudioRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+
+  // Attach the remote stream to the playback elements whenever they mount.
+  // Fixes "can't hear the other person" — pc.ontrack fires BEFORE the modal renders,
+  // so we cache the stream and (re)attach when refs become available.
+  const attachRemoteStream = () => {
+    const s = remoteStreamRef.current;
+    if (!s) return;
+    const videoMode = isVideoCallRef.current;
+    if (videoMode && remoteVideoRef.current && remoteVideoRef.current.srcObject !== s) {
+      remoteVideoRef.current.srcObject = s;
+      remoteVideoRef.current.play?.().catch(() => {});
+    }
+    // Always attach to the audio element too — the video element occasionally
+    // fails to route audio through the default output on some browsers.
+    if (!videoMode && remoteAudioRef.current && remoteAudioRef.current.srcObject !== s) {
+      remoteAudioRef.current.srcObject = s;
+      remoteAudioRef.current.play?.().catch(() => {});
+    }
+  };
+  useEffect(() => { attachRemoteStream(); }, [call?.active, call?.video]);
 
   const loadThreads = async () => {
     try {
@@ -154,32 +176,71 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
     }
   };
 
-  // Voice recorder
+  // Voice recorder — click to start, click again to stop & send
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
+      // Pick a mimeType this browser actually supports (Safari/iOS need mp4)
+      const candidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+        "audio/ogg;codecs=opus",
+        "",
+      ];
+      let mimeType = "";
+      for (const c of candidates) {
+        if (!c) { mimeType = ""; break; }
+        if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) {
+          mimeType = c; break;
+        }
+      }
+      const rec = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       audioChunksRef.current = [];
-      rec.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      rec.ondataavailable = (e) => { if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data); };
       rec.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        const file = new File([blob], `voice-${Date.now()}.webm`, { type: "audio/webm" });
+        if (audioChunksRef.current.length === 0) {
+          toast.error("No audio captured — try again");
+          return;
+        }
+        const type = rec.mimeType || "audio/webm";
+        const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
+        const blob = new Blob(audioChunksRef.current, { type });
+        const file = new File([blob], `voice-${Date.now()}.${ext}`, { type });
         await uploadAndSend(file, "voice");
+      };
+      rec.onerror = (ev) => {
+        toast.error("Recording error: " + (ev.error?.message || "unknown"));
       };
       rec.start();
       recorderRef.current = rec;
       setRecording(true);
     } catch (e) {
-      toast.error("Can't access microphone");
+      const msg = e?.name === "NotAllowedError"
+        ? "Microphone access denied — allow it in your browser settings."
+        : e?.name === "NotFoundError"
+        ? "No microphone found."
+        : "Can't access microphone: " + (e?.message || "unknown");
+      toast.error(msg);
+      setRecording(false);
     }
   };
 
   const stopRecording = () => {
-    if (recorderRef.current && recording) {
-      recorderRef.current.stop();
-      setRecording(false);
+    try {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        recorderRef.current.stop();
+      }
+    } catch (e) {
+      toast.error("Failed to stop recording");
     }
+    setRecording(false);
+  };
+
+  const toggleRecording = () => {
+    if (recording) stopRecording();
+    else startRecording();
   };
 
   const uploadAndSend = async (file, kind = "file") => {
@@ -234,6 +295,7 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
   const startCall = async (video = false) => {
     if (!activeUser) return toast.error("Open a chat first");
     const callId = crypto.randomUUID();
+    isVideoCallRef.current = !!video;
     setCall({ peerId: activeUser.id, incoming: false, video, active: false, callId });
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video });
@@ -243,8 +305,9 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
       pcRef.current = pc;
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       pc.ontrack = (ev) => {
-        if (video && remoteVideoRef.current) remoteVideoRef.current.srcObject = ev.streams[0];
-        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = ev.streams[0];
+        // Cache the remote stream — refs may not exist yet.
+        remoteStreamRef.current = ev.streams[0];
+        attachRemoteStream();
       };
       pc.onicecandidate = (ev) => {
         if (ev.candidate) sendSignal(callId, activeUser.id, "ice", { candidate: ev.candidate });
@@ -263,6 +326,7 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
 
   const acceptCall = async () => {
     if (!call || !call.incoming) return;
+    isVideoCallRef.current = !!call.video;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: call.video });
       localStreamRef.current = stream;
@@ -271,8 +335,8 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
       pcRef.current = pc;
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       pc.ontrack = (ev) => {
-        if (call.video && remoteVideoRef.current) remoteVideoRef.current.srcObject = ev.streams[0];
-        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = ev.streams[0];
+        remoteStreamRef.current = ev.streams[0];
+        attachRemoteStream();
       };
       pc.onicecandidate = (ev) => {
         if (ev.candidate) sendSignal(call.callId, call.peerId, "ice", { candidate: ev.candidate });
@@ -305,6 +369,8 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     pcRef.current = null;
     localStreamRef.current = null;
+    remoteStreamRef.current = null;
+    isVideoCallRef.current = false;
     setCall(null);
   };
 
@@ -315,6 +381,7 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
     const { call_id, from_id, from_username, kind, payload } = sig;
     if (kind === "ring") {
       // Show incoming call UI
+      isVideoCallRef.current = !!payload?.video;
       setCall({
         peerId: from_id,
         peerName: from_username,
@@ -325,10 +392,32 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
         pendingIce: [],
       });
     } else if (kind === "offer") {
-      // Store SDP for accept
-      setCall((c) => (c && c.callId === call_id ? { ...c, pendingOffer: payload?.sdp } : c));
+      // Store SDP for accept. If ring state hasn't been committed yet, upsert a call
+      // record so the offer isn't lost.
+      setCall((c) => {
+        if (c && c.callId === call_id) return { ...c, pendingOffer: payload?.sdp };
+        // Ring signal likely still in-flight — seed the incoming call now.
+        return {
+          peerId: from_id,
+          peerName: from_username,
+          incoming: true,
+          video: false,
+          active: false,
+          callId: call_id,
+          pendingIce: [],
+          pendingOffer: payload?.sdp,
+        };
+      });
     } else if (kind === "answer" && pcRef.current) {
       await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+      // Flush any ICE candidates that arrived before the answer
+      setCall((c) => {
+        if (!c) return c;
+        (c.pendingIce || []).forEach(async (cand) => {
+          try { await pcRef.current.addIceCandidate(new RTCIceCandidate(cand)); } catch {}
+        });
+        return { ...c, pendingIce: [] };
+      });
     } else if (kind === "ice") {
       if (pcRef.current && pcRef.current.remoteDescription) {
         try { await pcRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate)); } catch {}
@@ -458,14 +547,14 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
                 <button type="button" onClick={() => fileInputRef.current?.click()} data-testid="attach-btn" className="w-9 h-9 rounded-md hover:bg-white/10 flex items-center justify-center text-white/60" title="Attach file">
                   <Paperclip className="w-4 h-4" />
                 </button>
-                <button type="button" onMouseDown={startRecording} onMouseUp={stopRecording} onTouchStart={startRecording} onTouchEnd={stopRecording} data-testid="voice-btn" className={`w-9 h-9 rounded-md flex items-center justify-center ${recording ? "bg-red-500 text-white animate-pulse" : "hover:bg-white/10 text-white/60"}`} title="Hold to record voice">
+                <button type="button" onClick={toggleRecording} data-testid="voice-btn" className={`w-9 h-9 rounded-md flex items-center justify-center ${recording ? "bg-red-500 text-white animate-pulse" : "hover:bg-white/10 text-white/60"}`} title={recording ? "Click to stop & send" : "Click to record voice message"}>
                   {recording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
                 </button>
                 <input
                   data-testid="dm-input"
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder={recording ? "Recording… release to send" : "Type a message…"}
+                  placeholder={recording ? "🔴 Recording… click mic again to send" : "Type a message…"}
                   disabled={recording}
                   className="flex-1 bg-[#1a1525] border border-white/10 rounded-md px-3 py-2 text-sm outline-none focus:border-[#3b82f6]"
                 />

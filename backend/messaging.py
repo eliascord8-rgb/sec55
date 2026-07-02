@@ -31,14 +31,17 @@ def _pair_key(a: str, b: str) -> str:
 @msg_router.get("/search")
 async def search_users(q: str, request: Request, user: CurrentUser = Depends(current_user_dep)):
     """PRIVACY: only reveal users if the caller enters an EXACT username match.
-    Partial / random typing returns an empty list so nobody can enumerate users."""
+    Partial / random typing returns an empty list so nobody can enumerate users.
+    Case-insensitive so users can DM owner/staff regardless of capitalization."""
     if not q or len(q.strip()) < 3:
         return {"users": []}
-    q_norm = q.strip().lower()
+    q_norm = q.strip()
     db = request.app.state.db
-    # Case-insensitive EXACT match on username (must equal, not prefix)
+    # Case-insensitive EXACT match on username (anchored regex so no partial matches)
+    import re
+    pattern = f"^{re.escape(q_norm)}$"
     u = await db.users.find_one(
-        {"username": q_norm, "id": {"$ne": user.id}},
+        {"username": {"$regex": pattern, "$options": "i"}, "id": {"$ne": user.id}},
         {"_id": 0, "id": 1, "username": 1, "role": 1, "last_seen": 1},
     )
     # Filter out users who blocked me
@@ -51,12 +54,15 @@ async def search_users(q: str, request: Request, user: CurrentUser = Depends(cur
 
 @msg_router.get("/user/{username}")
 async def get_user_by_username(username: str, request: Request, user: CurrentUser = Depends(current_user_dep)):
-    """Look up a single user by exact username. Also exposes last_seen and role.
+    """Look up a single user by exact username (case-insensitive so owner/staff are reachable).
+    Also exposes last_seen and role.
     Returns 404 if user has blocked the caller."""
     db = request.app.state.db
-    uname = username.strip().lower()
+    uname = username.strip()
+    import re
+    pattern = f"^{re.escape(uname)}$"
     u = await db.users.find_one(
-        {"username": uname},
+        {"username": {"$regex": pattern, "$options": "i"}},
         {"_id": 0, "id": 1, "username": 1, "role": 1, "last_seen": 1},
     )
     if not u:
