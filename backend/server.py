@@ -1872,7 +1872,20 @@ class NowpaymentsFundsRequest(BaseModel):
 async def nowpayments_create_funds(body: NowpaymentsFundsRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
     tx_id = str(uuid.uuid4())
     amount = round(float(body.amount), 2)
-    origin = request.headers.get("origin", "").rstrip("/") or request.headers.get("referer", "").split("/api")[0]
+    # Derive the PUBLIC base URL. Priority:
+    #   1. BACKEND_URL env var (most reliable — set this on production)
+    #   2. FastAPI's request.base_url (works when accessed via public URL)
+    #   3. `origin`/`referer` headers as last resort
+    backend_url = (
+        (os.environ.get("BACKEND_URL") or "").rstrip("/")
+        or str(request.base_url).rstrip("/")
+        or (request.headers.get("origin") or "").rstrip("/")
+    )
+    frontend_url = (
+        (request.headers.get("origin") or "").rstrip("/")
+        or (request.headers.get("referer") or "").split("/api")[0].rstrip("/")
+        or backend_url
+    )
     await db.transactions.insert_one({
         "id": tx_id,
         "user_id": user.id,
@@ -1883,63 +1896,46 @@ async def nowpayments_create_funds(body: NowpaymentsFundsRequest, user: CurrentU
         "type": "deposit",
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
-    # IPN callback URL uses the backend's public URL
-    backend_url = origin  # same origin serves both /api and /client
     invoice = await _create_nowpayments_invoice(
         amount_usd=amount,
         order_id=f"funds_{tx_id}",
         description=f"Better Social — Add ${amount:.2f} for @{user.username}",
         ipn_url=f"{backend_url}/api/nowpayments/webhook",
-        success_url=f"{origin}/client/dashboard?nowpay=1&tx={tx_id}",
-        cancel_url=f"{origin}/client/dashboard?nowpay=cancel",
+        success_url=f"{frontend_url}/client/dashboard?nowpay=1&tx={tx_id}",
+        cancel_url=f"{frontend_url}/client/dashboard?nowpay=cancel",
     )
     await db.transactions.update_one(
         {"id": tx_id},
         {"$set": {"nowpayments_invoice_id": invoice["invoice_id"], "nowpayments_url": invoice["invoice_url"]}},
     )
+    logger.info(f"[nowpay] Created invoice {invoice['invoice_id']} for tx={tx_id} amount=${amount} ipn_url={backend_url}/api/nowpayments/webhook")
     return {"id": tx_id, "checkout_url": invoice["invoice_url"]}
 
 
-@api_router.post("/nowpayments/webhook")
-async def nowpayments_webhook(request: Request):
-    """Called by NOWPayments when payment status changes. Credits balance on 'finished' status."""
-    body = await request.body()
-    signature = request.headers.get("x-nowpayments-sig", "")
-    cfg = await db.nowpayments_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
-    ipn_secret = cfg.get("ipn_secret", "")
-    if ipn_secret and not _verify_nowpayments_signature(body, ipn_secret, signature):
-        raise HTTPException(status_code=401, detail="Invalid signature")
-    try:
-        data = jsonlib.loads(body.decode("utf-8"))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-    order_id = str(data.get("order_id", ""))
-    status = (data.get("payment_status") or "").lower()
-    logger.info(f"NOWPayments webhook: order={order_id} status={status}")
+# Statuses that mean "the buyer has paid — credit them".
+NOWPAY_SUCCESS_STATUSES = {"finished", "confirmed", "sending", "partially_paid"}
 
-    # Only credit on 'finished' — other statuses are transitional
-    if not order_id.startswith("funds_") or status != "finished":
-        return {"ok": True, "ignored": True, "status": status}
 
-    tx_id = order_id.replace("funds_", "", 1)
-    tx = await db.transactions.find_one({"id": tx_id})
-    if not tx:
-        return {"ok": True, "unknown_tx": tx_id}
+async def _credit_nowpayments_deposit(tx: dict, payload: dict) -> dict:
+    """Idempotent: mark tx approved + insert 70% bonus + persist payload.
+    Called from BOTH the webhook and the manual /verify endpoint so we never double-credit."""
+    tx_id = tx["id"]
     if tx.get("status") == "approved":
-        return {"ok": True, "already_credited": True}
+        return {"ok": True, "already_credited": True, "tx_id": tx_id}
     amount = float(tx.get("amount", 0))
-    # 70% bonus on every NOWPayments deposit
-    bonus = round(amount * 0.70, 2)
+    bonus = round(amount * 0.70, 2)  # 70% deposit bonus
     now = datetime.now(timezone.utc).isoformat()
-    await db.transactions.update_one(
-        {"id": tx_id},
+    upd = await db.transactions.update_one(
+        {"id": tx_id, "status": {"$ne": "approved"}},  # extra concurrency guard
         {"$set": {
             "status": "approved",
             "approved_at": now,
-            "nowpayments_payload": data,
+            "nowpayments_payload": payload,
             "bonus_applied": bonus,
         }},
     )
+    if upd.modified_count == 0:
+        return {"ok": True, "already_credited": True, "tx_id": tx_id}
     if bonus > 0:
         await db.transactions.insert_one({
             "id": str(uuid.uuid4()),
@@ -1954,7 +1950,98 @@ async def nowpayments_webhook(request: Request):
             "approved_at": now,
             "linked_tx": tx_id,
         })
-    return {"ok": True, "credited": tx_id, "bonus": bonus}
+    logger.info(f"[nowpay] CREDITED tx={tx_id} user={tx.get('username')} amount=${amount} bonus=${bonus}")
+    return {"ok": True, "credited": tx_id, "amount": amount, "bonus": bonus}
+
+
+@api_router.post("/nowpayments/webhook")
+async def nowpayments_webhook(request: Request):
+    """Called by NOWPayments when payment status changes. Credits balance on success statuses."""
+    body = await request.body()
+    signature = request.headers.get("x-nowpayments-sig", "")
+    cfg = await db.nowpayments_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    ipn_secret = cfg.get("ipn_secret", "")
+    sig_ok = True
+    if ipn_secret:
+        sig_ok = _verify_nowpayments_signature(body, ipn_secret, signature)
+    try:
+        data = jsonlib.loads(body.decode("utf-8"))
+    except Exception:
+        data = {"_raw": body.decode("utf-8", errors="replace")[:1000]}
+    # ALWAYS log the event so we can debug missing credits later
+    await db.nowpayments_events.insert_one({
+        "id": str(uuid.uuid4()),
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "signature_ok": sig_ok,
+        "signature_header": signature[:200],
+        "payload": data,
+    })
+    if not sig_ok:
+        logger.warning(f"[nowpay] webhook signature INVALID for payload={str(data)[:300]}")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    order_id = str(data.get("order_id", ""))
+    status = (data.get("payment_status") or "").lower()
+    logger.info(f"[nowpay] webhook: order={order_id} status={status} amount={data.get('actually_paid')}")
+    if not order_id.startswith("funds_") or status not in NOWPAY_SUCCESS_STATUSES:
+        return {"ok": True, "ignored": True, "status": status, "order_id": order_id}
+    tx_id = order_id.replace("funds_", "", 1)
+    tx = await db.transactions.find_one({"id": tx_id})
+    if not tx:
+        logger.warning(f"[nowpay] unknown tx_id={tx_id}")
+        return {"ok": True, "unknown_tx": tx_id}
+    return await _credit_nowpayments_deposit(tx, data)
+
+
+async def _fetch_nowpayments_invoice_status(invoice_id: str) -> dict:
+    """Poll NOWPayments for the status of an invoice's payments. Returns the best-status payment doc."""
+    cfg = await _get_nowpayments_config()
+    async with httpx.AsyncClient(timeout=20.0) as c:
+        # First: get payments linked to this invoice
+        r = await c.get(
+            f"{NOWPAYMENTS_API_BASE}/payment/?invoice_id={invoice_id}&limit=10",
+            headers={"x-api-key": cfg["api_key"]},
+        )
+        if r.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"NOWPayments payments lookup {r.status_code}: {r.text[:200]}")
+        js = r.json()
+    payments = js.get("data") or js.get("payments") or ([] if not isinstance(js, list) else js)
+    if not payments:
+        return {}
+    # Prefer the payment with a success status; else return the most recent one
+    order = {s: i for i, s in enumerate(["finished", "confirmed", "sending", "partially_paid", "confirming", "waiting", "expired", "failed"])}
+    payments.sort(key=lambda p: order.get((p.get("payment_status") or "").lower(), 99))
+    return payments[0]
+
+
+@client_router.post("/funds/nowpayments-verify/{tx_id}")
+async def nowpayments_verify(tx_id: str, user: CurrentUser = Depends(current_user_dep)):
+    """User-triggered fallback if the webhook never fired (network issue / iframe / mobile close).
+    Polls NOWPayments API for the invoice's payments; credits the deposit if paid."""
+    tx = await db.transactions.find_one({"id": tx_id, "user_id": user.id, "method": "nowpayments"})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if tx.get("status") == "approved":
+        return {"ok": True, "already_credited": True, "status": "approved"}
+    invoice_id = tx.get("nowpayments_invoice_id")
+    if not invoice_id:
+        raise HTTPException(status_code=400, detail="No invoice linked to this transaction")
+    payment = await _fetch_nowpayments_invoice_status(invoice_id)
+    pstatus = (payment.get("payment_status") or "").lower()
+    logger.info(f"[nowpay] manual verify tx={tx_id} invoice={invoice_id} status={pstatus}")
+    if pstatus in NOWPAY_SUCCESS_STATUSES:
+        return await _credit_nowpayments_deposit(tx, payment)
+    return {"ok": True, "credited": False, "status": pstatus or "unknown", "payment": payment}
+
+
+@client_router.get("/funds/pending-deposits")
+async def list_pending_deposits(user: CurrentUser = Depends(current_user_dep)):
+    """Show the user their unfinished NOWPayments deposits so they can click 'Verify' from the UI."""
+    cur = db.transactions.find(
+        {"user_id": user.id, "method": "nowpayments", "status": "pending"},
+        {"_id": 0, "id": 1, "amount": 1, "created_at": 1, "nowpayments_url": 1, "nowpayments_invoice_id": 1},
+    ).sort("created_at", -1).limit(10)
+    return {"pending": await cur.to_list(10)}
+
 
 
 # ============ SELLY.IO PAYMENTS ============

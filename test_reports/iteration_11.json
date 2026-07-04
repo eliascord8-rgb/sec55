@@ -1,0 +1,37 @@
+{
+  "summary": "Backend NOWPayments deposit crediting flows all pass (11/11 pytest). Signed webhook credits on 'finished' AND 'confirmed' with +70% bonus, replay is idempotent (already_credited=true, no double bonus), bad signatures return 401. Manual /verify endpoint enforces auth, returns 404 for unknown tx, and gracefully handles unpaid invoices. /pending-deposits lists pending nowpayments txs and hides them once credited. Regression on /nowpayments-create: rejects amount<1 (422), accepts amount=10. Frontend UI verified: login (with math captcha), Add Funds tab renders, seeded pending deposit renders correctly in 'Waiting for confirmation' panel with the exact data-testids specified (pending-deposits-panel, pending-deposit-<id>, verify-deposit-<id>). Clicking 'Verify deposit' fires POST /nowpayments-verify/<id> and shows the toast. HOWEVER — CRITICAL BUG in auto-verify flow: when the browser lands on /client/dashboard?nowpay=1&tx=<id> (exactly what NOWPayments success_url points to), the dashboard opens in the DEFAULT 'home' view, NOT the Funds view, so FundsView never mounts and the auto-verify useEffect NEVER fires. The 'Checking your payment with NOWPayments…' toast only appears when the user later manually clicks 'Add Funds', at which point the query params get consumed and cleaned. Users returning from NOWPayments will not see any auto-verify feedback on the landing screen.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "NOWPayments success redirect auto-verify",
+        "issue": "The auto-verify useEffect (with the 'Checking your payment with NOWPayments…' toast + URL cleanup) lives inside FundsView, which only mounts when view==='funds'. On landing at /client/dashboard?nowpay=1&tx=<id>, the dashboard mounts in the default 'home' view — so the effect never fires and the URL is not cleaned. User must manually click 'Add Funds' before the verify is attempted. This defeats the purpose of the redirect being ?nowpay=1 on the plain dashboard URL. FIX: mirror the existing selly_funds=1 handler (dashboard-level useEffect at line ~158 in ClientDashboard.jsx) — detect nowpay=1 there, call setView('funds'), then let FundsView handle the verify OR move the verify call up to the parent.",
+        "affected_selectors": ["[data-testid=\"funds-amount\"]", "[data-testid=\"nav-funds\"]"],
+        "priority": "HIGH"
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_11_nowpayments.py",
+    "/app/test_reports/pytest/iter11.xml"
+  ],
+  "action_items": [
+    "Add a dashboard-level useEffect (or extend the existing selly_funds one) in /app/frontend/src/pages/ClientDashboard.jsx around line 158 that detects ?nowpay=1&tx=<id>, calls setView('funds'), and either forwards the params to FundsView or performs the verify at the parent level. Currently the redirect from NOWPayments lands in 'home' and the auto-verify never fires."
+  ],
+  "critical_code_review_comments": [
+    "ClientDashboard.jsx is 2119 lines — the FundsView (~200 lines), SlotsView, CasinoView etc. should be split into their own files for maintainability.",
+    "The URL-param handler at ClientDashboard.jsx:158 handles selly_funds=1 correctly (switches to funds view + strips query). The parallel handler for nowpay=1 was placed inside FundsView (line ~742) instead of at the dashboard level, so it only fires when funds tab is mounted. This is the direct cause of the auto-verify integration bug.",
+    "server.py:1985 — the webhook returns {ok:true, ignored:true, ...} for statuses NOT in NOWPAY_SUCCESS_STATUSES. Good. Idempotency guard at server.py:1928-1938 uses status:{$ne:'approved'} in the update query — solid concurrency guard.",
+    "server.py:2028 the manual verify endpoint calls NOWPayments directly with httpx and will raise HTTPException 502 on any 4xx/5xx from NOWPayments — consider catching and returning a graceful 200 with {credited:false, status:'lookup_failed'} so the UI can display a friendlier message instead of a red 'error' toast."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration_11_nowpayments.py"],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "80% (pending panel + UI intact; auto-verify on landing broken)"},
+  "test_credentials": "testbugfix1 / password1 (login uses math captcha at /api/auth/captcha); IPN secret 0GxKb3OpF5kPJane2oCnJg1EQGIsd2mt is in db.nowpayments_config.",
+  "seed_data_creation": "Ephemeral pending nowpayments transactions inserted directly into db.test_database.transactions for each webhook + pending-list test, cleaned up in the test's finally block. One frontend seed tx (id=fe-pending-98a85051) was inserted before the playwright run and deleted after.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "After main agent adds the dashboard-level nowpay=1 handler, retest by (a) logging in as testbugfix1/password1, (b) direct-navigating to /client/dashboard?nowpay=1&tx=<any-id>, (c) confirming the toast 'Checking your payment with NOWPayments…' appears and the URL is cleaned to /client/dashboard (no ?nowpay/?tx) within 3 seconds, (d) confirming the Funds view is now active. Backend tests are stable — rerun /app/backend/tests/test_iteration_11_nowpayments.py to confirm no regression. Math captcha parsing: the question is prefixed with 'Quick check' — the regex extracts 'What is A op B'. The pending-deposits-panel and pending-deposit-<id>/verify-deposit-<id> data-testids are correctly implemented and verified.",
+  "rca of the issue": "ROOT CAUSE: /app/frontend/src/pages/ClientDashboard.jsx places the ?nowpay=1&tx=<id> URL param handler inside FundsView's useEffect (line ~739). Because FundsView is conditionally rendered based on `view === 'funds'` (line 359) and the default view is 'home' (line 53), landing on the dashboard from NOWPayments' success_url never mounts FundsView, so the useEffect that (1) shows the 'Checking your payment…' toast, (2) calls verifyDeposit, and (3) strips ?nowpay/?tx from the URL never executes. REPRO: after login navigate to /client/dashboard?nowpay=1&tx=fake-id-999 → observe: no toast, URL keeps ?nowpay=1&tx=fake-id-999, home view stays visible. MITIGATION: main agent should either (a) add nowpay=1 detection to the existing dashboard-level useEffect at line 158 that already handles selly_funds=1 — set view to 'funds' and let FundsView pick up the params, OR (b) lift the verify call into the parent Dashboard component."
+}

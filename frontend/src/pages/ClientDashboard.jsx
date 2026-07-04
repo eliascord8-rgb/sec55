@@ -695,7 +695,9 @@ function QuickAction({ icon: Icon, label, tab, testId }) {
 function FundsView({ authedApi, balance, reloadBalance }) {
   const [amount, setAmount] = useState(10);
   const [txns, setTxns] = useState([]);
+  const [pending, setPending] = useState([]);
   const [creating, setCreating] = useState(false);
+  const [verifyingId, setVerifyingId] = useState(null);
   const [gateway] = useState("bitcoin");
 
   const loadTxns = async () => {
@@ -705,8 +707,50 @@ function FundsView({ authedApi, balance, reloadBalance }) {
     } catch {}
   };
 
+  const loadPending = async () => {
+    try {
+      const r = await authedApi().get("/client/funds/pending-deposits");
+      setPending(r.data.pending || []);
+    } catch {}
+  };
+
+  const verifyDeposit = async (txId) => {
+    setVerifyingId(txId);
+    try {
+      const r = await authedApi().post(`/client/funds/nowpayments-verify/${txId}`);
+      if (r.data.credited) {
+        toast.success(`✅ Deposit credited! +$${r.data.amount} (+ $${r.data.bonus} bonus)`);
+        reloadBalance && reloadBalance();
+        loadPending();
+        loadTxns();
+      } else if (r.data.already_credited) {
+        toast.info("Already credited — refreshing balance.");
+        reloadBalance && reloadBalance();
+        loadPending();
+      } else {
+        toast.info(`Payment status: ${r.data.status || "unknown"} — try again in a minute.`);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to verify deposit");
+    }
+    setVerifyingId(null);
+  };
+
   useEffect(() => {
     loadTxns();
+    loadPending();
+    // Auto-verify if the user just returned from NOWPayments checkout
+    // URL will be /client/dashboard?nowpay=1&tx=<tx_id>
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("nowpay") === "1" && params.get("tx")) {
+      toast.info("Checking your payment with NOWPayments…", { duration: 3000 });
+      verifyDeposit(params.get("tx"));
+      // Clean the URL so a refresh doesn't retrigger
+      const url = new URL(window.location.href);
+      url.searchParams.delete("nowpay");
+      url.searchParams.delete("tx");
+      window.history.replaceState({}, "", url.toString());
+    }
     // eslint-disable-next-line
   }, []);
 
@@ -843,6 +887,42 @@ function FundsView({ authedApi, balance, reloadBalance }) {
           </div>
         </div>
       </div>
+
+      {pending.length > 0 && (
+        <div className="bg-amber-500/5 border border-amber-500/30 rounded-sm overflow-hidden" data-testid="pending-deposits-panel">
+          <div className="px-4 md:px-6 py-3 border-b border-amber-500/20 flex items-center gap-2">
+            <Clock className="w-4 h-4 text-amber-400" />
+            <h3 className="font-display font-bold text-sm text-amber-300">Waiting for confirmation</h3>
+          </div>
+          <div className="p-4 md:p-5 space-y-3">
+            <p className="text-xs text-white/60">
+              If you already paid but your balance hasn&apos;t updated yet, click <b>Verify deposit</b> — we&apos;ll check with NOWPayments and credit your account instantly.
+            </p>
+            {pending.map((p) => (
+              <div key={p.id} className="flex flex-wrap items-center gap-3 justify-between bg-black/30 rounded-sm px-3 py-2.5" data-testid={`pending-deposit-${p.id}`}>
+                <div className="text-xs">
+                  <div className="font-bold text-white">${Number(p.amount).toFixed(2)}</div>
+                  <div className="text-white/40 text-[10px]">Started {new Date(p.created_at).toLocaleString()}</div>
+                </div>
+                <div className="flex gap-2">
+                  {p.nowpayments_url && (
+                    <a href={p.nowpayments_url} target="_blank" rel="noreferrer" className="text-[11px] px-3 py-1.5 rounded-sm border border-white/20 hover:bg-white/5">Open invoice</a>
+                  )}
+                  <button
+                    onClick={() => verifyDeposit(p.id)}
+                    disabled={verifyingId === p.id}
+                    data-testid={`verify-deposit-${p.id}`}
+                    className="text-[11px] px-3 py-1.5 rounded-sm bg-amber-500 hover:bg-amber-400 text-black font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    {verifyingId === p.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                    Verify deposit
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="bg-[#0d0a14] border border-white/5 rounded-sm overflow-hidden">
         <div className="px-4 md:px-6 py-3 border-b border-white/5 flex items-center justify-between">
