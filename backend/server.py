@@ -825,6 +825,14 @@ async def admin_orders(x_admin_token: Optional[str] = Header(None)):
     return {"orders": orders}
 
 
+@client_router.get("/orders")
+async def my_orders(user: CurrentUser = Depends(current_user_dep), limit: int = 20):
+    """The current user's recent orders — used by the new dashboard's Latest Orders panel."""
+    cur = db.orders.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).limit(min(int(limit or 20), 100))
+    return {"orders": await cur.to_list(100)}
+
+
+
 @api_router.get("/admin/coupons")
 async def admin_coupons(x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
@@ -1862,6 +1870,38 @@ async def admin_set_nowpayments_config(payload: NowpaymentsConfig, x_admin_token
         upd["ipn_secret"] = payload.ipn_secret.strip()
     await db.nowpayments_config.update_one({"_id": "singleton"}, {"$set": upd}, upsert=True)
     return {"configured": True}
+
+
+# ============ UI config (dashboard layout toggle) ============
+
+class UIConfig(BaseModel):
+    use_new_home_layout: bool = False
+
+
+@api_router.get("/ui-config")
+async def get_public_ui_config():
+    """Public read — client-side dashboards fetch this to pick which layout to render."""
+    cfg = await db.ui_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    return {"use_new_home_layout": bool(cfg.get("use_new_home_layout", False))}
+
+
+@api_router.get("/admin/ui-config")
+async def admin_get_ui_config(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.ui_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    return {"use_new_home_layout": bool(cfg.get("use_new_home_layout", False))}
+
+
+@api_router.post("/admin/ui-config")
+async def admin_set_ui_config(payload: UIConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    await db.ui_config.update_one(
+        {"_id": "singleton"},
+        {"$set": {"use_new_home_layout": bool(payload.use_new_home_layout), "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "use_new_home_layout": bool(payload.use_new_home_layout)}
+
 
 
 class NowpaymentsFundsRequest(BaseModel):
