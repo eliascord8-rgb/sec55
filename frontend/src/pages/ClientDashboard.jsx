@@ -35,6 +35,7 @@ import {
   Bell,
   Menu,
   FileText,
+  Grid3x3,
 } from "lucide-react";
 import SlotsView from "./SlotsView";
 import MessagesView from "./MessagesView";
@@ -200,16 +201,28 @@ export default function ClientDashboard() {
     // eslint-disable-next-line
   }, []);
 
-  // Fetch the admin-controlled layout flag once
+  // Fetch the admin-controlled layout flag once, then honor any per-user
+  // localStorage override (set via the top-bar "Classic ⇄ New" switch button).
   useEffect(() => {
     (async () => {
+      let adminDefault = false;
       try {
         const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ui-config`);
         const d = await r.json();
-        setUseNewLayout(!!d.use_new_home_layout);
+        adminDefault = !!d.use_new_home_layout;
       } catch {}
+      const userPref = localStorage.getItem("bs_layout_pref"); // "new" | "classic" | null
+      const effective = userPref === "new" ? true : userPref === "classic" ? false : adminDefault;
+      setUseNewLayout(effective);
     })();
   }, []);
+
+  const toggleLayoutPref = () => {
+    const next = !useNewLayout;
+    localStorage.setItem("bs_layout_pref", next ? "new" : "classic");
+    setUseNewLayout(next);
+    toast.success(next ? "Switched to the new layout." : "Switched back to the classic layout.");
+  };
 
   const send = async (e) => {
     e?.preventDefault();
@@ -289,6 +302,10 @@ export default function ClientDashboard() {
                   <div className="text-emerald-400/70 leading-tight uppercase text-[10px] tracking-widest">{user.role || "member"}</div>
                 </div>
               </div>
+              <button onClick={toggleLayoutPref} data-testid="switch-layout-btn" title="Switch to classic layout" className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/15 transition">
+                <Grid3x3 className="w-3.5 h-3.5" />
+                Classic
+              </button>
               <button onClick={() => { logout(); nav("/"); }} data-testid="client-logout" className="w-9 h-9 rounded-md hover:bg-white/10 flex items-center justify-center text-white/70" title="Logout">
                 <LogOut className="w-4 h-4" />
               </button>
@@ -359,6 +376,10 @@ export default function ClientDashboard() {
                 <div className="text-white/70 leading-tight">{user.role || "member"}</div>
               </div>
             </div>
+            <button onClick={toggleLayoutPref} data-testid="switch-layout-btn-classic" title="Switch to new layout" className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-white/80 border border-white/20 hover:bg-white/10 transition">
+              <Grid3x3 className="w-3.5 h-3.5" />
+              New
+            </button>
             <button
               onClick={() => {
                 logout();
@@ -678,11 +699,13 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
   useEffect(() => {
     (async () => {
       try {
+        const backend = process.env.REACT_APP_BACKEND_URL;
         const [o, m] = await Promise.all([
-          authedApi().get("/client/orders").catch(() => ({ data: { orders: [] } })),
+          // Global feed (all users, masked usernames) — no auth needed
+          fetch(`${backend}/api/orders/latest-global?limit=20`).then((r) => r.json()).catch(() => ({ orders: [] })),
           authedApi().get("/messages/threads").catch(() => ({ data: { threads: [] } })),
         ]);
-        setOrders((o.data.orders || []).slice(0, 8));
+        setOrders((o.orders || []).slice(0, 20));
         setThreads((m.data.threads || []).slice(0, 8));
       } catch {}
       setLoading(false);
@@ -710,14 +733,16 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
           {loading && <div className="text-center text-emerald-200/40 text-xs py-6">Loading…</div>}
           {!loading && orders.length === 0 && (
             <div className="text-center text-emerald-200/50 text-xs py-6">
-              No orders yet.<br />
-              <a href="/client/dashboard?tab=buy" className="text-emerald-300 underline">Place your first order</a>
+              No orders yet — <a href="/client/dashboard?tab=buy" className="text-emerald-300 underline">be the first</a>.
             </div>
           )}
           {orders.map((o) => (
             <div key={o.id || o._id} className="bg-black/30 rounded-md p-3 border border-emerald-500/10 hover:border-emerald-400/60 transition" data-testid={`order-card-${o.id}`}>
               <div className="flex items-start justify-between gap-2 mb-1.5">
-                <div className="text-xs font-bold text-emerald-200 truncate">#{String(o.id || "").slice(0, 8)}</div>
+                <div className="text-xs font-bold text-emerald-200 truncate flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  @<span className="font-mono tracking-tight" data-testid="masked-username">{o.username || "###"}</span>
+                </div>
                 <div className="text-[10px] text-white/40 whitespace-nowrap">
                   {o.created_at ? new Date(o.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : ""}
                 </div>

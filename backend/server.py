@@ -827,9 +827,39 @@ async def admin_orders(x_admin_token: Optional[str] = Header(None)):
 
 @client_router.get("/orders")
 async def my_orders(user: CurrentUser = Depends(current_user_dep), limit: int = 20):
-    """The current user's recent orders — used by the new dashboard's Latest Orders panel."""
+    """The current user's recent orders — used by the classic dashboard."""
     cur = db.orders.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).limit(min(int(limit or 20), 100))
     return {"orders": await cur.to_list(100)}
+
+
+def _mask_username(name: str) -> str:
+    """Half-mask a username with hashtags for the public feed.
+    'testbugfix1' -> 'te#####x1' (first 2 + hashes + last 2)."""
+    if not name:
+        return "###"
+    n = len(name)
+    if n <= 3:
+        return name[0] + "#" * (n - 1) if n > 1 else "#"
+    head = 2 if n <= 6 else 3
+    tail = 1 if n <= 5 else 2
+    mid = max(3, n - head - tail)
+    return f"{name[:head]}{'#' * mid}{name[-tail:]}"
+
+
+@api_router.get("/orders/latest-global")
+async def orders_latest_global(limit: int = 20):
+    """PUBLIC feed of the latest orders across all users (usernames half-masked).
+    Powers the new dashboard's LEFT panel — social proof that the shop is active."""
+    cur = db.orders.find({}, {
+        "_id": 0, "id": 1, "username": 1, "service_name": 1, "service": 1,
+        "status": 1, "total": 1, "charge": 1, "created_at": 1, "quantity": 1,
+    }).sort("created_at", -1).limit(min(int(limit or 20), 50))
+    out = []
+    async for o in cur:
+        o["username"] = _mask_username(o.get("username") or "")
+        out.append(o)
+    return {"orders": out}
+
 
 
 

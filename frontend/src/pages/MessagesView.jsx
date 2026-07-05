@@ -108,9 +108,16 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
             setMessages((m) => {
               const raw = lastSince ? [...m, ...r.data.messages] : r.data.messages;
               // De-duplicate by id — the /since delta can overlap with the initial load
-              // and cause React "duplicate key" warnings otherwise.
+              // and cause React "duplicate key" warnings otherwise. Later entries win,
+              // so read-state updates on previously delivered messages take effect.
               const combined = Array.from(new Map(raw.map((x) => [x.id, x])).values());
-              lastSince = combined[combined.length - 1]?.created_at || lastSince;
+              // Advance the cursor past BOTH created_at AND read_at so we don't
+              // re-fetch the same read-flip forever.
+              const latest = r.data.messages.reduce((acc, x) => {
+                const ts = x.read_at && x.read_at > x.created_at ? x.read_at : x.created_at;
+                return ts > acc ? ts : acc;
+              }, lastSince || "");
+              lastSince = latest || lastSince;
               return combined;
             });
             onReadMessages && onReadMessages();

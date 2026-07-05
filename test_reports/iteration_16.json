@@ -1,0 +1,33 @@
+{
+  "summary": "Iteration 16 — verified all 3 follow-ups: (1) client-side Classic/New layout switch button with localStorage persistence, (2) global masked-username Latest Orders feed on new dashboard, (3) sender-side read-receipt flip via GET /messages/thread since=... including {from_id:me, read_at>since}. All 4 backend tests pass; UI dual-flow via Playwright confirmed msg-sent → msg-read flip within ~2.4s after recipient reads.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "New dashboard LEFT panel", "issues": ["7 of 11 seeded orders render as '###' because their username field is empty/null in DB (mask fallback). Not a regression but noise — consider filtering out empty-username orders from /api/orders/latest-global."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_review_iter16.py",
+    "/app/test_reports/pytest/iter16_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Filter out empty/null usernames from /api/orders/latest-global so the feed only shows meaningful masked entries.",
+    "(Optional) Silence 'Each child in a list should have a unique \"key\" prop' React warning seen on new dashboard render."
+  ],
+  "critical_code_review_comments": [
+    "ClientDashboard.jsx is 900+ lines — consider splitting NewHomeView, ClassicHomeView, and Header components into separate files for maintainability.",
+    "GET /orders/latest-global has no rate limiting despite being a PUBLIC endpoint; consider a light IP-based cap to avoid scraping."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_review_iter16.py"
+  ],
+  "success_rate": {"backend": "100% (4/4)", "frontend": "100% (all 3 flows verified via Playwright)"},
+  "test_credentials": "testbugfix1/password1, Balkin/Dennis123.@@, admin secret haha123",
+  "seed_data_creation": "No new seed data. Test sends transient DMs 'flip-<ts>' between testbugfix1 and Balkin — harmless.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Layout switch button uses data-testid='switch-layout-btn' (green) and 'switch-layout-btn-classic' (blue). Poller in MessagesView is 2s. Admin toggle key is 'use_new_home_layout' (not 'use_new_layout'). Login requires captcha; parse via GET /api/auth/captcha then submit with captcha_id + captcha_answer. Frontend routes: no /client/messages; use /client/dashboard then click [data-testid=nav-messages] (classic layout) — new layout uses in-page state changeView('messages'). For UI read-receipt flip, keep layout on classic so nav-messages is directly clickable.",
+  "rca_of_the_issue": "n/a — feature validation only."
+}
