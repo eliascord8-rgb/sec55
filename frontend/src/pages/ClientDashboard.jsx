@@ -167,6 +167,35 @@ export default function ClientDashboard() {
       const t2 = setTimeout(() => loadBalance(), 15000);
       return () => { clearTimeout(t1); clearTimeout(t2); };
     }
+    // NOWPayments return handler — /client/dashboard?nowpay=1&tx=<id>
+    // Auto-jumps to Funds view and triggers the manual verify so we credit even
+    // if the IPN webhook was blocked/delayed.
+    if (params.get("nowpay") === "1" && params.get("tx")) {
+      const txId = params.get("tx");
+      toast.info("Checking your NOWPayments deposit…", { duration: 4000 });
+      setView("funds");
+      (async () => {
+        try {
+          const r = await authedApi().post(`/client/funds/nowpayments-verify/${txId}`);
+          if (r.data?.credited) {
+            toast.success(`✅ Deposit credited! +$${r.data.amount} (+ $${r.data.bonus} bonus)`);
+            loadBalance();
+          } else if (r.data?.already_credited) {
+            toast.info("Already credited — balance refreshed.");
+            loadBalance();
+          } else {
+            toast.info(`Payment status: ${r.data?.status || "pending"} — we'll keep checking. You can also click 'Verify deposit' below.`, { duration: 8000 });
+          }
+        } catch (e) {
+          toast.info("Payment not confirmed yet — click 'Verify deposit' below in a minute.");
+        }
+      })();
+      window.history.replaceState({}, "", "/client/dashboard");
+    }
+    if (params.get("nowpay") === "cancel") {
+      toast.info("Deposit cancelled. You can start a new one anytime.");
+      window.history.replaceState({}, "", "/client/dashboard");
+    }
     // eslint-disable-next-line
   }, []);
 
@@ -739,18 +768,8 @@ function FundsView({ authedApi, balance, reloadBalance }) {
   useEffect(() => {
     loadTxns();
     loadPending();
-    // Auto-verify if the user just returned from NOWPayments checkout
-    // URL will be /client/dashboard?nowpay=1&tx=<tx_id>
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("nowpay") === "1" && params.get("tx")) {
-      toast.info("Checking your payment with NOWPayments…", { duration: 3000 });
-      verifyDeposit(params.get("tx"));
-      // Clean the URL so a refresh doesn't retrigger
-      const url = new URL(window.location.href);
-      url.searchParams.delete("nowpay");
-      url.searchParams.delete("tx");
-      window.history.replaceState({}, "", url.toString());
-    }
+    // Note: the ?nowpay=1&tx=... URL param is handled at the parent Dashboard level
+    // (so it fires even when the user lands on Home). We only load pending here.
     // eslint-disable-next-line
   }, []);
 
