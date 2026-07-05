@@ -1267,9 +1267,58 @@ function MassMailPanel({ token }) {
 function SettingsPanel({ token }) {
   return (
     <div className="space-y-6">
+      <UILayoutTogglePanel token={token} />
       <SmmConfigPanel token={token} />
       <NowpaymentsConfigPanel token={token} />
       <EmailConfigPanel token={token} />
+    </div>
+  );
+}
+
+function UILayoutTogglePanel({ token }) {
+  const [useNew, setUseNew] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await adminApi(token).get("/admin/ui-config");
+        setUseNew(!!r.data.use_new_home_layout);
+      } catch {}
+      setLoading(false);
+    })();
+  }, [token]);
+
+  const save = async (next) => {
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/ui-config", { use_new_home_layout: next });
+      setUseNew(next);
+      toast.success(next ? "New dashboard layout is now LIVE for all users." : "Reverted to classic dashboard layout.");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to save");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6">
+      <h2 className="font-display font-bold text-lg mb-1">Dashboard layout</h2>
+      <p className="text-xs text-white/50 mb-4">Toggle the new 3-column client dashboard (Latest Orders · Hero · Recent DMs). When OFF, users see the classic dashboard.</p>
+      <div className="flex items-center gap-4">
+        <button
+          onClick={() => save(!useNew)}
+          disabled={loading || saving}
+          data-testid="toggle-new-layout"
+          className={`relative w-14 h-7 rounded-full transition ${useNew ? "bg-[#FF007F]" : "bg-white/15"} disabled:opacity-50`}
+        >
+          <span className={`absolute top-0.5 ${useNew ? "left-8" : "left-0.5"} w-6 h-6 rounded-full bg-white shadow transition-all`} />
+        </button>
+        <span className="text-sm font-bold" data-testid="layout-status">
+          {loading ? "Loading…" : useNew ? "NEW layout ✓ live" : "Classic layout"}
+        </span>
+      </div>
     </div>
   );
 }

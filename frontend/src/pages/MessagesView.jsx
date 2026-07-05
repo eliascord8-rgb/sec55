@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Search, Send, Phone, PhoneOff, Video, Mic, MicOff, Paperclip, Ban, X, Play, Pause, Flag } from "lucide-react";
+import { Loader2, Search, Send, Phone, PhoneOff, Video, Mic, MicOff, Paperclip, Ban, X, Play, Pause, Flag, Check, CheckCheck } from "lucide-react";
 
 // Format a UTC ISO date as Europe/Berlin time for last-seen display
 const fmtLastSeen = (iso) => {
@@ -645,7 +645,14 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
                         </a>
                       )}
                       {m.text && <div>{m.text}</div>}
-                      <div className="text-[9px] opacity-60 mt-0.5">{new Date(m.created_at).toLocaleTimeString("en-GB", {hour:'2-digit', minute:'2-digit', timeZone:'Europe/Berlin'})}</div>
+                      <div className="text-[9px] opacity-60 mt-0.5 flex items-center gap-1 justify-end">
+                        <span>{new Date(m.created_at).toLocaleTimeString("en-GB", {hour:'2-digit', minute:'2-digit', timeZone:'Europe/Berlin'})}</span>
+                        {m.from_id === me.id && (
+                          m.read
+                            ? <CheckCheck className="w-3 h-3 text-sky-300" title="Read" data-testid="msg-read" />
+                            : <Check className="w-3 h-3 text-white/60" title="Sent" data-testid="msg-sent" />
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}

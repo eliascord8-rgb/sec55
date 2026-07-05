@@ -57,6 +57,7 @@ export default function ClientDashboard() {
   const [withdrawable, setWithdrawable] = useState(0);
   const [unreadTickets, setUnreadTickets] = useState(0);
   const [unreadDms, setUnreadDms] = useState(0);
+  const [useNewLayout, setUseNewLayout] = useState(false);
   const chatEndRef = useRef(null);
 
   // Smooth-preloader when switching tabs (short delay for perceived polish, no full-page reload)
@@ -197,6 +198,17 @@ export default function ClientDashboard() {
       window.history.replaceState({}, "", "/client/dashboard");
     }
     // eslint-disable-next-line
+  }, []);
+
+  // Fetch the admin-controlled layout flag once
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ui-config`);
+        const d = await r.json();
+        setUseNewLayout(!!d.use_new_home_layout);
+      } catch {}
+    })();
   }, []);
 
   const send = async (e) => {
@@ -383,7 +395,9 @@ export default function ClientDashboard() {
           ) : (
             <div className="animate-in fade-in duration-200">
               {view === "home" && (
-                <HomeView user={user} stats={stats} />
+                useNewLayout
+                  ? <NewHomeView authedApi={authedApi} user={user} balance={balance} stats={stats} onOpenAI={() => setAiOpen(true)} />
+                  : <HomeView user={user} stats={stats} />
               )}
               {view === "funds" && (
                 <FundsView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
@@ -590,6 +604,162 @@ function TermsOfServiceView() {
           <p>General support: <span className="text-emerald-400 font-mono">support@better-social.pro</span><br />Billing &amp; refunds: <span className="text-emerald-400 font-mono">billrelevant@better-social.pro</span></p>
         </section>
       </div>
+    </div>
+  );
+}
+
+
+function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
+  const [orders, setOrders] = useState([]);
+  const [threads, setThreads] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [o, m] = await Promise.all([
+          authedApi().get("/client/orders").catch(() => ({ data: { orders: [] } })),
+          authedApi().get("/messages/threads").catch(() => ({ data: { threads: [] } })),
+        ]);
+        setOrders((o.data.orders || []).slice(0, 8));
+        setThreads((m.data.threads || []).slice(0, 8));
+      } catch {}
+      setLoading(false);
+    })();
+  }, []);
+
+  const orderStatusColor = (s) => {
+    const st = (s || "").toLowerCase();
+    if (st.includes("complete")) return "text-emerald-300 border-emerald-500/30";
+    if (st.includes("progress") || st.includes("processing")) return "text-amber-300 border-amber-500/30";
+    if (st.includes("pending")) return "text-white/60 border-white/15";
+    if (st.includes("cancel") || st.includes("fail")) return "text-red-300 border-red-500/30";
+    return "text-white/60 border-white/15";
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(260px,340px)_1fr_minmax(260px,340px)] gap-4 h-full min-h-[70vh]" data-testid="new-home-layout">
+      {/* LEFT — Latest Orders */}
+      <aside className="bg-[#12101a] border border-white/5 rounded-sm overflow-hidden flex flex-col">
+        <div className="px-4 py-3 border-b border-white/5 flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-[#FF007F] animate-pulse" />
+          <h2 className="font-display font-bold text-sm uppercase tracking-widest">Latest Orders</h2>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 space-y-2" data-testid="latest-orders-list">
+          {loading && <div className="text-center text-white/30 text-xs py-6">Loading…</div>}
+          {!loading && orders.length === 0 && (
+            <div className="text-center text-white/40 text-xs py-6">
+              No orders yet.<br />
+              <a href="/client/dashboard?tab=buy" className="text-[#FF007F] underline">Place your first order</a>
+            </div>
+          )}
+          {orders.map((o) => (
+            <div key={o.id || o._id} className="bg-black/30 rounded-sm p-3 border border-white/5 hover:border-[#FF007F]/40 transition" data-testid={`order-card-${o.id}`}>
+              <div className="flex items-start justify-between gap-2 mb-1.5">
+                <div className="text-xs font-bold truncate">#{String(o.id || "").slice(0, 8)}</div>
+                <div className="text-[10px] text-white/40 whitespace-nowrap">
+                  {o.created_at ? new Date(o.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : ""}
+                </div>
+              </div>
+              <div className="text-xs text-white/70 truncate mb-1.5" title={o.service_name || o.service}>
+                {o.service_name || o.service || "SMM service"}
+              </div>
+              <div className="flex items-center justify-between text-[10px]">
+                <span className={`px-1.5 py-0.5 rounded-sm border uppercase font-bold ${orderStatusColor(o.status)}`}>
+                  {o.status || "pending"}
+                </span>
+                <span className="text-emerald-300 font-bold">${Number(o.total || o.charge || 0).toFixed(2)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      {/* CENTER — hero + quick actions (no launch box like the ref image) */}
+      <section className="bg-gradient-to-b from-[#12101a] to-[#0d0a14] border border-white/5 rounded-sm p-6 md:p-10 flex flex-col items-center justify-center text-center">
+        <div className="max-w-md">
+          <div className="text-xs uppercase tracking-widest text-[#FF007F] font-bold mb-3">Welcome back</div>
+          <h1 className="font-display text-4xl md:text-5xl font-black tracking-tight mb-2">
+            @{user?.username}
+          </h1>
+          <div className="mt-6 mb-8">
+            <div className="text-[10px] uppercase tracking-widest text-white/40">Balance</div>
+            <div className="font-display text-5xl md:text-6xl font-black text-emerald-300 mt-1" data-testid="balance-hero">
+              ${Number(balance || 0).toFixed(2)}
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-2 max-w-sm mx-auto">
+            <a href="/client/dashboard?tab=buy" className="bg-[#FF007F] hover:bg-[#e6006f] text-white font-bold text-xs uppercase tracking-wider py-3 rounded-sm transition">
+              Buy
+            </a>
+            <a href="/client/dashboard?tab=funds" className="bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase tracking-wider py-3 rounded-sm transition">
+              Deposit
+            </a>
+            <button onClick={onOpenAI} className="bg-white/10 hover:bg-white/15 text-white font-bold text-xs uppercase tracking-wider py-3 rounded-sm transition">
+              AI Chat
+            </button>
+          </div>
+          <div className="mt-8 grid grid-cols-3 gap-2 text-center">
+            <div className="p-3 bg-black/30 rounded-sm border border-white/5">
+              <div className="text-lg font-black">{stats?.total_orders ?? 0}</div>
+              <div className="text-[9px] uppercase tracking-widest text-white/40 mt-0.5">Orders</div>
+            </div>
+            <div className="p-3 bg-black/30 rounded-sm border border-white/5">
+              <div className="text-lg font-black">{stats?.online_users ?? 0}</div>
+              <div className="text-[9px] uppercase tracking-widest text-white/40 mt-0.5">Online</div>
+            </div>
+            <div className="p-3 bg-black/30 rounded-sm border border-white/5">
+              <div className="text-lg font-black text-emerald-300">${Number(stats?.withdrawable_balance || 0).toFixed(2)}</div>
+              <div className="text-[9px] uppercase tracking-widest text-white/40 mt-0.5">Withdrawable</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* RIGHT — Recent DMs (the "existing chatbox") */}
+      <aside className="bg-[#12101a] border border-white/5 rounded-sm overflow-hidden flex flex-col">
+        <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <h2 className="font-display font-bold text-sm uppercase tracking-widest">Messages</h2>
+          </div>
+          <a href="/client/dashboard?tab=messages" className="text-[10px] text-[#FF007F] uppercase font-bold tracking-widest">Open</a>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 space-y-1" data-testid="recent-dms-list">
+          {loading && <div className="text-center text-white/30 text-xs py-6">Loading…</div>}
+          {!loading && threads.length === 0 && (
+            <div className="text-center text-white/40 text-xs py-6">
+              No conversations yet.<br />
+              <a href="/client/dashboard?tab=messages" className="text-[#FF007F] underline">Start a chat</a>
+            </div>
+          )}
+          {threads.map((t) => (
+            <a
+              key={t.user_id}
+              href={`/client/dashboard?tab=messages&open=${encodeURIComponent(t.username)}`}
+              className="flex items-center gap-2.5 p-2.5 rounded-sm hover:bg-white/5 transition"
+              data-testid={`thread-card-${t.user_id}`}
+            >
+              <div className="w-9 h-9 rounded-full bg-[#FF007F]/20 border border-[#FF007F]/40 flex items-center justify-center text-xs font-bold uppercase">
+                {t.username?.slice(0, 2)}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-bold truncate">@{t.username}</div>
+                  {t.unread > 0 && (
+                    <span className="bg-[#FF007F] text-white text-[9px] font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center">
+                      {t.unread}
+                    </span>
+                  )}
+                </div>
+                <div className="text-[11px] text-white/50 truncate">
+                  {t.last_from_me ? "You: " : ""}{t.last_text || (t.last_kind === "voice" ? "🎤 Voice note" : t.last_kind === "image" ? "📷 Image" : "📎 File")}
+                </div>
+              </div>
+            </a>
+          ))}
+        </div>
+      </aside>
     </div>
   );
 }
