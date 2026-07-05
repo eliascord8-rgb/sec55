@@ -154,7 +154,12 @@ async def get_thread(other_id: str, request: Request, user: CurrentUser = Depend
     key = _pair_key(user.id, other_id)
     q: dict = {"thread_key": key}
     if since:
-        q["created_at"] = {"$gt": since}
+        # Include (a) NEW messages since <since>, AND (b) MY messages that the peer JUST read
+        # since <since> — so the sender-side poller can flip the check icon to double-check.
+        q = {"thread_key": key, "$or": [
+            {"created_at": {"$gt": since}},
+            {"from_id": user.id, "read_at": {"$gt": since}},
+        ]}
     cursor = db.direct_messages.find(q, {"_id": 0}).sort("created_at", 1).limit(500)
     msgs = await cursor.to_list(500)
     await db.direct_messages.update_many(
