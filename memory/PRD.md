@@ -3,6 +3,10 @@
 ## Original Problem Statement
 "Make a normal SMM landing page but better. When someone wants to buy, press checkout button → redirects to the purchase box. No login — peoples buy directly. They can pay using a generated gift card from us (use coupon to pay) or pay by CoinPayments. List all offers from smmcost.com API (key 47b5c3b01e4b5ecd1e53b39baef31a6e). When the user presses order, take the money via the API. If pay using CoinPayments, after complete status show a sweet alert success message and send the API request immediately. Site title and on-site name: 'Better Social'. Make a separate page with admin panel access (username: DEMO, password: DEMO). On admin panel: only order logs (with IP of buyers) and generated coupons with custom amount."
 
+## Recent Updates (Jul 4, 2026)
+- ✅ **NOWPayments auto-credit fix** — Deposits now credit balance + 70% bonus automatically. Root causes fixed: (a) accept `confirmed`/`sending`/`partially_paid` in addition to `finished` (many invoice payments never emit `finished`), (b) extracted idempotent credit helper (safe against webhook replays), (c) all webhook events logged to `nowpayments_events` collection with signature-check status, (d) new manual verify endpoint `POST /api/client/funds/nowpayments-verify/{tx_id}` polls NOWPayments API and credits on demand, (e) new pending-deposits endpoint + UI panel with a "Verify deposit" button for stuck payments, (f) parent-level dashboard useEffect auto-verifies when user returns via `/client/dashboard?nowpay=1&tx=<id>`, (g) `BACKEND_URL` env var override for reliable IPN callback URLs on production.
+
+
 ## Recent Updates (Jul 2, 2026 — later)
 - ✅ **Report chat** — Users can flag a chat via the Flag icon in the DM header + reason textarea. Admin panel gains a **Reports** tab that shows every reported thread; only reported chats are readable by admin (privacy-first). Reports can be marked Reviewed / Closed.
 - ✅ **Cross-platform voice messages** — Server-side ffmpeg transcoder converts every uploaded voice note to universal **MP3**. iOS Safari, Android Chrome, and Firefox all play them now.
