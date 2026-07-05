@@ -236,8 +236,66 @@ export default function ClientDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a14] text-white">
-      {/* TOP BAR — blue, like Selly */}
+    <div className={`min-h-screen text-white ${useNewLayout ? "bg-[#0a1a0a]" : "bg-[#0a0a14]"}`}>
+      {useNewLayout ? (
+        /* GREEN TOP-NAV shell — no sidebar */
+        <header className="bg-[#0d2b12] sticky top-0 z-20 shadow-lg shadow-emerald-900/40 border-b border-emerald-500/20">
+          <div className="flex items-center h-16 px-4 md:px-6 gap-4">
+            <div className="flex items-center gap-2">
+              <div className="w-9 h-9 rounded-md bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
+                <Sparkles className="w-4 h-4 text-emerald-300" strokeWidth={2.5} />
+              </div>
+              <span className="hidden md:inline-block font-display font-black text-base text-white">BS<span className="text-emerald-300">.</span>GG</span>
+            </div>
+            <nav className="flex-1 flex items-center justify-center gap-1 md:gap-2 overflow-x-auto no-scrollbar" data-testid="top-nav">
+              {[
+                { id: "home", label: "Home", testId: "nav-home" },
+                { id: "buy", label: "Purchase", testId: "nav-buy" },
+                { id: "messages", label: "Friends", testId: "nav-messages", badge: unreadDms },
+                { id: "tickets", label: "Support", testId: "nav-tickets", badge: unreadTickets },
+                { id: "funds", label: "Wallet", testId: "nav-funds" },
+                { id: "redeem", label: "Gifts", testId: "nav-redeem" },
+                { id: "withdraw", label: "Withdraw", testId: "nav-withdraw" },
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => changeView(t.id)}
+                  data-testid={t.testId}
+                  className={`relative px-3 md:px-4 py-2 rounded-md text-xs md:text-sm font-bold uppercase tracking-wider whitespace-nowrap transition ${view === t.id ? "text-emerald-300" : "text-white/60 hover:text-white"}`}
+                >
+                  {t.label}
+                  {t.badge > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none">
+                      {t.badge}
+                    </span>
+                  )}
+                  {view === t.id && (
+                    <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-0.5 bg-emerald-400 rounded-full" />
+                  )}
+                </button>
+              ))}
+            </nav>
+            <div className="flex items-center gap-2 md:gap-3">
+              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/30" data-testid="topbar-balance">
+                <CreditCard className="w-3.5 h-3.5 text-emerald-300" />
+                <span className="text-sm font-bold text-emerald-300">${balance.toFixed(2)}</span>
+              </div>
+              <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-white/10">
+                <div className="w-8 h-8 rounded-full bg-emerald-500/25 border border-emerald-500/40 flex items-center justify-center text-xs font-bold text-emerald-200" data-testid="client-username">
+                  {user.username.slice(0, 2).toUpperCase()}
+                </div>
+                <div className="hidden md:block text-xs">
+                  <div className="font-bold text-white leading-tight">{user.username}</div>
+                  <div className="text-emerald-400/70 leading-tight uppercase text-[10px] tracking-widest">{user.role || "member"}</div>
+                </div>
+              </div>
+              <button onClick={() => { logout(); nav("/"); }} data-testid="client-logout" className="w-9 h-9 rounded-md hover:bg-white/10 flex items-center justify-center text-white/70" title="Logout">
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </header>
+      ) : (
       <header className="bg-[#2563eb] sticky top-0 z-20 shadow-lg shadow-[#2563eb]/20">
         <div className="flex items-center h-16">
           {/* Brand block — fixed width matches sidebar */}
@@ -315,9 +373,11 @@ export default function ClientDashboard() {
           </div>
         </div>
       </header>
+      )}
 
-      <div className="flex">
-        {/* SIDEBAR — desktop (fixed) + mobile (drawer overlay) */}
+      <div className={`flex ${useNewLayout ? "px-4 md:px-6 pt-4" : ""}`}>
+        {/* SIDEBAR — only for classic layout */}
+        {!useNewLayout && (
         <aside
           data-testid="dashboard-sidebar"
           className={`${sidebarOpen ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0 fixed lg:sticky top-16 left-0 h-[calc(100vh-4rem)] w-[280px] lg:w-[240px] bg-[#0a0a14] border-r border-white/5 flex flex-col z-40 transition-transform duration-300 self-start overflow-y-auto`}
@@ -373,9 +433,10 @@ export default function ClientDashboard() {
             </div>
           </div>
         </aside>
+        )}
 
         {/* Mobile drawer backdrop */}
-        {sidebarOpen && (
+        {!useNewLayout && sidebarOpen && (
           <div
             onClick={() => setSidebarOpen(false)}
             data-testid="sidebar-backdrop"
@@ -384,7 +445,7 @@ export default function ClientDashboard() {
         )}
 
         {/* MAIN CONTENT */}
-        <main className="flex-1 px-4 md:px-8 lg:px-10 py-6 md:py-10 pb-24 lg:pb-10">
+        <main className={`flex-1 ${useNewLayout ? "px-0 py-4 md:py-6" : "px-4 md:px-8 lg:px-10 py-6 md:py-10 pb-24 lg:pb-10"}`}>
           {viewLoading ? (
             <div className="flex items-center justify-center py-24" data-testid="view-preloader">
               <div className="flex flex-col items-center gap-3">
@@ -640,23 +701,23 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(260px,340px)_1fr_minmax(260px,340px)] gap-4 h-full min-h-[70vh]" data-testid="new-home-layout">
       {/* LEFT — Latest Orders */}
-      <aside className="bg-[#12101a] border border-white/5 rounded-sm overflow-hidden flex flex-col">
-        <div className="px-4 py-3 border-b border-white/5 flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-[#FF007F] animate-pulse" />
-          <h2 className="font-display font-bold text-sm uppercase tracking-widest">Latest Orders</h2>
+      <aside className="bg-[#0f2a15] border border-emerald-500/20 rounded-md overflow-hidden flex flex-col">
+        <div className="px-4 py-3 border-b border-emerald-500/15 flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          <h2 className="font-display font-bold text-sm uppercase tracking-widest text-emerald-200">Latest Orders</h2>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-2" data-testid="latest-orders-list">
-          {loading && <div className="text-center text-white/30 text-xs py-6">Loading…</div>}
+          {loading && <div className="text-center text-emerald-200/40 text-xs py-6">Loading…</div>}
           {!loading && orders.length === 0 && (
-            <div className="text-center text-white/40 text-xs py-6">
+            <div className="text-center text-emerald-200/50 text-xs py-6">
               No orders yet.<br />
-              <a href="/client/dashboard?tab=buy" className="text-[#FF007F] underline">Place your first order</a>
+              <a href="/client/dashboard?tab=buy" className="text-emerald-300 underline">Place your first order</a>
             </div>
           )}
           {orders.map((o) => (
-            <div key={o.id || o._id} className="bg-black/30 rounded-sm p-3 border border-white/5 hover:border-[#FF007F]/40 transition" data-testid={`order-card-${o.id}`}>
+            <div key={o.id || o._id} className="bg-black/30 rounded-md p-3 border border-emerald-500/10 hover:border-emerald-400/60 transition" data-testid={`order-card-${o.id}`}>
               <div className="flex items-start justify-between gap-2 mb-1.5">
-                <div className="text-xs font-bold truncate">#{String(o.id || "").slice(0, 8)}</div>
+                <div className="text-xs font-bold text-emerald-200 truncate">#{String(o.id || "").slice(0, 8)}</div>
                 <div className="text-[10px] text-white/40 whitespace-nowrap">
                   {o.created_at ? new Date(o.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : ""}
                 </div>
@@ -676,9 +737,10 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
       </aside>
 
       {/* CENTER — hero + quick actions (no launch box like the ref image) */}
-      <section className="bg-gradient-to-b from-[#12101a] to-[#0d0a14] border border-white/5 rounded-sm p-6 md:p-10 flex flex-col items-center justify-center text-center">
-        <div className="max-w-md">
-          <div className="text-xs uppercase tracking-widest text-[#FF007F] font-bold mb-3">Welcome back</div>
+      <section className="bg-gradient-to-b from-[#0f2a15] to-[#0a1a0a] border border-emerald-500/20 rounded-md p-6 md:p-10 flex flex-col items-center justify-center text-center relative overflow-hidden">
+        <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(circle at 50% 30%, rgba(16,185,129,0.15), transparent 60%)" }} />
+        <div className="max-w-md relative">
+          <div className="text-xs uppercase tracking-widest text-emerald-300 font-bold mb-3">Welcome back</div>
           <h1 className="font-display text-4xl md:text-5xl font-black tracking-tight mb-2">
             @{user?.username}
           </h1>
@@ -689,26 +751,26 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
             </div>
           </div>
           <div className="grid grid-cols-3 gap-2 max-w-sm mx-auto">
-            <a href="/client/dashboard?tab=buy" className="bg-[#FF007F] hover:bg-[#e6006f] text-white font-bold text-xs uppercase tracking-wider py-3 rounded-sm transition">
+            <a href="/client/dashboard?tab=buy" className="bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase tracking-wider py-3 rounded-md transition">
               Buy
             </a>
-            <a href="/client/dashboard?tab=funds" className="bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase tracking-wider py-3 rounded-sm transition">
+            <a href="/client/dashboard?tab=funds" className="bg-orange-500 hover:bg-orange-400 text-white font-bold text-xs uppercase tracking-wider py-3 rounded-md transition">
               Deposit
             </a>
-            <button onClick={onOpenAI} className="bg-white/10 hover:bg-white/15 text-white font-bold text-xs uppercase tracking-wider py-3 rounded-sm transition">
+            <button onClick={onOpenAI} className="bg-emerald-500/15 border border-emerald-500/30 hover:bg-emerald-500/25 text-emerald-200 font-bold text-xs uppercase tracking-wider py-3 rounded-md transition">
               AI Chat
             </button>
           </div>
           <div className="mt-8 grid grid-cols-3 gap-2 text-center">
-            <div className="p-3 bg-black/30 rounded-sm border border-white/5">
-              <div className="text-lg font-black">{stats?.total_orders ?? 0}</div>
+            <div className="p-3 bg-black/30 rounded-md border border-emerald-500/10">
+              <div className="text-lg font-black text-emerald-200">{stats?.total_orders ?? 0}</div>
               <div className="text-[9px] uppercase tracking-widest text-white/40 mt-0.5">Orders</div>
             </div>
-            <div className="p-3 bg-black/30 rounded-sm border border-white/5">
-              <div className="text-lg font-black">{stats?.online_users ?? 0}</div>
+            <div className="p-3 bg-black/30 rounded-md border border-emerald-500/10">
+              <div className="text-lg font-black text-emerald-200">{stats?.online_users ?? 0}</div>
               <div className="text-[9px] uppercase tracking-widest text-white/40 mt-0.5">Online</div>
             </div>
-            <div className="p-3 bg-black/30 rounded-sm border border-white/5">
+            <div className="p-3 bg-black/30 rounded-md border border-emerald-500/10">
               <div className="text-lg font-black text-emerald-300">${Number(stats?.withdrawable_balance || 0).toFixed(2)}</div>
               <div className="text-[9px] uppercase tracking-widest text-white/40 mt-0.5">Withdrawable</div>
             </div>
@@ -717,37 +779,37 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
       </section>
 
       {/* RIGHT — Recent DMs (the "existing chatbox") */}
-      <aside className="bg-[#12101a] border border-white/5 rounded-sm overflow-hidden flex flex-col">
-        <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+      <aside className="bg-[#0f2a15] border border-emerald-500/20 rounded-md overflow-hidden flex flex-col">
+        <div className="px-4 py-3 border-b border-emerald-500/15 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <h2 className="font-display font-bold text-sm uppercase tracking-widest">Messages</h2>
+            <h2 className="font-display font-bold text-sm uppercase tracking-widest text-emerald-200">Messages</h2>
           </div>
-          <a href="/client/dashboard?tab=messages" className="text-[10px] text-[#FF007F] uppercase font-bold tracking-widest">Open</a>
+          <a href="/client/dashboard?tab=messages" className="text-[10px] text-emerald-300 uppercase font-bold tracking-widest">Open</a>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-1" data-testid="recent-dms-list">
-          {loading && <div className="text-center text-white/30 text-xs py-6">Loading…</div>}
+          {loading && <div className="text-center text-emerald-200/40 text-xs py-6">Loading…</div>}
           {!loading && threads.length === 0 && (
-            <div className="text-center text-white/40 text-xs py-6">
+            <div className="text-center text-emerald-200/50 text-xs py-6">
               No conversations yet.<br />
-              <a href="/client/dashboard?tab=messages" className="text-[#FF007F] underline">Start a chat</a>
+              <a href="/client/dashboard?tab=messages" className="text-emerald-300 underline">Start a chat</a>
             </div>
           )}
           {threads.map((t) => (
             <a
               key={t.user_id}
               href={`/client/dashboard?tab=messages&open=${encodeURIComponent(t.username)}`}
-              className="flex items-center gap-2.5 p-2.5 rounded-sm hover:bg-white/5 transition"
+              className="flex items-center gap-2.5 p-2.5 rounded-md hover:bg-emerald-500/5 transition"
               data-testid={`thread-card-${t.user_id}`}
             >
-              <div className="w-9 h-9 rounded-full bg-[#FF007F]/20 border border-[#FF007F]/40 flex items-center justify-center text-xs font-bold uppercase">
+              <div className="w-9 h-9 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-xs font-bold uppercase text-emerald-200">
                 {t.username?.slice(0, 2)}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-bold truncate">@{t.username}</div>
+                  <div className="text-xs font-bold truncate text-white">@{t.username}</div>
                   {t.unread > 0 && (
-                    <span className="bg-[#FF007F] text-white text-[9px] font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center">
+                    <span className="bg-emerald-500 text-black text-[9px] font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center">
                       {t.unread}
                     </span>
                   )}
