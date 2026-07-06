@@ -1903,6 +1903,57 @@ async def admin_set_nowpayments_config(payload: NowpaymentsConfig, x_admin_token
     return {"configured": True}
 
 
+# ============ Public group chat (shoutbox) ============
+
+class PublicChatMessage(BaseModel):
+    text: str = Field(..., min_length=1, max_length=500)
+
+
+@api_router.post("/public-chat/send")
+async def public_chat_send(payload: PublicChatMessage, user: CurrentUser = Depends(current_user_dep)):
+    """Post a message to the public shoutbox. Rate-limited to 1 msg / 3 s per user."""
+    # Rate limit check
+    last = await db.public_chat.find_one({"user_id": user.id}, sort=[("created_at", -1)], projection={"created_at": 1})
+    if last and last.get("created_at"):
+        try:
+            gap = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
+            if gap < 3:
+                raise HTTPException(status_code=429, detail="Slow down — you can post again in a moment.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "username": user.username,
+        "role": user.role or "user",
+        "text": payload.text.strip()[:500],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.public_chat.insert_one(doc.copy())
+    # Keep only the last 500 messages to bound the collection
+    if (await db.public_chat.estimated_document_count()) > 600:
+        cutoff = await db.public_chat.find({}, {"_id": 0, "created_at": 1}).sort("created_at", -1).skip(500).limit(1).to_list(1)
+        if cutoff:
+            await db.public_chat.delete_many({"created_at": {"$lt": cutoff[0]["created_at"]}})
+    return {"ok": True, "id": doc["id"], "created_at": doc["created_at"]}
+
+
+@api_router.get("/public-chat/messages")
+async def public_chat_list(since: Optional[str] = None, limit: int = 50):
+    """List latest N messages of the public shoutbox, or messages since <ts> for polling.
+    No auth required — anyone with a browser can read the room."""
+    q: dict = {}
+    if since:
+        q["created_at"] = {"$gt": since}
+    cursor = db.public_chat.find(q, {"_id": 0}).sort("created_at", -1 if not since else 1).limit(min(int(limit or 50), 200))
+    msgs = await cursor.to_list(200)
+    if not since:
+        msgs.reverse()  # oldest first for initial paint
+    return {"messages": msgs}
+
+
 # ============ UI config (dashboard layout toggle) ============
 
 class UIConfig(BaseModel):

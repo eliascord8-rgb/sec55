@@ -466,7 +466,7 @@ export default function ClientDashboard() {
         )}
 
         {/* MAIN CONTENT */}
-        <main className={`flex-1 ${useNewLayout ? "px-0 py-4 md:py-6" : "px-4 md:px-8 lg:px-10 py-6 md:py-10 pb-24 lg:pb-10"}`}>
+        <main className={`flex-1 ${useNewLayout ? "theme-green px-0 py-4 md:py-6" : "px-4 md:px-8 lg:px-10 py-6 md:py-10 pb-24 lg:pb-10"}`}>
           {viewLoading ? (
             <div className="flex items-center justify-center py-24" data-testid="view-preloader">
               <div className="flex flex-col items-center gap-3">
@@ -475,7 +475,7 @@ export default function ClientDashboard() {
               </div>
             </div>
           ) : (
-            <div className="animate-in fade-in duration-200">
+            <div className={`animate-in fade-in duration-200 ${useNewLayout && view !== "home" ? "px-4 md:px-6" : ""}`}>
               {view === "home" && (
                 useNewLayout
                   ? <NewHomeView authedApi={authedApi} user={user} balance={balance} stats={stats} onOpenAI={() => setAiOpen(true)} />
@@ -693,20 +693,14 @@ function TermsOfServiceView() {
 
 function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
   const [orders, setOrders] = useState([]);
-  const [threads, setThreads] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
         const backend = process.env.REACT_APP_BACKEND_URL;
-        const [o, m] = await Promise.all([
-          // Global feed (all users, masked usernames) — no auth needed
-          fetch(`${backend}/api/orders/latest-global?limit=20`).then((r) => r.json()).catch(() => ({ orders: [] })),
-          authedApi().get("/messages/threads").catch(() => ({ data: { threads: [] } })),
-        ]);
-        setOrders((o.orders || []).slice(0, 20));
-        setThreads((m.data.threads || []).slice(0, 8));
+        const r = await fetch(`${backend}/api/orders/latest-global?limit=20`).then((res) => res.json()).catch(() => ({ orders: [] }));
+        setOrders((r.orders || []).slice(0, 20));
       } catch {}
       setLoading(false);
     })();
@@ -803,51 +797,142 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
         </div>
       </section>
 
-      {/* RIGHT — Recent DMs (the "existing chatbox") */}
-      <aside className="bg-[#0f2a15] border border-emerald-500/20 rounded-md overflow-hidden flex flex-col">
-        <div className="px-4 py-3 border-b border-emerald-500/15 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <h2 className="font-display font-bold text-sm uppercase tracking-widest text-emerald-200">Messages</h2>
-          </div>
-          <a href="/client/dashboard?tab=messages" className="text-[10px] text-emerald-300 uppercase font-bold tracking-widest">Open</a>
-        </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-1" data-testid="recent-dms-list">
-          {loading && <div className="text-center text-emerald-200/40 text-xs py-6">Loading…</div>}
-          {!loading && threads.length === 0 && (
-            <div className="text-center text-emerald-200/50 text-xs py-6">
-              No conversations yet.<br />
-              <a href="/client/dashboard?tab=messages" className="text-emerald-300 underline">Start a chat</a>
-            </div>
-          )}
-          {threads.map((t) => (
-            <a
-              key={t.user_id}
-              href={`/client/dashboard?tab=messages&open=${encodeURIComponent(t.username)}`}
-              className="flex items-center gap-2.5 p-2.5 rounded-md hover:bg-emerald-500/5 transition"
-              data-testid={`thread-card-${t.user_id}`}
-            >
-              <div className="w-9 h-9 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-xs font-bold uppercase text-emerald-200">
-                {t.username?.slice(0, 2)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-bold truncate text-white">@{t.username}</div>
-                  {t.unread > 0 && (
-                    <span className="bg-emerald-500 text-black text-[9px] font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center">
-                      {t.unread}
-                    </span>
-                  )}
-                </div>
-                <div className="text-[11px] text-white/50 truncate">
-                  {t.last_from_me ? "You: " : ""}{t.last_text || (t.last_kind === "voice" ? "🎤 Voice note" : t.last_kind === "image" ? "📷 Image" : "📎 File")}
-                </div>
-              </div>
-            </a>
-          ))}
-        </div>
-      </aside>
+      {/* RIGHT — Public shoutbox (live chat for everyone) */}
+      <PublicShoutbox user={user} />
     </div>
+  );
+}
+
+function PublicShoutbox({ user }) {
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const listRef = useRef(null);
+  const sinceRef = useRef("");
+  const meIdRef = useRef(user?.id);
+  meIdRef.current = user?.id;
+
+  const scrollBottom = () => {
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  };
+
+  useEffect(() => {
+    let running = true;
+    const backend = process.env.REACT_APP_BACKEND_URL;
+    const poll = async () => {
+      try {
+        const url = sinceRef.current
+          ? `${backend}/api/public-chat/messages?since=${encodeURIComponent(sinceRef.current)}`
+          : `${backend}/api/public-chat/messages?limit=50`;
+        const r = await fetch(url);
+        const d = await r.json();
+        if (!running) return;
+        if (d.messages?.length) {
+          setMessages((m) => {
+            const raw = sinceRef.current ? [...m, ...d.messages] : d.messages;
+            const combined = Array.from(new Map(raw.map((x) => [x.id, x])).values());
+            sinceRef.current = combined[combined.length - 1]?.created_at || sinceRef.current;
+            return combined.slice(-100); // cap to last 100 in memory
+          });
+          setTimeout(scrollBottom, 30);
+        }
+      } catch {}
+      setLoading(false);
+    };
+    poll();
+    const t = setInterval(poll, 2500);
+    return () => { running = false; clearInterval(t); };
+  }, []);
+
+  const send = async (e) => {
+    e.preventDefault();
+    const t = text.trim();
+    if (!t || sending) return;
+    setSending(true);
+    try {
+      const token = localStorage.getItem("bs_user_token");
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/public-chat/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ text: t }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        toast.error(j.detail || "Failed to send");
+      } else {
+        setText("");
+      }
+    } catch {
+      toast.error("Network error — try again");
+    }
+    setSending(false);
+  };
+
+  const badge = (role) => {
+    if (role === "owner") return { text: "OWNER", cls: "bg-amber-500/20 text-amber-300 border-amber-500/40" };
+    if (role === "admin") return { text: "ADMIN", cls: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" };
+    if (role === "staff" || role === "moderator") return { text: "STAFF", cls: "bg-sky-500/20 text-sky-300 border-sky-500/40" };
+    return null;
+  };
+
+  return (
+    <aside className="bg-[#0f2a15] border border-emerald-500/20 rounded-md overflow-hidden flex flex-col" data-testid="public-shoutbox">
+      <div className="px-4 py-3 border-b border-emerald-500/15 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          <h2 className="font-display font-bold text-sm uppercase tracking-widest text-emerald-200">Live Chat</h2>
+        </div>
+        <span className="text-[10px] text-emerald-400/60 uppercase tracking-widest">everyone</span>
+      </div>
+
+      <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2" data-testid="shoutbox-messages">
+        {loading && <div className="text-center text-emerald-200/40 text-xs py-6">Loading…</div>}
+        {!loading && messages.length === 0 && (
+          <div className="text-center text-emerald-200/50 text-xs py-6">Be the first to say hi 👋</div>
+        )}
+        {messages.map((m) => {
+          const b = badge(m.role);
+          const mine = m.user_id === meIdRef.current;
+          return (
+            <div key={m.id} className="group" data-testid={`chat-msg-${m.id}`}>
+              <div className="flex items-baseline gap-1.5 mb-0.5">
+                <span className={`text-[11px] font-bold ${mine ? "text-emerald-300" : b ? "text-white" : "text-emerald-100/80"}`}>
+                  @{m.username}
+                </span>
+                {b && (
+                  <span className={`text-[8px] px-1 py-px rounded-sm border font-bold uppercase tracking-wider ${b.cls}`}>{b.text}</span>
+                )}
+                <span className="ml-auto text-[9px] text-emerald-400/40">
+                  {new Date(m.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </div>
+              <div className="text-[13px] text-white/85 break-words leading-snug">{m.text}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <form onSubmit={send} className="border-t border-emerald-500/15 p-2 flex gap-2 bg-black/30">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          maxLength={500}
+          placeholder={user ? "Say hi to everyone…" : "Log in to chat"}
+          disabled={!user || sending}
+          data-testid="shoutbox-input"
+          className="flex-1 bg-[#0a1a0a] border border-emerald-500/20 rounded-md px-3 py-2 text-sm outline-none focus:border-emerald-400 text-white placeholder:text-emerald-200/40 disabled:opacity-50"
+        />
+        <button
+          type="submit"
+          disabled={!user || !text.trim() || sending}
+          data-testid="shoutbox-send"
+          className="w-10 h-10 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed transition"
+        >
+          {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+        </button>
+      </form>
+    </aside>
   );
 }
 
