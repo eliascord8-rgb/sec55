@@ -3,6 +3,12 @@
 ## Original Problem Statement
 "Make a normal SMM landing page but better. When someone wants to buy, press checkout button → redirects to the purchase box. No login — peoples buy directly. They can pay using a generated gift card from us (use coupon to pay) or pay by CoinPayments. List all offers from smmcost.com API (key 47b5c3b01e4b5ecd1e53b39baef31a6e). When the user presses order, take the money via the API. If pay using CoinPayments, after complete status show a sweet alert success message and send the API request immediately. Site title and on-site name: 'Better Social'. Make a separate page with admin panel access (username: DEMO, password: DEMO). On admin panel: only order logs (with IP of buyers) and generated coupons with custom amount."
 
+## Recent Updates (Jul 5, 2026 — later)
+- ✅ **Client-side layout switch** — Users can flip between the new green top-nav and classic sidebar via a button in the top-bar. Preference persists in `localStorage.bs_layout_pref`, overriding the admin default per-user.
+- ✅ **Global masked latest-orders feed** — LEFT panel on new dashboard now shows the most recent orders across ALL users with half-masked usernames (`tes######x1`), powered by public `GET /api/orders/latest-global`. Empty-username entries filtered out.
+- ✅ **Read-receipt flip fix** — `GET /messages/thread?since=<ts>` now also returns messages whose `read_at` changed after `since`, so sender's single-check flips to double-check within ~2s of the recipient opening the chat.
+
+
 ## Recent Updates (Jul 4, 2026)
 - ✅ **NOWPayments auto-credit fix** — Deposits now credit balance + 70% bonus automatically. Root causes fixed: (a) accept `confirmed`/`sending`/`partially_paid` in addition to `finished` (many invoice payments never emit `finished`), (b) extracted idempotent credit helper (safe against webhook replays), (c) all webhook events logged to `nowpayments_events` collection with signature-check status, (d) new manual verify endpoint `POST /api/client/funds/nowpayments-verify/{tx_id}` polls NOWPayments API and credits on demand, (e) new pending-deposits endpoint + UI panel with a "Verify deposit" button for stuck payments, (f) parent-level dashboard useEffect auto-verifies when user returns via `/client/dashboard?nowpay=1&tx=<id>`, (g) `BACKEND_URL` env var override for reliable IPN callback URLs on production.
 
