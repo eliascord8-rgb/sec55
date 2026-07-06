@@ -2086,7 +2086,47 @@ async def send_tip(payload: TipRequest, user: CurrentUser = Depends(current_user
         "tip_to_username": recipient["username"],
         "created_at": now,
     })
+    # System DM to recipient from "BetterSocial" so they get a Messages inbox ping.
+    system_bot = await _get_or_create_system_bot()
+    dm_text = f"🎁 Gift from user @{user.username} : ${amount:.2f}"
+    if payload.note:
+        dm_text += f"\nNote: “{payload.note[:120]}”"
+    from messaging import _pair_key  # local import — messaging is already loaded at this point
+    await db.direct_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "thread_key": _pair_key(system_bot["id"], recipient["id"]),
+        "from_id": system_bot["id"],
+        "from_username": system_bot["username"],
+        "to_id": recipient["id"],
+        "text": dm_text,
+        "kind": "tip_notification",
+        "tip_id": tip_id,
+        "created_at": now,
+        "read": False,
+    })
     return {"ok": True, "amount": amount, "recipient": recipient["username"], "tip_id": tip_id}
+
+
+async def _get_or_create_system_bot() -> dict:
+    """Return the BetterSocial system user, creating a lightweight placeholder if it doesn't exist.
+    Used as the sender for automated DMs (tip notifications, welcome messages, etc.)."""
+    bot = await db.users.find_one({"username": "BetterSocial"}, {"_id": 0, "id": 1, "username": 1})
+    if bot:
+        return bot
+    bot_doc = {
+        "id": str(uuid.uuid4()),
+        "username": "BetterSocial",
+        "email": "system@bettersocial.local",
+        "role": "system",
+        "password_hash": "!disabled",  # cannot log in
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "balance": 0.0,
+        "display_name": "BetterSocial",
+        "is_system": True,
+    }
+    await db.users.insert_one(bot_doc.copy())
+    return {"id": bot_doc["id"], "username": "BetterSocial"}
+
 
 
 # ============ Weekly Spin Wheel ============

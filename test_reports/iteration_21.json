@@ -1,0 +1,19 @@
+{
+  "summary": "Iter21 — Verified tip → BetterSocial gift-DM feature. All 5 checks passed via 4 pytest tests at /app/backend/tests/test_iter21_gift_dm.py (Test 5 regression assertions were folded into test_1 since it needs the same tip send). Sender balance debited, recipient credited, public shoutbox announcement present, private BetterSocial DM created with correct 'kind=tip_notification' and text including '🎁 Gift from user @testbugfix1 : $2.00' + note. Tip-without-note produces exact text with no 'Note:' line. BetterSocial user exists exactly once and cannot log in with '!disabled' password (returns 400).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/test_iter21_gift_dm.py", "/app/test_reports/pytest/iter21_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 3891 lines — should be modularised (tips, spin, 5sim, wallet etc.) into separate routers for maintainability.",
+    "_get_or_create_system_bot has a small race condition — concurrent first tips could create two BetterSocial rows. Recommend a unique index on users.username or use find_one_and_update with upsert + $setOnInsert."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter21_gift_dm.py"],
+  "success_rate": {"backend": "100%", "frontend": "N/A (not in scope)"},
+  "test_credentials": "testbugfix1/password1, Balkin/Dennis123.@@ — both working.",
+  "seed_data_creation": "None. Tests use existing users. Tips are additive; recipient balance/unread grows across runs but assertions use pre/post deltas.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Wallet balance endpoint is /api/client/balance (returns {balance, withdrawable}). Public shoutbox is /api/public-chat/messages. DM thread key uses messaging._pair_key (sorted UUIDs joined by '::'). BetterSocial system bot id is fetched via db.users.find_one({username:'BetterSocial'}). DB_NAME=test_database.",
+  "rca of the issue": "N/A — no bugs found; feature works as spec'd."
+}
