@@ -2308,6 +2308,7 @@ async def admin_sim5_balance(x_admin_token: Optional[str] = Header(None)):
 # ---- Public / client ----
 
 @api_router.get("/5sim/services")
+@api_router.get("/numbers/services")
 async def sim5_services_list():
     """Public — list available services with their retail prices."""
     cfg = await _get_sim5_config()
@@ -2336,15 +2337,16 @@ class Sim5BuyRequest(BaseModel):
 
 
 @api_router.post("/5sim/buy")
+@api_router.post("/numbers/buy")
 async def sim5_buy(payload: Sim5BuyRequest, user: CurrentUser = Depends(current_user_dep)):
     if payload.product not in SIM5_PRODUCTS:
         raise HTTPException(status_code=400, detail=f"Unsupported service. Choose one of: {', '.join(SIM5_PRODUCTS)}")
     cfg = await _get_sim5_config()
     if not cfg["api_key"]:
-        raise HTTPException(status_code=503, detail="Phone-number service is not configured yet.")
+        raise HTTPException(status_code=503, detail="Phone-number service is under maintenance. Please try again later.")
     retail = float(cfg["prices"].get(payload.product, 0))
     if retail <= 0:
-        raise HTTPException(status_code=503, detail="This service is not for sale right now.")
+        raise HTTPException(status_code=503, detail="This service is temporarily unavailable.")
     balance = await _get_user_balance(user.id)
     if balance < retail:
         raise HTTPException(status_code=400, detail=f"Not enough balance — need ${retail:.2f}, you have ${balance:.2f}")
@@ -2352,9 +2354,14 @@ async def sim5_buy(payload: Sim5BuyRequest, user: CurrentUser = Depends(current_
     operator = (payload.operator or cfg["default_operator"] or "any").strip().lower()
     status, data = await _sim5_call("GET", f"/user/buy/activation/{country}/{operator}/{payload.product}", cfg["api_key"])
     if status >= 400:
-        # Common 5sim errors: no free phones, order booked etc.
-        msg = data if isinstance(data, str) else data.get("detail") or str(data)
-        raise HTTPException(status_code=502, detail=f"5sim: {msg[:200]}")
+        # Log the underlying reason for the admin, but show a neutral message to the user.
+        raw = data if isinstance(data, str) else (data.get("detail") or str(data))
+        logger.warning("Number-purchase upstream error for user=%s product=%s country=%s: %s",
+                       user.username, payload.product, country, raw[:200] if isinstance(raw, str) else raw)
+        raise HTTPException(
+            status_code=503,
+            detail="This number is temporarily out of stock — please try another country or come back in a few minutes.",
+        )
     order_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     doc = {
@@ -2408,12 +2415,14 @@ async def _sim5_refresh_order(order: dict) -> dict:
 
 
 @api_router.get("/5sim/orders/my")
+@api_router.get("/numbers/orders/my")
 async def sim5_my_orders(user: CurrentUser = Depends(current_user_dep)):
     cur = db.sim5_orders.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).limit(20)
     return {"orders": await cur.to_list(20)}
 
 
 @api_router.get("/5sim/orders/{oid}")
+@api_router.get("/numbers/orders/{oid}")
 async def sim5_order_detail(oid: str, user: CurrentUser = Depends(current_user_dep)):
     order = await db.sim5_orders.find_one({"id": oid, "user_id": user.id}, {"_id": 0})
     if not order:
@@ -2433,11 +2442,12 @@ async def _sim5_finalize(oid: str, user: CurrentUser, action: str) -> dict:
         return {"ok": True, "already": order["status"]}
     cfg = await _get_sim5_config()
     if not cfg["api_key"]:
-        raise HTTPException(status_code=503, detail="5sim not configured")
+        raise HTTPException(status_code=503, detail="Service is under maintenance. Please try again later.")
     endpoint = "finish" if action == "finish" else "cancel"
     status, data = await _sim5_call("GET", f"/user/{endpoint}/{order['sim5_id']}", cfg["api_key"])
     if status >= 400:
-        raise HTTPException(status_code=502, detail=f"5sim: {data}")
+        logger.warning("Number order finalize (%s) upstream error for oid=%s: %s", action, oid, data)
+        raise HTTPException(status_code=503, detail="Could not update this rental right now — please try again in a moment.")
     new_status = "FINISHED" if action == "finish" else "CANCELED"
     now = datetime.now(timezone.utc).isoformat()
     await db.sim5_orders.update_one({"id": oid}, {"$set": {"status": new_status, "closed_at": now}})
@@ -2460,11 +2470,13 @@ async def _sim5_finalize(oid: str, user: CurrentUser, action: str) -> dict:
 
 
 @api_router.post("/5sim/orders/{oid}/finish")
+@api_router.post("/numbers/orders/{oid}/finish")
 async def sim5_finish_order(oid: str, user: CurrentUser = Depends(current_user_dep)):
     return await _sim5_finalize(oid, user, "finish")
 
 
 @api_router.post("/5sim/orders/{oid}/cancel")
+@api_router.post("/numbers/orders/{oid}/cancel")
 async def sim5_cancel_order(oid: str, user: CurrentUser = Depends(current_user_dep)):
     return await _sim5_finalize(oid, user, "cancel")
 
