@@ -2472,21 +2472,22 @@ async def sim5_cancel_order(oid: str, user: CurrentUser = Depends(current_user_d
 
 
 class UIConfig(BaseModel):
-    use_new_home_layout: bool = False
+    use_new_home_layout: bool = True
 
 
 @api_router.get("/ui-config")
 async def get_public_ui_config():
-    """Public read — client-side dashboards fetch this to pick which layout to render."""
+    """Public read — client-side dashboards fetch this to pick which layout to render.
+    Default is the Green Theme (True) unless the admin explicitly disables it."""
     cfg = await db.ui_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
-    return {"use_new_home_layout": bool(cfg.get("use_new_home_layout", False))}
+    return {"use_new_home_layout": bool(cfg.get("use_new_home_layout", True))}
 
 
 @api_router.get("/admin/ui-config")
 async def admin_get_ui_config(x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
     cfg = await db.ui_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
-    return {"use_new_home_layout": bool(cfg.get("use_new_home_layout", False))}
+    return {"use_new_home_layout": bool(cfg.get("use_new_home_layout", True))}
 
 
 @api_router.post("/admin/ui-config")
