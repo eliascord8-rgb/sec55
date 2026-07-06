@@ -1,0 +1,25 @@
+{
+  "summary": "Iteration 18 — validated all 4 new features (Rank badges, Tips, Weekly Spin, Scroll fix). Backend: 10/10 pytest pass (test_iter18_rank_tip_spin.py) — /api/me/rank returns Regular+VIP next-tier for testbugfix1, /spin/status shows cooldown, /spin/spin returns 429 in cooldown and 403 for no-deposit users, /tips/send blocks self-tip (400), missing recipient (404), <$0.50 (422), and insufficient balance (400). /public-chat/messages returns rank_name/text_class/border_class fields. Frontend Playwright: TEST 1 — 13 REGULAR badges rendered in shoutbox + /me/rank verified. TEST 2 — clicking @Balkin opens tip-dialog, quick-1 sets amount=1, note fills, tip-submit debits $1 (14.50→13.50), dialog closes, amber announcement '💰 tipped @Balkin $1.00 — “e2e tip test”' appears in shoutbox. TEST 3 — own username button rendered with disabled attribute. TEST 4 — spin-wheel-dialog opens on 🎰 SPIN click, wheel-disc present, spin-cooldown text 'Come back in 7 day(s)' shown, spin-btn NOT rendered. TEST 5 — fresh-spin flow verified end-to-end via backend (registered spintest_ed0ee1, seeded $5 deposit, POST /spin/spin returned prize $4, balance 5→9). TEST 6 — shoutbox-messages & latest-orders-list both have overflow-y:auto; body scrollHeight only 33px larger than window.innerHeight (within ~50px header allowance).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter18_rank_tip_spin.py",
+    "/app/test_reports/pytest/iter18_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ClientDashboard.jsx is now ~2718 lines (was ~2480 last iter). SpinWheelDialog, TipDialog, PublicShoutbox should be extracted to /components/ for maintainability.",
+    "server.py — /spin/status and /spin/spin duplicate the 7-day cooldown ISO-parsing logic. Extract into a helper _spin_cooldown_days_left(user_id) -> int.",
+    "Tip announcement uses public_chat rate-limit (3s) — sending 2 tips within 3s will fail silently for the second one (only the debit happens, no chat msg). Consider bypassing the rate-limit for kind='tip' inserts or gracefully surface the 429 to sender.",
+    "Frontend spin animation constant (4200ms in setTimeout) doesn't match CSS transition duration (4s / 4000ms). Off-by-200ms is minor but should align.",
+    "TipDialog: tip-amount input accepts arbitrary numbers with no clamp on the client — if user enters 999.99, backend correctly returns 422/400, but the UX shows a raw toast. Consider min/max client-side validation with inline helper text ('Min $0.50 · Max $500')."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter18_rank_tip_spin.py"],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% (all 6 review tests verified)"},
+  "test_credentials": "testbugfix1/password1, Balkin/Dennis123.@@ ; fresh spin user created spintest_ed0ee1/password1 (may be reused for future tests — has ~$9 balance and 7-day spin cooldown active).",
+  "seed_data_creation": "1 chat msg from Balkin ('hi from Balkin iter18 marker'), 1 tip transaction testbugfix1→Balkin $1.00 with note 'e2e tip test', 1 fresh user spintest_ed0ee1 with $5 deposit + $4 spin prize.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Auth flow: use POST /api/auth/captcha to fetch a math captcha, parse '(\\d+)\\s*([+\\-])\\s*(\\d+)' from question, then POST /api/auth/login with {identifier, password, captcha_id, captcha_answer}. Frontend UI login form is flaky in Playwright — always inject bs_user_token + bs_user via localStorage. For new-layout dashboard: set localStorage.bs_layout_pref='new' then reload. Test IDs: open-spin-wheel, spin-wheel-dialog, wheel-disc, spin-btn, spin-cooldown, spin-result, tip-dialog, tip-quick-{1|2|5|10}, tip-amount, tip-note, tip-submit, chat-user-<uid>, rank-badge-<uid>, shoutbox-messages, latest-orders-list. Tip creates a shoutbox message with kind='tip' which inherits public_chat 3s rate limit.",
+  "rca_of_the_issue": "n/a — feature validation only. All 4 requested features confirmed working end-to-end."
+}

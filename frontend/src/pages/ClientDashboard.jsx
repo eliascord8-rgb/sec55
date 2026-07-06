@@ -694,6 +694,7 @@ function TermsOfServiceView() {
 function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [spinOpen, setSpinOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -716,9 +717,9 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[minmax(260px,340px)_1fr_minmax(260px,340px)] gap-4 h-full min-h-[70vh]" data-testid="new-home-layout">
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(260px,340px)_1fr_minmax(260px,340px)] gap-4 h-[calc(100vh-6rem)] max-h-[calc(100vh-6rem)]" data-testid="new-home-layout">
       {/* LEFT — Latest Orders */}
-      <aside className="bg-[#0f2a15] border border-emerald-500/20 rounded-md overflow-hidden flex flex-col">
+      <aside className="bg-[#0f2a15] border border-emerald-500/20 rounded-md overflow-hidden flex flex-col min-h-0">
         <div className="px-4 py-3 border-b border-emerald-500/15 flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           <h2 className="font-display font-bold text-sm uppercase tracking-widest text-emerald-200">Latest Orders</h2>
@@ -756,7 +757,7 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
       </aside>
 
       {/* CENTER — hero + quick actions (no launch box like the ref image) */}
-      <section className="bg-gradient-to-b from-[#0f2a15] to-[#0a1a0a] border border-emerald-500/20 rounded-md p-6 md:p-10 flex flex-col items-center justify-center text-center relative overflow-hidden">
+      <section className="bg-gradient-to-b from-[#0f2a15] to-[#0a1a0a] border border-emerald-500/20 rounded-md p-6 md:p-10 flex flex-col items-center justify-center text-center relative overflow-y-auto min-h-0">
         <div className="absolute inset-0 pointer-events-none" style={{ background: "radial-gradient(circle at 50% 30%, rgba(16,185,129,0.15), transparent 60%)" }} />
         <div className="max-w-md relative">
           <div className="text-xs uppercase tracking-widest text-emerald-300 font-bold mb-3">Welcome back</div>
@@ -769,13 +770,16 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
               ${Number(balance || 0).toFixed(2)}
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-2 max-w-sm mx-auto">
+          <div className="grid grid-cols-4 gap-2 max-w-md mx-auto">
             <a href="/client/dashboard?tab=buy" className="bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase tracking-wider py-3 rounded-md transition">
               Buy
             </a>
             <a href="/client/dashboard?tab=funds" className="bg-orange-500 hover:bg-orange-400 text-white font-bold text-xs uppercase tracking-wider py-3 rounded-md transition">
               Deposit
             </a>
+            <button onClick={() => setSpinOpen(true)} data-testid="open-spin-wheel" className="bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs uppercase tracking-wider py-3 rounded-md transition inline-flex items-center justify-center gap-1">
+              🎰 Spin
+            </button>
             <button onClick={onOpenAI} className="bg-emerald-500/15 border border-emerald-500/30 hover:bg-emerald-500/25 text-emerald-200 font-bold text-xs uppercase tracking-wider py-3 rounded-md transition">
               AI Chat
             </button>
@@ -799,6 +803,139 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
 
       {/* RIGHT — Public shoutbox (live chat for everyone) */}
       <PublicShoutbox user={user} />
+      {spinOpen && <SpinWheelDialog onClose={() => setSpinOpen(false)} />}
+    </div>
+  );
+}
+
+function SpinWheelDialog({ onClose }) {
+  const [status, setStatus] = useState(null);
+  const [spinning, setSpinning] = useState(false);
+  const [result, setResult] = useState(null);
+  const [rotation, setRotation] = useState(0);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const token = localStorage.getItem("bs_user_token");
+        const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/spin/status`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        setStatus(await r.json());
+      } catch {
+        setStatus({ eligible: false, can_spin: false });
+      }
+    })();
+  }, []);
+
+  const spin = async () => {
+    if (!status?.can_spin || spinning) return;
+    setSpinning(true);
+    try {
+      const token = localStorage.getItem("bs_user_token");
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/spin/spin`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        toast.error(d.detail || "Spin failed");
+        setSpinning(false);
+        return;
+      }
+      // Wheel has 6 slots, 60° each. Prize N should end at slot N-1 center.
+      // Add several full rotations for suspense.
+      const slotAngle = 60;
+      const target = (d.prize - 1) * slotAngle + 30; // center of slot
+      const finalRot = 360 * 6 + (360 - target); // 6 full spins clockwise ending on prize
+      setRotation(finalRot);
+      setTimeout(() => {
+        setResult(d);
+        setSpinning(false);
+        toast.success(`🎉 You won $${d.prize}!`);
+      }, 4200);
+    } catch {
+      toast.error("Network error");
+      setSpinning(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[95] bg-black/85 backdrop-blur flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-[#0f2a15] border border-amber-500/40 rounded-lg p-6 max-w-md w-full shadow-2xl text-center" data-testid="spin-wheel-dialog">
+        <h3 className="font-display font-black text-2xl mb-1">🎰 Weekly Spin</h3>
+        <p className="text-xs text-emerald-200/70 mb-6">Win $1–$6 · one free spin per week · deposit unlocks it.</p>
+
+        <div className="relative w-64 h-64 mx-auto mb-6">
+          {/* Pointer */}
+          <div className="absolute left-1/2 -top-2 -translate-x-1/2 w-0 h-0 z-20"
+               style={{ borderLeft: "12px solid transparent", borderRight: "12px solid transparent", borderTop: "20px solid #f59e0b" }} />
+          {/* Wheel */}
+          <div
+            className="w-full h-full rounded-full border-4 border-amber-500 shadow-[0_0_40px_rgba(245,158,11,0.4)]"
+            style={{
+              transform: `rotate(${rotation}deg)`,
+              transition: spinning ? "transform 4s cubic-bezier(0.15, 0.9, 0.25, 1)" : "none",
+              background: `conic-gradient(
+                #10b981 0deg 60deg,
+                #f59e0b 60deg 120deg,
+                #10b981 120deg 180deg,
+                #f59e0b 180deg 240deg,
+                #10b981 240deg 300deg,
+                #f59e0b 300deg 360deg
+              )`,
+            }}
+            data-testid="wheel-disc"
+          >
+            {[1, 2, 3, 4, 5, 6].map((n, i) => {
+              const angle = i * 60 + 30;
+              return (
+                <div
+                  key={n}
+                  className="absolute left-1/2 top-1/2 text-black font-black text-2xl"
+                  style={{
+                    transform: `translate(-50%, -50%) rotate(${angle}deg) translateY(-90px) rotate(${-angle}deg)`,
+                  }}
+                >
+                  ${n}
+                </div>
+              );
+            })}
+          </div>
+          {/* Center hub */}
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-amber-500 border-4 border-[#0f2a15] flex items-center justify-center text-lg z-10">💰</div>
+        </div>
+
+        {result ? (
+          <div className="mb-4" data-testid="spin-result">
+            <div className="text-xs uppercase tracking-widest text-emerald-200/50">You won</div>
+            <div className="text-5xl font-black text-emerald-300 font-display">${result.prize}</div>
+            <div className="text-xs text-emerald-200/70 mt-1">Next spin in {result.next_spin_days} days</div>
+          </div>
+        ) : status && !status.eligible ? (
+          <div className="mb-4 p-3 bg-orange-500/10 border border-orange-500/30 rounded-md text-xs text-orange-200">
+            🔒 Make your first deposit to unlock the weekly spin wheel.
+          </div>
+        ) : status && !status.can_spin ? (
+          <div className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-xs text-emerald-200" data-testid="spin-cooldown">
+            ⏳ Come back in {status.days_left} day(s) for your next free spin.
+          </div>
+        ) : null}
+
+        <div className="flex gap-2 justify-center">
+          <button onClick={onClose} className="px-5 py-2 rounded-md hover:bg-white/5 text-sm text-white/70">Close</button>
+          {status?.can_spin && !result && (
+            <button
+              onClick={spin}
+              disabled={spinning}
+              data-testid="spin-btn"
+              className="px-6 py-2 rounded-md bg-amber-500 hover:bg-amber-400 text-black font-black uppercase tracking-widest text-sm disabled:opacity-50"
+            >
+              {spinning ? "Spinning…" : "🎰 Spin now"}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -808,6 +945,7 @@ function PublicShoutbox({ user }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [tipTarget, setTipTarget] = useState(null); // { user_id, username } or null
   const listRef = useRef(null);
   const sinceRef = useRef("");
   const meIdRef = useRef(user?.id);
@@ -833,7 +971,7 @@ function PublicShoutbox({ user }) {
             const raw = sinceRef.current ? [...m, ...d.messages] : d.messages;
             const combined = Array.from(new Map(raw.map((x) => [x.id, x])).values());
             sinceRef.current = combined[combined.length - 1]?.created_at || sinceRef.current;
-            return combined.slice(-100); // cap to last 100 in memory
+            return combined.slice(-100);
           });
           setTimeout(scrollBottom, 30);
         }
@@ -869,7 +1007,7 @@ function PublicShoutbox({ user }) {
     setSending(false);
   };
 
-  const badge = (role) => {
+  const roleBadge = (role) => {
     if (role === "owner") return { text: "OWNER", cls: "bg-amber-500/20 text-amber-300 border-amber-500/40" };
     if (role === "admin") return { text: "ADMIN", cls: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" };
     if (role === "staff" || role === "moderator") return { text: "STAFF", cls: "bg-sky-500/20 text-sky-300 border-sky-500/40" };
@@ -877,8 +1015,9 @@ function PublicShoutbox({ user }) {
   };
 
   return (
-    <aside className="bg-[#0f2a15] border border-emerald-500/20 rounded-md overflow-hidden flex flex-col" data-testid="public-shoutbox">
-      <div className="px-4 py-3 border-b border-emerald-500/15 flex items-center justify-between">
+    <>
+    <aside className="bg-[#0f2a15] border border-emerald-500/20 rounded-md overflow-hidden flex flex-col min-h-0" data-testid="public-shoutbox">
+      <div className="px-4 py-3 border-b border-emerald-500/15 flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           <h2 className="font-display font-bold text-sm uppercase tracking-widest text-emerald-200">Live Chat</h2>
@@ -886,39 +1025,52 @@ function PublicShoutbox({ user }) {
         <span className="text-[10px] text-emerald-400/60 uppercase tracking-widest">everyone</span>
       </div>
 
-      <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2" data-testid="shoutbox-messages">
+      <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2 min-h-0" data-testid="shoutbox-messages">
         {loading && <div className="text-center text-emerald-200/40 text-xs py-6">Loading…</div>}
         {!loading && messages.length === 0 && (
           <div className="text-center text-emerald-200/50 text-xs py-6">Be the first to say hi 👋</div>
         )}
         {messages.map((m) => {
-          const b = badge(m.role);
+          const b = roleBadge(m.role);
           const mine = m.user_id === meIdRef.current;
+          const isTip = m.kind === "tip";
           return (
-            <div key={m.id} className="group" data-testid={`chat-msg-${m.id}`}>
-              <div className="flex items-baseline gap-1.5 mb-0.5">
-                <span className={`text-[11px] font-bold ${mine ? "text-emerald-300" : b ? "text-white" : "text-emerald-100/80"}`}>
+            <div key={m.id} className={`group ${isTip ? "bg-amber-500/10 border border-amber-500/25 rounded-md p-2" : ""}`} data-testid={`chat-msg-${m.id}`}>
+              <div className="flex items-baseline gap-1.5 mb-0.5 flex-wrap">
+                <button
+                  type="button"
+                  disabled={mine || !user}
+                  onClick={() => !mine && setTipTarget({ user_id: m.user_id, username: m.username })}
+                  data-testid={`chat-user-${m.user_id}`}
+                  title={mine ? "That's you" : `Tip @${m.username}`}
+                  className={`text-[11px] font-bold ${mine ? "text-emerald-300 cursor-default" : "text-emerald-100 hover:text-emerald-300 hover:underline cursor-pointer"} disabled:cursor-default`}
+                >
                   @{m.username}
-                </span>
+                </button>
                 {b && (
                   <span className={`text-[8px] px-1 py-px rounded-sm border font-bold uppercase tracking-wider ${b.cls}`}>{b.text}</span>
+                )}
+                {m.rank_name && !b && (
+                  <span className={`text-[8px] px-1 py-px rounded-sm border font-bold uppercase tracking-wider ${m.rank_border_class || "border-white/20 bg-white/5"} ${m.rank_text_class || "text-white/70"}`} data-testid={`rank-badge-${m.user_id}`}>{m.rank_name}</span>
                 )}
                 <span className="ml-auto text-[9px] text-emerald-400/40">
                   {new Date(m.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
-              <div className="text-[13px] text-white/85 break-words leading-snug">{m.text}</div>
+              <div className={`text-[13px] break-words leading-snug ${isTip ? "text-amber-200 font-bold" : "text-white/85"}`}>
+                {isTip ? <>💰 {m.text}</> : m.text}
+              </div>
             </div>
           );
         })}
       </div>
 
-      <form onSubmit={send} className="border-t border-emerald-500/15 p-2 flex gap-2 bg-black/30">
+      <form onSubmit={send} className="border-t border-emerald-500/15 p-2 flex gap-2 bg-black/30 flex-shrink-0">
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
           maxLength={500}
-          placeholder={user ? "Say hi to everyone…" : "Log in to chat"}
+          placeholder={user ? "Say hi — click a username to tip 💰" : "Log in to chat"}
           disabled={!user || sending}
           data-testid="shoutbox-input"
           className="flex-1 bg-[#0a1a0a] border border-emerald-500/20 rounded-md px-3 py-2 text-sm outline-none focus:border-emerald-400 text-white placeholder:text-emerald-200/40 disabled:opacity-50"
@@ -933,8 +1085,94 @@ function PublicShoutbox({ user }) {
         </button>
       </form>
     </aside>
+    {tipTarget && <TipDialog target={tipTarget} onClose={() => setTipTarget(null)} />}
+    </>
   );
 }
+
+function TipDialog({ target, onClose }) {
+  const [amount, setAmount] = useState(1);
+  const [note, setNote] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const send = async () => {
+    const a = Number(amount);
+    if (!a || a < 0.5) return toast.error("Minimum tip is $0.50");
+    setSending(true);
+    try {
+      const token = localStorage.getItem("bs_user_token");
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/tips/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ to_user_id: target.user_id, amount: a, note: note.trim() || undefined }),
+      });
+      const d = await r.json();
+      if (r.ok) {
+        toast.success(`✅ Tipped @${target.username} $${a}`);
+        onClose();
+      } else {
+        toast.error(d.detail || "Failed to tip");
+      }
+    } catch {
+      toast.error("Network error");
+    }
+    setSending(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[95] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-[#0f2a15] border border-emerald-500/40 rounded-lg p-6 max-w-sm w-full shadow-2xl" data-testid="tip-dialog">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-11 h-11 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-2xl">💰</div>
+          <div>
+            <h3 className="font-display font-black text-lg">Send a tip</h3>
+            <p className="text-xs text-emerald-200/70">to @{target.username}</p>
+          </div>
+        </div>
+        <label className="block text-[10px] uppercase tracking-widest text-emerald-200/50 font-bold mb-1">Amount (USD)</label>
+        <div className="flex gap-2 mb-3">
+          {[1, 2, 5, 10].map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setAmount(v)}
+              data-testid={`tip-quick-${v}`}
+              className={`flex-1 py-2 rounded-md text-sm font-bold border transition ${amount === v ? "bg-emerald-500 text-black border-emerald-500" : "bg-black/30 border-emerald-500/20 text-emerald-200 hover:border-emerald-400"}`}
+            >
+              ${v}
+            </button>
+          ))}
+        </div>
+        <input
+          type="number"
+          min="0.5"
+          step="0.5"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          data-testid="tip-amount"
+          className="w-full bg-[#0a1a0a] border border-emerald-500/20 rounded-md px-3 py-2 text-lg font-bold text-emerald-300 outline-none focus:border-emerald-400 mb-3"
+        />
+        <label className="block text-[10px] uppercase tracking-widest text-emerald-200/50 font-bold mb-1">Note (optional)</label>
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          maxLength={120}
+          placeholder="thanks bro!"
+          data-testid="tip-note"
+          className="w-full bg-[#0a1a0a] border border-emerald-500/20 rounded-md px-3 py-2 text-sm outline-none focus:border-emerald-400 mb-4"
+        />
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose} className="px-4 py-2 rounded-md hover:bg-white/5 text-sm text-white/70">Cancel</button>
+          <button onClick={send} disabled={sending} data-testid="tip-submit" className="px-4 py-2 rounded-md bg-amber-500 hover:bg-amber-400 text-black font-bold text-sm inline-flex items-center gap-2 disabled:opacity-50">
+            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <>💰</>}
+            Send tip
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function HomeView({ user, stats, last7 }) {
   const balance = stats ? Number(stats.balance || 0) : 0;

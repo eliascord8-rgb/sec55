@@ -1951,7 +1951,210 @@ async def public_chat_list(since: Optional[str] = None, limit: int = 50):
     msgs = await cursor.to_list(200)
     if not since:
         msgs.reverse()  # oldest first for initial paint
+    # Enrich each message with the sender's chat rank (cached per user for this call)
+    rank_cache: dict = {}
+    for m in msgs:
+        uid = m.get("user_id")
+        if uid and uid not in rank_cache:
+            rank_cache[uid] = _rank_from_amount(await _user_deposits_total(uid))
+        r = rank_cache.get(uid) or _rank_from_amount(0)
+        m["rank_name"] = r["name"]
+        m["rank_text_class"] = r["text_class"]
+        m["rank_border_class"] = r["border_class"]
     return {"messages": msgs}
+
+
+# ============ Chat ranks (based on lifetime approved deposits) ============
+
+RANK_TIERS = [
+    (0,     "Rookie",  "text-white/70",       "border-white/20 bg-white/5"),
+    (10,    "Regular", "text-sky-300",        "border-sky-500/30 bg-sky-500/10"),
+    (50,    "VIP",     "text-emerald-300",    "border-emerald-500/40 bg-emerald-500/15"),
+    (200,   "Elite",   "text-purple-300",     "border-purple-500/40 bg-purple-500/15"),
+    (500,   "Legend",  "text-amber-300",      "border-amber-500/40 bg-amber-500/15"),
+]
+
+
+async def _user_deposits_total(user_id: str) -> float:
+    """Sum of approved deposit amounts (real deposits — funds + bonuses)."""
+    cur = db.transactions.aggregate([
+        {"$match": {"user_id": user_id, "status": "approved",
+                    "type": {"$in": ["deposit", "deposit_bonus", "coupon"]}}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
+    ])
+    doc = await cur.to_list(1)
+    return float(doc[0]["total"]) if doc else 0.0
+
+
+def _rank_from_amount(amount: float) -> dict:
+    tier = RANK_TIERS[0]
+    for t in RANK_TIERS:
+        if amount >= t[0]:
+            tier = t
+    return {"name": tier[1], "text_class": tier[2], "border_class": tier[3], "min_deposit": tier[0]}
+
+
+async def _get_user_rank(user_id: str) -> dict:
+    return _rank_from_amount(await _user_deposits_total(user_id))
+
+
+# Attach rank + total to each public-chat message so the frontend can render badges.
+# Also expose /api/me/rank so users can see their own rank + next-tier progress.
+
+@api_router.get("/me/rank")
+async def get_my_rank(user: CurrentUser = Depends(current_user_dep)):
+    total = await _user_deposits_total(user.id)
+    rank = _rank_from_amount(total)
+    # Next tier
+    nxt = next((t for t in RANK_TIERS if t[0] > total), None)
+    return {
+        "rank": rank["name"],
+        "text_class": rank["text_class"],
+        "border_class": rank["border_class"],
+        "total_deposits": round(total, 2),
+        "next_tier": {"name": nxt[1], "min_deposit": nxt[0]} if nxt else None,
+    }
+
+
+# ============ Tips (in-chat user-to-user tips) ============
+
+class TipRequest(BaseModel):
+    to_user_id: str
+    amount: float = Field(..., ge=0.5, le=500)
+    note: Optional[str] = None
+
+
+@api_router.post("/tips/send")
+async def send_tip(payload: TipRequest, user: CurrentUser = Depends(current_user_dep)):
+    """Send a tip to another user. Announces publicly in the shoutbox."""
+    if payload.to_user_id == user.id:
+        raise HTTPException(status_code=400, detail="Can't tip yourself")
+    recipient = await db.users.find_one({"id": payload.to_user_id}, {"_id": 0, "id": 1, "username": 1})
+    if not recipient:
+        raise HTTPException(status_code=404, detail="User not found")
+    amount = round(float(payload.amount), 2)
+    sender_balance = await _get_user_balance(user.id)
+    if sender_balance < amount:
+        raise HTTPException(status_code=400, detail=f"Not enough balance — you have ${sender_balance:.2f}")
+    now = datetime.now(timezone.utc).isoformat()
+    tip_id = str(uuid.uuid4())
+    # Sender debit
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "username": user.username,
+        "amount": -amount,
+        "method": "tip",
+        "status": "approved",
+        "type": "tip_out",
+        "note": f"Tip to @{recipient['username']}",
+        "linked_user_id": recipient["id"],
+        "tip_id": tip_id,
+        "created_at": now,
+    })
+    # Recipient credit
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": recipient["id"],
+        "username": recipient["username"],
+        "amount": amount,
+        "method": "tip",
+        "status": "approved",
+        "type": "tip_in",
+        "note": f"Tip from @{user.username}",
+        "linked_user_id": user.id,
+        "tip_id": tip_id,
+        "created_at": now,
+    })
+    # Public announcement in shoutbox
+    announce_text = f"tipped @{recipient['username']} ${amount:.2f}"
+    if payload.note:
+        announce_text += f" — “{payload.note[:120]}”"
+    await db.public_chat.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "username": user.username,
+        "role": user.role or "user",
+        "text": announce_text,
+        "kind": "tip",
+        "tip_amount": amount,
+        "tip_to_username": recipient["username"],
+        "created_at": now,
+    })
+    return {"ok": True, "amount": amount, "recipient": recipient["username"], "tip_id": tip_id}
+
+
+# ============ Weekly Spin Wheel ============
+
+@api_router.get("/spin/status")
+async def spin_status(user: CurrentUser = Depends(current_user_dep)):
+    """Returns eligibility + when the user last spun.
+    Eligible = has at least one approved deposit AND hasn't spun in the last 7 days."""
+    total = await _user_deposits_total(user.id)
+    has_deposit = total > 0
+    last = await db.spin_wheel.find_one({"user_id": user.id}, sort=[("created_at", -1)], projection={"_id": 0})
+    can_spin = has_deposit
+    days_left = 0
+    if last and last.get("created_at"):
+        try:
+            gap = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
+            if gap < 7 * 24 * 3600:
+                can_spin = False
+                days_left = max(0, 7 - int(gap / 86400))
+        except Exception:
+            pass
+    return {
+        "eligible": has_deposit,
+        "can_spin": can_spin,
+        "days_left": days_left,
+        "last_spin": last,
+        "prizes": [1, 2, 3, 4, 5, 6],
+    }
+
+
+@api_router.post("/spin/spin")
+async def spin_wheel(user: CurrentUser = Depends(current_user_dep)):
+    """One free spin per week. Prize is $1-$6 uniformly. Only for users with at least one deposit."""
+    total = await _user_deposits_total(user.id)
+    if total <= 0:
+        raise HTTPException(status_code=403, detail="Only users who have deposited can spin.")
+    last = await db.spin_wheel.find_one({"user_id": user.id}, sort=[("created_at", -1)])
+    if last and last.get("created_at"):
+        try:
+            gap = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
+            if gap < 7 * 24 * 3600:
+                days_left = max(1, 7 - int(gap / 86400))
+                raise HTTPException(status_code=429, detail=f"Come back in {days_left} day(s) for your next spin.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    import secrets
+    prize = secrets.choice([1, 2, 3, 4, 5, 6])
+    now = datetime.now(timezone.utc).isoformat()
+    spin_id = str(uuid.uuid4())
+    await db.spin_wheel.insert_one({
+        "id": spin_id,
+        "user_id": user.id,
+        "username": user.username,
+        "prize": prize,
+        "created_at": now,
+    })
+    # Credit as an approved transaction
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "username": user.username,
+        "amount": float(prize),
+        "method": "spin",
+        "status": "approved",
+        "type": "spin_prize",
+        "note": f"Weekly Spin — won ${prize}",
+        "spin_id": spin_id,
+        "created_at": now,
+        "approved_at": now,
+    })
+    return {"ok": True, "prize": prize, "spin_id": spin_id, "next_spin_days": 7}
 
 
 # ============ UI config (dashboard layout toggle) ============
