@@ -2215,7 +2215,7 @@ function BuyView({ authedApi, balance, reloadBalance }) {
   );
 }
 
-// 5sim.net — Virtual number rental (WhatsApp / Telegram / Signal / Viber / TikTok)
+// Virtual number rental (WhatsApp / Telegram / Signal / Viber / TikTok)
 
 // Official brand SVG paths (Simple Icons, CC0). No external dependency.
 const APP_ICONS = {
@@ -2288,7 +2288,7 @@ function NumbersView({ authedApi, balance, reloadBalance }) {
   const loadCatalog = async () => {
     setLoading(true);
     try {
-      const r = await api.get("/5sim/services");
+      const r = await api.get("/numbers/services");
       setProducts(r.data.products || []);
       if (r.data.default_country && r.data.default_country !== "any") {
         setCountry(r.data.default_country);
@@ -2321,7 +2321,7 @@ function NumbersView({ authedApi, balance, reloadBalance }) {
     }
     setBuying(product.id);
     try {
-      const r = await authedApi().post("/5sim/buy", { product: product.id, country });
+      const r = await authedApi().post("/numbers/buy", { product: product.id, country });
       toast.success(`Number rented: ${r.data.phone}`);
       await Promise.all([loadOrders(), reloadBalance?.()]);
     } catch (e) {
@@ -2343,7 +2343,7 @@ function NumbersView({ authedApi, balance, reloadBalance }) {
 
   const finish = async (oid) => {
     try {
-      await authedApi().post(`/5sim/orders/${oid}/finish`);
+      await authedApi().post(`/numbers/orders/${oid}/finish`);
       toast.success("Marked as finished.");
       await loadOrders();
     } catch (e) {
