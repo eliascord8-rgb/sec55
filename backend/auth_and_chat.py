@@ -1,6 +1,8 @@
 """Auth, chat, AI buy routes for Better Social."""
 import os
 import re
+import random
+import time
 import uuid
 import secrets
 import bcrypt
@@ -420,6 +422,33 @@ async def hcaptcha_site_key():
 
 # ================= CLIENT DASHBOARD =================
 
+# ---- Fake online-users booster ----
+# When enabled (default), the /dashboard endpoint adds a slowly-drifting fake
+# count in the range [FAKE_ONLINE_MIN, FAKE_ONLINE_MAX] on top of the real one.
+# Admin can flip it off via /api/admin/fake-online.
+FAKE_ONLINE_MIN = 40
+FAKE_ONLINE_MAX = 183
+FAKE_ONLINE_DRIFT_INTERVAL = 6.0  # seconds between value changes
+_FAKE_ONLINE_STATE = {"value": random.randint(70, 120), "updated": 0.0}
+
+
+async def _apply_fake_online_boost(db: AsyncIOMotorDatabase, real: int) -> int:
+    cfg = await db.settings.find_one({"_id": "fake_online"}, {"_id": 0}) or {}
+    if not cfg.get("enabled", True):
+        return real
+    now = time.time()
+    if now - _FAKE_ONLINE_STATE["updated"] >= FAKE_ONLINE_DRIFT_INTERVAL:
+        delta = random.randint(-3, 3)
+        # 30% chance of a bigger jump to feel more organic
+        if random.random() < 0.30:
+            delta += random.choice([-2, -1, 1, 2])
+        new_val = _FAKE_ONLINE_STATE["value"] + delta
+        new_val = max(FAKE_ONLINE_MIN, min(FAKE_ONLINE_MAX, new_val))
+        _FAKE_ONLINE_STATE["value"] = new_val
+        _FAKE_ONLINE_STATE["updated"] = now
+    return real + _FAKE_ONLINE_STATE["value"]
+
+
 @client_router.get("/dashboard")
 async def dashboard(user: CurrentUser = Depends(current_user_dep), request: Request = None):
     db: AsyncIOMotorDatabase = request.app.state.db
@@ -434,6 +463,7 @@ async def dashboard(user: CurrentUser = Depends(current_user_dep), request: Requ
     # Online users (active in last 2 minutes)
     threshold = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
     online = await db.users.count_documents({"last_seen": {"$gte": threshold}})
+    online = await _apply_fake_online_boost(db, online)
 
     # This user's own orders only
     my_orders = await db.orders.count_documents({"user_id": user.id})
