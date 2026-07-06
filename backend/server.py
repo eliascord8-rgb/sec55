@@ -850,10 +850,11 @@ def _mask_username(name: str) -> str:
 async def orders_latest_global(limit: int = 20):
     """PUBLIC feed of the latest orders across all users (usernames half-masked).
     Powers the new dashboard's LEFT panel — social proof that the shop is active."""
-    cur = db.orders.find({}, {
-        "_id": 0, "id": 1, "username": 1, "service_name": 1, "service": 1,
-        "status": 1, "total": 1, "charge": 1, "created_at": 1, "quantity": 1,
-    }).sort("created_at", -1).limit(min(int(limit or 20), 50))
+    cur = db.orders.find(
+        {"username": {"$exists": True, "$nin": [None, ""]}},
+        {"_id": 0, "id": 1, "username": 1, "service_name": 1, "service": 1,
+         "status": 1, "total": 1, "charge": 1, "created_at": 1, "quantity": 1},
+    ).sort("created_at", -1).limit(min(int(limit or 20), 50))
     out = []
     async for o in cur:
         o["username"] = _mask_username(o.get("username") or "")
