@@ -146,3 +146,34 @@ a[href*="emergent.sh"][id*="badge"] {
         @apply border-border;
     }
 }
+
+
+
+/* ============ Green theme scope (new dashboard) ============
+   Applied when the .theme-green class is on a parent (see ClientDashboard's <main>).
+   Rewrites the app's pink/magenta brand tokens to emerald so ALL child views inherit the green look
+   without touching each component's Tailwind classes. */
+.theme-green {
+    --bs-pink: #10b981;      /* emerald-500 */
+    --bs-purple: #059669;    /* emerald-600 */
+    --bs-cyan: #34d399;      /* emerald-400 */
+}
+/* Pink → emerald across the standard Tailwind arbitrary values used in the app */
+.theme-green .bg-\[\#FF007F\], .theme-green .hover\:bg-\[\#FF007F\]:hover { background-color: #10b981 !important; }
+.theme-green .text-\[\#FF007F\] { color: #34d399 !important; }
+.theme-green .border-\[\#FF007F\] { border-color: #10b981 !important; }
+.theme-green .from-\[\#FF007F\] { --tw-gradient-from: #10b981 !important; }
+.theme-green .to-\[\#FF007F\] { --tw-gradient-to: #10b981 !important; }
+.theme-green .ring-\[\#FF007F\] { --tw-ring-color: #10b981 !important; }
+.theme-green .bg-\[\#e6006f\], .theme-green .hover\:bg-\[\#e6006f\]:hover { background-color: #059669 !important; }
+.theme-green .shadow-\[\#FF007F\]\/20 { --tw-shadow-color: rgba(16, 185, 129, 0.2) !important; }
+.theme-green .shadow-\[\#FF007F\]\/40 { --tw-shadow-color: rgba(16, 185, 129, 0.4) !important; }
+/* Utility pink alpha variants */
+.theme-green [class*="bg-[#FF007F]/"] { background-color: rgba(16, 185, 129, 0.15) !important; }
+.theme-green [class*="border-[#FF007F]/"] { border-color: rgba(16, 185, 129, 0.35) !important; }
+.theme-green [class*="text-[#FF007F]/"] { color: rgba(52, 211, 153, 0.85) !important; }
+/* Base page background */
+.theme-green .bg-\[\#0a0a14\] { background-color: #0a1a0a !important; }
+.theme-green .bg-\[\#0d0a14\] { background-color: #0a1a0a !important; }
+.theme-green .bg-\[\#1a1525\] { background-color: #0f2a15 !important; }
+.theme-green .bg-\[\#12101a\] { background-color: #0f2a15 !important; }

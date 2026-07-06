@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 17 — verified all 6 review requests for Public Shoutbox + Green Theme. Backend: 7/7 pytest tests pass (public GET no-auth, POST auth-required, 3s rate limit 429, since polling filter, owner role stamped, 500-char length limit). Frontend Playwright: LIVE CHAT panel renders on right of new dashboard with 'everyone' label, seeded messages present, send flow works (input clears + msg appears within ~2.5s poll), rate-limit toast 'Slow down — you can post again in a moment.' shown on immediate 2nd send (429 confirmed in network), cross-user delivery confirmed (Balkin OWNER msg visible in testbugfix1's chat with amber OWNER badge class bg-amber-500/20 text-amber-300 border-amber-500/40), green theme scope confirmed on ALL sub-views (nav-buy, nav-funds, nav-withdraw, nav-tickets, nav-messages, nav-redeem, nav-home) — main.theme-green class present, ZERO elements found with rgb(255,0,127) pink across all views. No console errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "New dashboard header nav", "issues": ["Info only: nav testids differ from labels — 'Purchase' label uses testid 'nav-buy', 'Friends' uses 'nav-messages', 'Support' uses 'nav-tickets', 'Wallet' uses 'nav-funds', 'Gifts' uses 'nav-redeem'. Not a bug — just for future testing agents."]},
+      {"screen": "New dashboard home", "issues": ["Deposit CTA remains orange (bg-orange-500) — intentional accent, not affected by pink→green override. Buy CTA is emerald as expected."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter17_public_chat.py",
+    "/app/test_reports/pytest/iter17_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ClientDashboard.jsx is now ~2480 lines — still growing. Consider extracting PublicShoutbox (~130 lines), NewHomeView, and top-nav Header into separate modules for maintainability.",
+    "Public GET /api/public-chat/messages has no rate limiting/IP throttling — since it's fully public and returns 50 msgs each call, bots could scrape or DDoS. Add a light IP-based cap (e.g. 30 req/min) similar to other public endpoints.",
+    "Rate-limit check in POST /public-chat/send uses ISO-string subtraction — depends on last doc having a well-formed created_at. If any legacy doc has a non-ISO timestamp, the try/except silently skips rate limit. Consider storing datetime objects instead of ISO strings for robust comparisons.",
+    "The Mongo trim logic (delete_many after count > 600) runs on every send when threshold exceeded — could be moved to a background task/cron to avoid slowing user-facing writes."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter17_public_chat.py"],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% (all 6 review tests verified)"},
+  "test_credentials": "testbugfix1/password1, Balkin/Dennis123.@@",
+  "seed_data_creation": "Transient shoutbox messages (rl-a, rl-c, since-*, owner-*, e2e-marker-*, rl1-*, pytest-iter17-*) — harmless, capped at 500 by server.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Login via API + inject bs_user_token into localStorage — the UI form submit was flaky in Playwright headless mode (form onSubmit event not always firing on force click of Sign in button, though the button IS clickable for real users — cosmetic testing concern only). Nav testids: nav-home / nav-buy / nav-messages / nav-tickets / nav-funds / nav-redeem / nav-withdraw. Shoutbox testids: public-shoutbox, shoutbox-messages, shoutbox-input, shoutbox-send, chat-msg-<uuid>. Poller = 2.5s so wait ~3s after send. Backend rate limit = 3s between sends per user.",
+  "rca_of_the_issue": "n/a — feature validation only. All requested checks pass."
+}
