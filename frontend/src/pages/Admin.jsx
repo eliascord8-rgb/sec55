@@ -1268,9 +1268,97 @@ function SettingsPanel({ token }) {
   return (
     <div className="space-y-6">
       <UILayoutTogglePanel token={token} />
+      <Sim5ConfigPanel token={token} />
       <SmmConfigPanel token={token} />
       <NowpaymentsConfigPanel token={token} />
       <EmailConfigPanel token={token} />
+    </div>
+  );
+}
+
+function Sim5ConfigPanel({ token }) {
+  const [cfg, setCfg] = useState({ api_key: "", prices: {}, default_country: "any", default_operator: "any" });
+  const [preview, setPreview] = useState("");
+  const [balance, setBalance] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const products = ["whatsapp", "signal", "viber", "tiktok", "telegram"];
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/5sim/config");
+      setCfg({ api_key: "", prices: r.data.prices || {}, default_country: r.data.default_country, default_operator: r.data.default_operator });
+      setPreview(r.data.api_key_preview || "");
+    } catch {}
+  };
+  const checkBalance = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/5sim/balance");
+      setBalance(r.data);
+      toast.success(`5sim balance: $${r.data.balance}`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to check 5sim balance");
+    }
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/5sim/config", cfg);
+      toast.success("5sim config saved.");
+      setCfg((c) => ({ ...c, api_key: "" }));
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to save");
+    }
+    setSaving(false);
+  };
+  useEffect(() => { load(); }, [token]);
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6">
+      <h2 className="font-display font-bold text-lg mb-1">5sim.net — Phone number rental</h2>
+      <p className="text-xs text-white/50 mb-4">Sell WhatsApp/Signal/Viber/TikTok/Telegram virtual numbers. Buyers pay YOUR price; 5sim charges YOUR 5sim balance the wholesale cost. <a href="https://5sim.net/faq/api-information/how-to-find-api-key" target="_blank" rel="noreferrer" className="text-emerald-300 underline">Get your API key</a>.</p>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">API Key (Bearer JWT)</label>
+          <input data-testid="sim5-api-key" value={cfg.api_key} onChange={(e) => setCfg((c) => ({ ...c, api_key: e.target.value }))} placeholder={preview ? `saved: ${preview}` : "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."} className="w-full bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm font-mono" />
+        </div>
+        <div>
+          <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">Country / Operator</label>
+          <div className="grid grid-cols-2 gap-2">
+            <input data-testid="sim5-country" value={cfg.default_country} onChange={(e) => setCfg((c) => ({ ...c, default_country: e.target.value }))} placeholder="any" className="bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm" />
+            <input data-testid="sim5-operator" value={cfg.default_operator} onChange={(e) => setCfg((c) => ({ ...c, default_operator: e.target.value }))} placeholder="any" className="bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm" />
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-4">
+        <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-2">Retail prices (USD)</label>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+          {products.map((p) => (
+            <label key={p} className="bg-black/30 rounded p-2 flex flex-col gap-1">
+              <span className="text-[10px] uppercase text-white/50 font-bold">{p}</span>
+              <input
+                type="number" step="0.01" min="0.1"
+                value={cfg.prices[p] ?? 2}
+                onChange={(e) => setCfg((c) => ({ ...c, prices: { ...c.prices, [p]: Number(e.target.value) } }))}
+                data-testid={`sim5-price-${p}`}
+                className="w-full bg-[#0d0a14] border border-white/10 rounded px-2 py-1.5 text-sm font-bold text-emerald-300"
+              />
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex gap-2 flex-wrap">
+        <button onClick={save} disabled={saving} data-testid="sim5-save" className="px-5 py-2 bg-[#FF007F] rounded font-bold text-sm disabled:opacity-50">
+          {saving ? "Saving…" : "Save 5sim config"}
+        </button>
+        <button onClick={checkBalance} data-testid="sim5-check-balance" className="px-5 py-2 bg-emerald-500 text-black rounded font-bold text-sm">
+          Check 5sim balance
+        </button>
+        {balance && <span className="ml-1 self-center text-xs text-emerald-300">Wholesale bal: ${balance.balance} · Rating: {balance.rating}</span>}
+      </div>
     </div>
   );
 }
