@@ -3,6 +3,11 @@
 ## Original Problem Statement
 "Make a normal SMM landing page but better. When someone wants to buy, press checkout button → redirects to the purchase box. No login — peoples buy directly. They can pay using a generated gift card from us (use coupon to pay) or pay by CoinPayments. List all offers from smmcost.com API (key 47b5c3b01e4b5ecd1e53b39baef31a6e). When the user presses order, take the money via the API. If pay using CoinPayments, after complete status show a sweet alert success message and send the API request immediately. Site title and on-site name: 'Better Social'. Make a separate page with admin panel access (username: DEMO, password: DEMO). On admin panel: only order logs (with IP of buyers) and generated coupons with custom amount."
 
+## Recent Updates (Jul 6, 2026)
+- ✅ **Public shoutbox / Live Chat** — Right panel of the green new dashboard is now a real-time public chat where every user can text each other. Backend `POST /api/public-chat/send` (auth, 3-second rate limit) + `GET /api/public-chat/messages` (public). Frontend polls every 2.5s, dedupes by id, auto-scrolls, shows OWNER/ADMIN/STAFF role badges (amber/emerald/sky). Cross-user delivery verified <3s. Message length capped 500 chars, collection auto-trimmed to 500 rows.
+- ✅ **Green theme everywhere** — When the new layout is active, all sub-views (Buy, Add Funds, Redeem, Withdraw, Tickets, Messages, ToS) get the emerald theme via a scoped CSS class `.theme-green` on `<main>` that rewrites `#FF007F` → `#10b981` without touching individual components.
+
+
 ## Recent Updates (Jul 5, 2026 — later)
 - ✅ **Client-side layout switch** — Users can flip between the new green top-nav and classic sidebar via a button in the top-bar. Preference persists in `localStorage.bs_layout_pref`, overriding the admin default per-user.
 - ✅ **Global masked latest-orders feed** — LEFT panel on new dashboard now shows the most recent orders across ALL users with half-masked usernames (`tes######x1`), powered by public `GET /api/orders/latest-global`. Empty-username entries filtered out.
