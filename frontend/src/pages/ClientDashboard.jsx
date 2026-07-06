@@ -875,7 +875,7 @@ function SpinWheelDialog({ onClose }) {
             className="w-full h-full rounded-full border-4 border-amber-500 shadow-[0_0_40px_rgba(245,158,11,0.4)]"
             style={{
               transform: `rotate(${rotation}deg)`,
-              transition: spinning ? "transform 4s cubic-bezier(0.15, 0.9, 0.25, 1)" : "none",
+              transition: spinning ? "transform 4.2s cubic-bezier(0.15, 0.9, 0.25, 1)" : "none",
               background: `conic-gradient(
                 #10b981 0deg 60deg,
                 #f59e0b 60deg 120deg,

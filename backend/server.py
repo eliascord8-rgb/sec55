@@ -1911,9 +1911,14 @@ class PublicChatMessage(BaseModel):
 
 @api_router.post("/public-chat/send")
 async def public_chat_send(payload: PublicChatMessage, user: CurrentUser = Depends(current_user_dep)):
-    """Post a message to the public shoutbox. Rate-limited to 1 msg / 3 s per user."""
-    # Rate limit check
-    last = await db.public_chat.find_one({"user_id": user.id}, sort=[("created_at", -1)], projection={"created_at": 1})
+    """Post a message to the public shoutbox. Rate-limited to 1 msg / 3 s per user.
+    Tip announcements (kind='tip') don't count toward the rate window — otherwise a user
+    would be locked out of normal chat for 3s right after tipping."""
+    last = await db.public_chat.find_one(
+        {"user_id": user.id, "kind": {"$ne": "tip"}},
+        sort=[("created_at", -1)],
+        projection={"created_at": 1},
+    )
     if last and last.get("created_at"):
         try:
             gap = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
