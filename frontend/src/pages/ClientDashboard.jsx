@@ -843,17 +843,18 @@ function SpinWheelDialog({ onClose }) {
         setSpinning(false);
         return;
       }
-      // Wheel has 6 slots, 60° each. Prize N should end at slot N-1 center.
-      // Add several full rotations for suspense.
-      const slotAngle = 60;
-      const target = (d.prize - 1) * slotAngle + 30; // center of slot
-      const finalRot = 360 * 6 + (360 - target); // 6 full spins clockwise ending on prize
+      // Map prize -> slot index in the wheel (order MUST match the render below)
+      const slotOrder = [1, 2, 3, 4, 5, 6, 40];
+      const slotAngle = 360 / slotOrder.length; // ~51.43°
+      const idx = slotOrder.indexOf(d.prize);
+      const target = idx * slotAngle + slotAngle / 2; // center of slot
+      const finalRot = 360 * 6 + (360 - target);
       setRotation(finalRot);
       setTimeout(() => {
         setResult(d);
         setSpinning(false);
-        toast.success(`🎉 You won $${d.prize}!`);
-      }, 4200);
+        toast.success(d.jackpot ? `🎰 JACKPOT!! You won $${d.prize}!` : `🎉 You won $${d.prize}!`);
+      }, 4400);
     } catch {
       toast.error("Network error");
       setSpinning(false);
@@ -864,40 +865,42 @@ function SpinWheelDialog({ onClose }) {
     <div className="fixed inset-0 z-[95] bg-black/85 backdrop-blur flex items-center justify-center p-4" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="bg-[#0f2a15] border border-amber-500/40 rounded-lg p-6 max-w-md w-full shadow-2xl text-center" data-testid="spin-wheel-dialog">
         <h3 className="font-display font-black text-2xl mb-1">🎰 Weekly Spin</h3>
-        <p className="text-xs text-emerald-200/70 mb-6">Win $1–$6 · one free spin per week · deposit unlocks it.</p>
+        <p className="text-xs text-emerald-200/70 mb-6">Win $1–$6 or hit the <span className="text-amber-300 font-bold">💎 $40 Jackpot</span> · one spin per week · unlocks at $50 lifetime deposits.</p>
 
         <div className="relative w-64 h-64 mx-auto mb-6">
           {/* Pointer */}
           <div className="absolute left-1/2 -top-2 -translate-x-1/2 w-0 h-0 z-20"
                style={{ borderLeft: "12px solid transparent", borderRight: "12px solid transparent", borderTop: "20px solid #f59e0b" }} />
-          {/* Wheel */}
+          {/* Wheel — 7 slots (6 low prizes + rare Jackpot $40) */}
           <div
             className="w-full h-full rounded-full border-4 border-amber-500 shadow-[0_0_40px_rgba(245,158,11,0.4)]"
             style={{
               transform: `rotate(${rotation}deg)`,
-              transition: spinning ? "transform 4.2s cubic-bezier(0.15, 0.9, 0.25, 1)" : "none",
+              transition: spinning ? "transform 4.4s cubic-bezier(0.15, 0.9, 0.25, 1)" : "none",
               background: `conic-gradient(
-                #10b981 0deg 60deg,
-                #f59e0b 60deg 120deg,
-                #10b981 120deg 180deg,
-                #f59e0b 180deg 240deg,
-                #10b981 240deg 300deg,
-                #f59e0b 300deg 360deg
+                #10b981   0deg  51.43deg,
+                #f59e0b   51.43deg  102.86deg,
+                #10b981   102.86deg 154.29deg,
+                #f59e0b   154.29deg 205.71deg,
+                #10b981   205.71deg 257.14deg,
+                #f59e0b   257.14deg 308.57deg,
+                #ef4444   308.57deg 360deg
               )`,
             }}
             data-testid="wheel-disc"
           >
-            {[1, 2, 3, 4, 5, 6].map((n, i) => {
-              const angle = i * 60 + 30;
+            {[1, 2, 3, 4, 5, 6, 40].map((n, i) => {
+              const angle = i * (360 / 7) + (360 / 7) / 2;
+              const isJackpot = n === 40;
               return (
                 <div
                   key={n}
-                  className="absolute left-1/2 top-1/2 text-black font-black text-2xl"
+                  className={`absolute left-1/2 top-1/2 font-black ${isJackpot ? "text-white text-lg" : "text-black text-2xl"}`}
                   style={{
                     transform: `translate(-50%, -50%) rotate(${angle}deg) translateY(-90px) rotate(${-angle}deg)`,
                   }}
                 >
-                  ${n}
+                  {isJackpot ? <>💎<br /><span className="text-[10px]">${n}</span></> : `$${n}`}
                 </div>
               );
             })}
@@ -909,12 +912,16 @@ function SpinWheelDialog({ onClose }) {
         {result ? (
           <div className="mb-4" data-testid="spin-result">
             <div className="text-xs uppercase tracking-widest text-emerald-200/50">You won</div>
-            <div className="text-5xl font-black text-emerald-300 font-display">${result.prize}</div>
+            <div className={`text-5xl font-black font-display ${result.jackpot ? "text-amber-300" : "text-emerald-300"}`}>
+              {result.jackpot && "💎 "}${result.prize}
+            </div>
+            {result.jackpot && <div className="text-sm text-amber-300 font-bold mt-1 animate-pulse">🎰 JACKPOT!!</div>}
             <div className="text-xs text-emerald-200/70 mt-1">Next spin in {result.next_spin_days} days</div>
           </div>
         ) : status && !status.eligible ? (
-          <div className="mb-4 p-3 bg-orange-500/10 border border-orange-500/30 rounded-md text-xs text-orange-200">
-            🔒 Make your first deposit to unlock the weekly spin wheel.
+          <div className="mb-4 p-3 bg-orange-500/10 border border-orange-500/30 rounded-md text-xs text-orange-200" data-testid="spin-locked">
+            🔒 Deposit at least <b>${status.min_deposit}</b> lifetime to unlock the spin wheel.
+            {status.amount_needed > 0 && <> You need <b>${status.amount_needed.toFixed(2)}</b> more.</>}
           </div>
         ) : status && !status.can_spin ? (
           <div className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-xs text-emerald-200" data-testid="spin-cooldown">

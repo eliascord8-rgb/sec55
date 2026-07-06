@@ -2091,14 +2091,28 @@ async def send_tip(payload: TipRequest, user: CurrentUser = Depends(current_user
 
 # ============ Weekly Spin Wheel ============
 
+SPIN_MIN_DEPOSIT = 50.0  # user must have at least $50 lifetime deposits to spin
+# Weighted prizes: (amount, weight). Higher weight = more likely.
+# Odds engineered so the expected payout is ~$1.70 per spin (well below cost floor).
+SPIN_PRIZES = [
+    (1,  450),   # 45.00%
+    (2,  250),   # 25.00%
+    (3,  150),   # 15.00%
+    (4,   80),   #  8.00%
+    (5,   40),   #  4.00%
+    (6,   25),   #  2.50%
+    (40,   5),   #  0.50% JACKPOT (1 in 200)
+]
+
+
 @api_router.get("/spin/status")
 async def spin_status(user: CurrentUser = Depends(current_user_dep)):
     """Returns eligibility + when the user last spun.
-    Eligible = has at least one approved deposit AND hasn't spun in the last 7 days."""
+    Eligible = lifetime approved deposits >= $50 AND hasn't spun in the last 7 days."""
     total = await _user_deposits_total(user.id)
-    has_deposit = total > 0
+    eligible = total >= SPIN_MIN_DEPOSIT
     last = await db.spin_wheel.find_one({"user_id": user.id}, sort=[("created_at", -1)], projection={"_id": 0})
-    can_spin = has_deposit
+    can_spin = eligible
     days_left = 0
     if last and last.get("created_at"):
         try:
@@ -2109,20 +2123,24 @@ async def spin_status(user: CurrentUser = Depends(current_user_dep)):
         except Exception:
             pass
     return {
-        "eligible": has_deposit,
+        "eligible": eligible,
         "can_spin": can_spin,
         "days_left": days_left,
         "last_spin": last,
-        "prizes": [1, 2, 3, 4, 5, 6],
+        "prizes": [p[0] for p in SPIN_PRIZES],
+        "min_deposit": SPIN_MIN_DEPOSIT,
+        "total_deposits": round(total, 2),
+        "amount_needed": max(0, round(SPIN_MIN_DEPOSIT - total, 2)),
     }
 
 
 @api_router.post("/spin/spin")
 async def spin_wheel(user: CurrentUser = Depends(current_user_dep)):
-    """One free spin per week. Prize is $1-$6 uniformly. Only for users with at least one deposit."""
+    """One free spin per week. Weighted RNG toward low prizes + rare $40 jackpot.
+    Only users with lifetime deposits >= $50 can spin."""
     total = await _user_deposits_total(user.id)
-    if total <= 0:
-        raise HTTPException(status_code=403, detail="Only users who have deposited can spin.")
+    if total < SPIN_MIN_DEPOSIT:
+        raise HTTPException(status_code=403, detail=f"You need at least ${SPIN_MIN_DEPOSIT:.0f} lifetime deposits to spin. You have ${total:.2f}.")
     last = await db.spin_wheel.find_one({"user_id": user.id}, sort=[("created_at", -1)])
     if last and last.get("created_at"):
         try:
@@ -2134,35 +2152,284 @@ async def spin_wheel(user: CurrentUser = Depends(current_user_dep)):
             raise
         except Exception:
             pass
+    # Weighted random using secrets for fairness
     import secrets
-    prize = secrets.choice([1, 2, 3, 4, 5, 6])
+    total_weight = sum(w for _, w in SPIN_PRIZES)
+    roll = secrets.randbelow(total_weight)
+    acc = 0
+    prize = 1
+    for amount, weight in SPIN_PRIZES:
+        acc += weight
+        if roll < acc:
+            prize = amount
+            break
     now = datetime.now(timezone.utc).isoformat()
     spin_id = str(uuid.uuid4())
+    is_jackpot = prize >= 40
     await db.spin_wheel.insert_one({
-        "id": spin_id,
+        "id": spin_id, "user_id": user.id, "username": user.username,
+        "prize": prize, "jackpot": is_jackpot, "created_at": now,
+    })
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user.id, "username": user.username,
+        "amount": float(prize), "method": "spin", "status": "approved",
+        "type": "spin_prize",
+        "note": ("🎰 JACKPOT — " if is_jackpot else "Weekly Spin — ") + f"won ${prize}",
+        "spin_id": spin_id, "created_at": now, "approved_at": now,
+    })
+    # Announce jackpots publicly (small hype-boost for the shop)
+    if is_jackpot:
+        await db.public_chat.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user.id, "username": user.username, "role": user.role or "user",
+            "text": f"🎰 JACKPOT — just won ${prize} on the weekly spin!",
+            "kind": "jackpot",
+            "created_at": now,
+        })
+    return {"ok": True, "prize": prize, "jackpot": is_jackpot, "spin_id": spin_id, "next_spin_days": 7}
+
+
+
+# ============ 5sim.net phone-number rental integration ============
+
+SIM5_BASE = "https://5sim.net/v1"
+SIM5_PRODUCTS = ["whatsapp", "signal", "viber", "tiktok", "telegram"]
+
+
+async def _get_sim5_config() -> dict:
+    cfg = await db.sim5_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    return {
+        "api_key": cfg.get("api_key", ""),
+        "prices": cfg.get("prices", {p: 2.0 for p in SIM5_PRODUCTS}),
+        "default_country": cfg.get("default_country", "any"),
+        "default_operator": cfg.get("default_operator", "any"),
+    }
+
+
+async def _sim5_call(method: str, path: str, api_key: str) -> tuple[int, dict | str]:
+    async with httpx.AsyncClient(timeout=25.0) as c:
+        r = await c.request(method, f"{SIM5_BASE}{path}", headers={
+            "Authorization": f"Bearer {api_key}", "Accept": "application/json"
+        })
+        ctype = (r.headers.get("content-type") or "").lower()
+        return r.status_code, (r.json() if "json" in ctype else r.text)
+
+
+class Sim5ConfigUpdate(BaseModel):
+    api_key: Optional[str] = None
+    prices: Optional[dict] = None  # {"whatsapp": 2.00, ...}
+    default_country: Optional[str] = None
+    default_operator: Optional[str] = None
+
+
+@api_router.get("/admin/5sim/config")
+async def admin_sim5_config_get(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await _get_sim5_config()
+    # Mask the key server-side so it doesn't leak into browser dev tools
+    if cfg["api_key"]:
+        cfg["api_key_preview"] = cfg["api_key"][:8] + "…" + cfg["api_key"][-6:]
+    cfg["api_key"] = "***" if cfg["api_key"] else ""
+    cfg["products"] = SIM5_PRODUCTS
+    return cfg
+
+
+@api_router.post("/admin/5sim/config")
+async def admin_sim5_config_set(payload: Sim5ConfigUpdate, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    upd: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if payload.api_key and payload.api_key != "***":
+        upd["api_key"] = payload.api_key.strip()
+    if payload.prices is not None:
+        # Only accept whitelisted products
+        clean = {k: round(float(v), 2) for k, v in payload.prices.items() if k in SIM5_PRODUCTS and float(v) > 0}
+        upd["prices"] = clean
+    if payload.default_country is not None:
+        upd["default_country"] = payload.default_country.strip() or "any"
+    if payload.default_operator is not None:
+        upd["default_operator"] = payload.default_operator.strip() or "any"
+    await db.sim5_config.update_one({"_id": "singleton"}, {"$set": upd}, upsert=True)
+    return {"ok": True}
+
+
+@api_router.get("/admin/5sim/balance")
+async def admin_sim5_balance(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await _get_sim5_config()
+    if not cfg["api_key"]:
+        raise HTTPException(status_code=400, detail="5sim API key not configured")
+    status, data = await _sim5_call("GET", "/user/profile", cfg["api_key"])
+    if status >= 400:
+        raise HTTPException(status_code=502, detail=f"5sim: {data}")
+    return {"balance": data.get("balance"), "rating": data.get("rating"), "email": data.get("email"), "raw": data}
+
+
+# ---- Public / client ----
+
+@api_router.get("/5sim/services")
+async def sim5_services_list():
+    """Public — list available services with their retail prices."""
+    cfg = await _get_sim5_config()
+    return {
+        "products": [
+            {
+                "id": p,
+                "name": p.capitalize(),
+                "price": float(cfg["prices"].get(p, 2.0)),
+                "icon": {
+                    "whatsapp": "💬", "signal": "🔒", "viber": "📞",
+                    "tiktok": "🎵", "telegram": "✈️",
+                }.get(p, "📱"),
+            }
+            for p in SIM5_PRODUCTS
+        ],
+        "default_country": cfg["default_country"],
+        "default_operator": cfg["default_operator"],
+    }
+
+
+class Sim5BuyRequest(BaseModel):
+    product: str
+    country: Optional[str] = None
+    operator: Optional[str] = None
+
+
+@api_router.post("/5sim/buy")
+async def sim5_buy(payload: Sim5BuyRequest, user: CurrentUser = Depends(current_user_dep)):
+    if payload.product not in SIM5_PRODUCTS:
+        raise HTTPException(status_code=400, detail=f"Unsupported service. Choose one of: {', '.join(SIM5_PRODUCTS)}")
+    cfg = await _get_sim5_config()
+    if not cfg["api_key"]:
+        raise HTTPException(status_code=503, detail="Phone-number service is not configured yet.")
+    retail = float(cfg["prices"].get(payload.product, 0))
+    if retail <= 0:
+        raise HTTPException(status_code=503, detail="This service is not for sale right now.")
+    balance = await _get_user_balance(user.id)
+    if balance < retail:
+        raise HTTPException(status_code=400, detail=f"Not enough balance — need ${retail:.2f}, you have ${balance:.2f}")
+    country = (payload.country or cfg["default_country"] or "any").strip().lower()
+    operator = (payload.operator or cfg["default_operator"] or "any").strip().lower()
+    status, data = await _sim5_call("GET", f"/user/buy/activation/{country}/{operator}/{payload.product}", cfg["api_key"])
+    if status >= 400:
+        # Common 5sim errors: no free phones, order booked etc.
+        msg = data if isinstance(data, str) else data.get("detail") or str(data)
+        raise HTTPException(status_code=502, detail=f"5sim: {msg[:200]}")
+    order_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": order_id,
         "user_id": user.id,
         "username": user.username,
-        "prize": prize,
+        "product": payload.product,
+        "country": country,
+        "operator": operator,
+        "sim5_id": data.get("id"),
+        "phone": data.get("phone"),
+        "sim5_cost": data.get("price"),
+        "cost_paid_by_user": retail,
+        "expires_at": data.get("expires"),
+        "status": "waiting",
+        "sms": [],
         "created_at": now,
-    })
-    # Credit as an approved transaction
+    }
+    await db.sim5_orders.insert_one(doc.copy())
+    # Deduct retail from user balance immediately (approved deduction)
     await db.transactions.insert_one({
         "id": str(uuid.uuid4()),
         "user_id": user.id,
         "username": user.username,
-        "amount": float(prize),
-        "method": "spin",
+        "amount": -retail,
+        "method": "5sim",
         "status": "approved",
-        "type": "spin_prize",
-        "note": f"Weekly Spin — won ${prize}",
-        "spin_id": spin_id,
+        "type": "5sim_purchase",
+        "note": f"5sim {payload.product} number: {data.get('phone')}",
+        "sim5_order_id": order_id,
         "created_at": now,
         "approved_at": now,
     })
-    return {"ok": True, "prize": prize, "spin_id": spin_id, "next_spin_days": 7}
+    return {"ok": True, "order_id": order_id, "phone": doc["phone"], "expires_at": doc["expires_at"], "price": retail}
 
 
-# ============ UI config (dashboard layout toggle) ============
+async def _sim5_refresh_order(order: dict) -> dict:
+    """Poll 5sim for latest SMS list and status; persist back to Mongo."""
+    cfg = await _get_sim5_config()
+    if not cfg["api_key"] or not order.get("sim5_id"):
+        return order
+    status, data = await _sim5_call("GET", f"/user/check/{order['sim5_id']}", cfg["api_key"])
+    if status >= 400 or not isinstance(data, dict):
+        return order
+    sms = data.get("sms") or []
+    new_status = (data.get("status") or "").upper() or order.get("status")
+    upd = {"sms": sms, "status": new_status, "last_polled": datetime.now(timezone.utc).isoformat()}
+    await db.sim5_orders.update_one({"id": order["id"]}, {"$set": upd})
+    order.update(upd)
+    return order
+
+
+@api_router.get("/5sim/orders/my")
+async def sim5_my_orders(user: CurrentUser = Depends(current_user_dep)):
+    cur = db.sim5_orders.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).limit(20)
+    return {"orders": await cur.to_list(20)}
+
+
+@api_router.get("/5sim/orders/{oid}")
+async def sim5_order_detail(oid: str, user: CurrentUser = Depends(current_user_dep)):
+    order = await db.sim5_orders.find_one({"id": oid, "user_id": user.id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    # Auto-refresh (poll 5sim) if still waiting/receiving
+    if str(order.get("status", "")).upper() in ("WAITING", "PENDING", "RECEIVED", ""):
+        order = await _sim5_refresh_order(order)
+    return order
+
+
+async def _sim5_finalize(oid: str, user: CurrentUser, action: str) -> dict:
+    """action: 'finish' or 'cancel'. cancel triggers a refund of the retail price."""
+    order = await db.sim5_orders.find_one({"id": oid, "user_id": user.id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("status", "").upper() in ("FINISHED", "CANCELED", "CANCELLED", "BANNED"):
+        return {"ok": True, "already": order["status"]}
+    cfg = await _get_sim5_config()
+    if not cfg["api_key"]:
+        raise HTTPException(status_code=503, detail="5sim not configured")
+    endpoint = "finish" if action == "finish" else "cancel"
+    status, data = await _sim5_call("GET", f"/user/{endpoint}/{order['sim5_id']}", cfg["api_key"])
+    if status >= 400:
+        raise HTTPException(status_code=502, detail=f"5sim: {data}")
+    new_status = "FINISHED" if action == "finish" else "CANCELED"
+    now = datetime.now(timezone.utc).isoformat()
+    await db.sim5_orders.update_one({"id": oid}, {"$set": {"status": new_status, "closed_at": now}})
+    # Refund on cancel
+    if action == "cancel":
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user.id,
+            "username": user.username,
+            "amount": float(order.get("cost_paid_by_user", 0)),
+            "method": "5sim",
+            "status": "approved",
+            "type": "5sim_refund",
+            "note": f"Refund — cancelled {order.get('product')} number",
+            "sim5_order_id": oid,
+            "created_at": now,
+            "approved_at": now,
+        })
+    return {"ok": True, "status": new_status}
+
+
+@api_router.post("/5sim/orders/{oid}/finish")
+async def sim5_finish_order(oid: str, user: CurrentUser = Depends(current_user_dep)):
+    return await _sim5_finalize(oid, user, "finish")
+
+
+@api_router.post("/5sim/orders/{oid}/cancel")
+async def sim5_cancel_order(oid: str, user: CurrentUser = Depends(current_user_dep)):
+    return await _sim5_finalize(oid, user, "cancel")
+
+
+
 
 class UIConfig(BaseModel):
     use_new_home_layout: bool = False
