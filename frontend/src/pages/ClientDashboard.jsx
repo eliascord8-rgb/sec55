@@ -36,6 +36,9 @@ import {
   Menu,
   FileText,
   Grid3x3,
+  Phone,
+  Copy,
+  RefreshCw,
 } from "lucide-react";
 import SlotsView from "./SlotsView";
 import MessagesView from "./MessagesView";
@@ -274,6 +277,7 @@ export default function ClientDashboard() {
               {[
                 { id: "home", label: "Home", testId: "nav-home" },
                 { id: "buy", label: "Purchase", testId: "nav-buy" },
+                { id: "numbers", label: "Numbers", testId: "nav-numbers" },
                 { id: "messages", label: "Friends", testId: "nav-messages", badge: unreadDms },
                 { id: "tickets", label: "Support", testId: "nav-tickets", badge: unreadTickets },
                 { id: "funds", label: "Wallet", testId: "nav-funds" },
@@ -436,6 +440,7 @@ export default function ClientDashboard() {
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Shop</div>
           <nav className="px-3 space-y-0.5">
             <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => changeView("buy")} testId="nav-buy" />
+            <SideLinkV2 icon={Phone} label="Virtual Numbers" active={view === "numbers"} onClick={() => changeView("numbers")} testId="nav-numbers" />
           </nav>
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Support</div>
@@ -496,6 +501,9 @@ export default function ClientDashboard() {
               )}
               {view === "buy" && (
                 <BuyView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
+              )}
+              {view === "numbers" && (
+                <NumbersView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
               )}
               {view === "redeem" && (
                 <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
@@ -2203,6 +2211,271 @@ function BuyView({ authedApi, balance, reloadBalance }) {
     </div>
   );
 }
+
+// 5sim.net — Virtual number rental (WhatsApp / Telegram / Signal / Viber / TikTok)
+const NUMBERS_COUNTRIES = [
+  { code: "any", name: "Any country (cheapest)", flag: "🌍" },
+  { code: "usa", name: "United States", flag: "🇺🇸" },
+  { code: "england", name: "United Kingdom", flag: "🇬🇧" },
+  { code: "germany", name: "Germany", flag: "🇩🇪" },
+  { code: "france", name: "France", flag: "🇫🇷" },
+  { code: "spain", name: "Spain", flag: "🇪🇸" },
+  { code: "italy", name: "Italy", flag: "🇮🇹" },
+  { code: "netherlands", name: "Netherlands", flag: "🇳🇱" },
+  { code: "poland", name: "Poland", flag: "🇵🇱" },
+  { code: "romania", name: "Romania", flag: "🇷🇴" },
+  { code: "russia", name: "Russia", flag: "🇷🇺" },
+  { code: "ukraine", name: "Ukraine", flag: "🇺🇦" },
+  { code: "india", name: "India", flag: "🇮🇳" },
+  { code: "indonesia", name: "Indonesia", flag: "🇮🇩" },
+  { code: "philippines", name: "Philippines", flag: "🇵🇭" },
+  { code: "vietnam", name: "Vietnam", flag: "🇻🇳" },
+  { code: "kazakhstan", name: "Kazakhstan", flag: "🇰🇿" },
+  { code: "brazil", name: "Brazil", flag: "🇧🇷" },
+  { code: "argentina", name: "Argentina", flag: "🇦🇷" },
+  { code: "mexico", name: "Mexico", flag: "🇲🇽" },
+  { code: "canada", name: "Canada", flag: "🇨🇦" },
+  { code: "turkey", name: "Turkey", flag: "🇹🇷" },
+  { code: "nigeria", name: "Nigeria", flag: "🇳🇬" },
+  { code: "southafrica", name: "South Africa", flag: "🇿🇦" },
+];
+
+function NumbersView({ authedApi, balance, reloadBalance }) {
+  const [products, setProducts] = useState([]);
+  const [country, setCountry] = useState("any");
+  const [loading, setLoading] = useState(true);
+  const [buying, setBuying] = useState(null); // product id in-flight
+  const [orders, setOrders] = useState([]);
+
+  const loadCatalog = async () => {
+    setLoading(true);
+    try {
+      const r = await api.get("/5sim/services");
+      setProducts(r.data.products || []);
+      if (r.data.default_country && r.data.default_country !== "any") {
+        setCountry(r.data.default_country);
+      }
+    } catch {
+      toast.error("Failed to load virtual number catalog.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadOrders = async () => {
+    try {
+      const r = await authedApi().get("/5sim/orders/my");
+      setOrders(r.data.orders || []);
+    } catch {}
+  };
+
+  useEffect(() => {
+    loadCatalog();
+    loadOrders();
+    const t = setInterval(loadOrders, 8000); // auto-refresh so SMS codes appear
+    return () => clearInterval(t);
+  }, []);
+
+  const buy = async (product) => {
+    if (balance < product.price) {
+      toast.error(`Not enough balance — need $${product.price.toFixed(2)}.`);
+      return;
+    }
+    setBuying(product.id);
+    try {
+      const r = await authedApi().post("/5sim/buy", { product: product.id, country });
+      toast.success(`Number rented: ${r.data.phone}`);
+      await Promise.all([loadOrders(), reloadBalance?.()]);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Purchase failed. Try another country.");
+    } finally {
+      setBuying(null);
+    }
+  };
+
+  const cancel = async (oid) => {
+    try {
+      await authedApi().post(`/5sim/orders/${oid}/cancel`);
+      toast.success("Order cancelled — you were refunded.");
+      await Promise.all([loadOrders(), reloadBalance?.()]);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Cancel failed");
+    }
+  };
+
+  const finish = async (oid) => {
+    try {
+      await authedApi().post(`/5sim/orders/${oid}/finish`);
+      toast.success("Marked as finished.");
+      await loadOrders();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Finish failed");
+    }
+  };
+
+  const activeOrders = orders.filter((o) => !["FINISHED", "CANCELED", "CANCELLED", "BANNED", "TIMEOUT"].includes(String(o.status || "").toUpperCase()));
+  const pastOrders = orders.filter((o) => ["FINISHED", "CANCELED", "CANCELLED", "BANNED", "TIMEOUT"].includes(String(o.status || "").toUpperCase()));
+
+  return (
+    <div className="max-w-6xl space-y-6" data-testid="numbers-view">
+      <div>
+        <h1 className="font-display text-3xl md:text-4xl font-black tracking-tight flex items-center gap-2">
+          <Phone className="w-7 h-7 text-emerald-400" /> Virtual Numbers
+        </h1>
+        <p className="text-white/50 text-sm mt-2">
+          Rent a real phone number to receive SMS verification codes for WhatsApp, Telegram, Signal, Viber and TikTok. Pick a country, tap Buy, and the SMS code will appear here in seconds.
+        </p>
+      </div>
+
+      {/* Country picker */}
+      <div className="bg-[#0d0a14] border border-white/5 rounded-md p-4 md:p-5">
+        <Label className="text-[10px] uppercase tracking-widest text-white/50">Country</Label>
+        <select
+          data-testid="numbers-country"
+          value={country}
+          onChange={(e) => setCountry(e.target.value)}
+          className="mt-2 w-full md:w-96 bg-black/40 border border-emerald-500/25 rounded-md px-3 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-400"
+        >
+          {NUMBERS_COUNTRIES.map((c) => (
+            <option key={c.code} value={c.code} className="bg-[#0a1a0a]">
+              {c.flag}  {c.name}
+            </option>
+          ))}
+        </select>
+        <p className="text-[11px] text-white/40 mt-2">Stock varies by country — if a country has no numbers left, try &quot;Any country&quot; or another.</p>
+      </div>
+
+      {/* Product grid */}
+      <div>
+        <div className="text-[10px] uppercase tracking-widest text-white/50 mb-3">Available services</div>
+        {loading ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+          </div>
+        ) : products.length === 0 ? (
+          <div className="text-white/50 text-sm bg-[#0d0a14] border border-white/5 rounded-md p-8 text-center">
+            No services available right now — please try again later.
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            {products.map((p) => (
+              <div
+                key={p.id}
+                data-testid={`number-product-${p.id}`}
+                className="bg-[#0d0a14] border border-emerald-500/15 hover:border-emerald-400/60 transition rounded-md p-4 flex flex-col items-center text-center"
+              >
+                <div className="text-4xl mb-2">{p.icon}</div>
+                <div className="font-bold text-white">{p.name}</div>
+                <div className="font-display font-black text-2xl text-emerald-400 my-2">${p.price.toFixed(2)}</div>
+                <button
+                  onClick={() => buy(p)}
+                  disabled={buying === p.id || balance < p.price}
+                  data-testid={`buy-number-${p.id}`}
+                  className="mt-1 w-full py-2 rounded-md text-xs font-bold uppercase tracking-wider bg-emerald-500 text-black hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  {buying === p.id ? <Loader2 className="w-4 h-4 animate-spin inline" /> : balance < p.price ? "Low balance" : "Buy"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Active rentals */}
+      {activeOrders.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-[10px] uppercase tracking-widest text-white/50">Active rentals — waiting for SMS</div>
+            <button onClick={loadOrders} className="text-[11px] text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1" data-testid="refresh-orders">
+              <RefreshCw className="w-3 h-3" /> Refresh
+            </button>
+          </div>
+          <div className="space-y-3">
+            {activeOrders.map((o) => (
+              <NumberOrderCard key={o.id} order={o} onCancel={cancel} onFinish={finish} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* History */}
+      {pastOrders.length > 0 && (
+        <div>
+          <div className="text-[10px] uppercase tracking-widest text-white/50 mb-3">History</div>
+          <div className="space-y-2 opacity-75">
+            {pastOrders.slice(0, 10).map((o) => (
+              <div key={o.id} className="flex items-center justify-between bg-[#0d0a14] border border-white/5 rounded-md px-3 py-2 text-xs" data-testid={`past-order-${o.id}`}>
+                <span className="font-mono text-white/80">{o.phone || "(no number)"}</span>
+                <span className="uppercase tracking-wider text-white/50">{o.product}</span>
+                <span className="uppercase tracking-wider text-white/50">{o.status}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NumberOrderCard({ order, onCancel, onFinish }) {
+  const [copying, setCopying] = useState(false);
+  const smsList = Array.isArray(order.sms) ? order.sms : [];
+  const copy = async () => {
+    if (!order.phone) return;
+    try {
+      await navigator.clipboard.writeText(order.phone);
+      setCopying(true);
+      setTimeout(() => setCopying(false), 1200);
+    } catch {}
+  };
+  return (
+    <div className="bg-[#0d0a14] border border-emerald-500/25 rounded-md p-4" data-testid={`active-order-${order.id}`}>
+      <div className="flex flex-wrap items-center gap-3 justify-between">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-md bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-center">
+            <Phone className="w-4 h-4 text-emerald-300" />
+          </div>
+          <div className="min-w-0">
+            <div className="font-mono text-lg text-white truncate" data-testid={`order-phone-${order.id}`}>{order.phone || "—"}</div>
+            <div className="text-[11px] text-white/50 uppercase tracking-wider">
+              {order.product} · {order.country} · <span className="text-emerald-300">{order.status || "waiting"}</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={copy} className="px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider bg-white/5 hover:bg-white/10 text-white/80 inline-flex items-center gap-1" data-testid={`copy-phone-${order.id}`}>
+            <Copy className="w-3 h-3" /> {copying ? "Copied!" : "Copy"}
+          </button>
+          <button onClick={() => onFinish(order.id)} className="px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider bg-emerald-500 text-black hover:bg-emerald-400" data-testid={`finish-order-${order.id}`}>
+            Finish
+          </button>
+          <button onClick={() => onCancel(order.id)} className="px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30" data-testid={`cancel-order-${order.id}`}>
+            Cancel &amp; refund
+          </button>
+        </div>
+      </div>
+      <div className="mt-3 pt-3 border-t border-white/5">
+        <div className="text-[10px] uppercase tracking-widest text-white/40 mb-2">SMS messages received</div>
+        {smsList.length === 0 ? (
+          <div className="text-xs text-white/50 flex items-center gap-2">
+            <Loader2 className="w-3 h-3 animate-spin" /> Waiting for SMS… codes usually arrive in 10–60 seconds.
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {smsList.map((s, i) => (
+              <div key={i} className="bg-black/40 rounded-sm px-3 py-2 text-sm text-white/90 break-words" data-testid={`sms-${order.id}-${i}`}>
+                <span className="font-mono text-emerald-300 mr-2">{s.sender || s.from || "SMS"}</span>
+                {s.text || s.body || s.code || JSON.stringify(s)}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 
 const PRIZE_TABLE = [
   { mult: 10000, label: "10,000x", chance: "1 in 20,000", color: "#FFD700" },
