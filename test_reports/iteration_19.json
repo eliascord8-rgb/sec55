@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration 19 backend regression verified: tip announcements no longer consume the 3s shoutbox rate-limit slot. 4/4 pytest cases pass against public URL.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "tests_executed": [
+    "test_tip_then_normal_msg_not_ratelimited — tip immediately followed by normal msg returns 200 (previously 429); consecutive 2nd normal msg still 429 with 'slow down' detail",
+    "test_rate_limit_clears_after_wait — after 4s sleep, normal /public-chat/send returns 200",
+    "test_two_tips_within_3s_both_succeed — two tips within <3s both return 200",
+    "test_tip_after_normal_msg_still_works — tip immediately after a normal msg returns 200"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iter19_tip_rate_bypass.py",
+    "/app/test_reports/pytest/iter19.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Fix is well-scoped: rate-limit lookup filter {'kind': {'$ne': 'tip'}} correctly excludes tip announcements while still recording them into public_chat for UI display.",
+    "Tips endpoint itself has no explicit rate-limit — relies on balance/economic cost as the natural throttle. Acceptable but worth a comment in code."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter19_tip_rate_bypass.py"],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only per request)"},
+  "test_credentials": "testbugfix1 / password1 (used); Balkin user_id 4dd02b7a-f869-4642-9304-35e9e66402fc",
+  "seed_data_creation": "None — tests use existing testbugfix1 balance (~$13). Each run consumes ~$2 in tips to Balkin.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_iter19_tip_rate_bypass.py is idempotent-ish but each run tips $2 from testbugfix1 to Balkin — monitor balance for long-term reruns. Rate-window state is normalized via 4s sleeps at start of each test."
+}
