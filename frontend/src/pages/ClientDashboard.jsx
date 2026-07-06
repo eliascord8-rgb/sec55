@@ -205,17 +205,27 @@ export default function ClientDashboard() {
   // localStorage override (set via the top-bar "Classic ⇄ New" switch button).
   useEffect(() => {
     (async () => {
-      let adminDefault = false;
+      let adminDefault = true; // Green Theme is now the site-wide default
       try {
         const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ui-config`);
         const d = await r.json();
-        adminDefault = !!d.use_new_home_layout;
+        adminDefault = d.use_new_home_layout !== false; // treat missing as true
       } catch {}
       const userPref = localStorage.getItem("bs_layout_pref"); // "new" | "classic" | null
       const effective = userPref === "new" ? true : userPref === "classic" ? false : adminDefault;
       setUseNewLayout(effective);
     })();
   }, []);
+
+  // Keep <body> class in sync with the active layout so the page background
+  // (behind the app shell) matches the theme — prevents the black flash /
+  // black overscroll gap that showed through before.
+  useEffect(() => {
+    const cls = "theme-green-body";
+    if (useNewLayout) document.body.classList.add(cls);
+    else document.body.classList.remove(cls);
+    return () => document.body.classList.remove(cls);
+  }, [useNewLayout]);
 
   const toggleLayoutPref = () => {
     const next = !useNewLayout;

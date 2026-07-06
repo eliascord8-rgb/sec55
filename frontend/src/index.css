@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-    --bs-bg: #050505;
+    --bs-bg: #0a0a14;
     --bs-bg-2: #0d0a14;
     --bs-bg-3: #1a1525;
     --bs-pink: #ff007f;
@@ -21,6 +21,14 @@ body {
     font-family: "IBM Plex Sans", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+}
+
+/* When the green theme is active on the body, keep the page background
+   consistent (no black flashes on overscroll, mobile safe-area, or scroll
+   past the last section). */
+body.theme-green-body,
+html:has(body.theme-green-body) {
+    background: #0a1a0a;
 }
 
 .font-display {
