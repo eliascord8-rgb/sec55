@@ -2501,6 +2501,30 @@ async def admin_set_ui_config(payload: UIConfig, x_admin_token: Optional[str] = 
     return {"ok": True, "use_new_home_layout": bool(payload.use_new_home_layout)}
 
 
+# ============ Fake online-users toggle ============
+
+class FakeOnlineConfig(BaseModel):
+    enabled: bool
+
+
+@api_router.get("/admin/fake-online")
+async def admin_get_fake_online(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.settings.find_one({"_id": "fake_online"}, {"_id": 0}) or {}
+    return {"enabled": bool(cfg.get("enabled", True))}
+
+
+@api_router.post("/admin/fake-online")
+async def admin_set_fake_online(payload: FakeOnlineConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    await db.settings.update_one(
+        {"_id": "fake_online"},
+        {"$set": {"enabled": bool(payload.enabled), "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "enabled": bool(payload.enabled)}
+
+
 
 class NowpaymentsFundsRequest(BaseModel):
     amount: float = Field(..., ge=1, le=10000)

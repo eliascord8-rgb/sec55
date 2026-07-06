@@ -1268,10 +1268,63 @@ function SettingsPanel({ token }) {
   return (
     <div className="space-y-6">
       <UILayoutTogglePanel token={token} />
+      <FakeOnlineTogglePanel token={token} />
       <Sim5ConfigPanel token={token} />
       <SmmConfigPanel token={token} />
       <NowpaymentsConfigPanel token={token} />
       <EmailConfigPanel token={token} />
+    </div>
+  );
+}
+
+function FakeOnlineTogglePanel({ token }) {
+  const [enabled, setEnabled] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await adminApi(token).get("/admin/fake-online");
+        setEnabled(!!r.data.enabled);
+      } catch {}
+      setLoading(false);
+    })();
+  }, [token]);
+
+  const save = async (next) => {
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/fake-online", { enabled: next });
+      setEnabled(next);
+      toast.success(next
+        ? "Fake online-users counter ENABLED (40–183 boost)."
+        : "Fake counter DISABLED — dashboard now shows only real users.");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to save");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="fake-online-panel">
+      <h2 className="font-display font-bold text-lg mb-1">Fake online-users counter</h2>
+      <p className="text-xs text-white/50 mb-4">
+        Adds a slowly-drifting fake count (40–183) on top of the real online-users number so the dashboard always looks lively. Toggle OFF to show only real users.
+      </p>
+      <div className="flex items-center gap-4">
+        <button
+          onClick={() => save(!enabled)}
+          disabled={loading || saving}
+          data-testid="toggle-fake-online"
+          className={`relative w-14 h-7 rounded-full transition ${enabled ? "bg-emerald-500" : "bg-white/15"} disabled:opacity-50`}
+        >
+          <span className={`absolute top-0.5 ${enabled ? "left-8" : "left-0.5"} w-6 h-6 rounded-full bg-white shadow transition-all`} />
+        </button>
+        <span className="text-sm font-bold" data-testid="fake-online-status">
+          {loading ? "Loading…" : enabled ? "Fake boost ✓ ON" : "OFF — real users only"}
+        </span>
+      </div>
     </div>
   );
 }
