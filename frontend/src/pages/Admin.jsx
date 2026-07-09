@@ -3406,6 +3406,30 @@ function UsersPanel({ token }) {
   const [balAmount, setBalAmount] = useState("");
   const [balNote, setBalNote] = useState("");
   const [balSaving, setBalSaving] = useState(false);
+  const [dmTarget, setDmTarget] = useState(null); // user | { username: "@all" } for broadcast
+  const [dmText, setDmText] = useState("");
+  const [dmSending, setDmSending] = useState(false);
+
+  const sendDm = async () => {
+    const text = (dmText || "").trim();
+    if (!text) { toast.error("Message is empty"); return; }
+    setDmSending(true);
+    try {
+      if (dmTarget?.broadcast) {
+        const r = await adminApi(token).post("/admin/messages/send-bulk", { all: true, text });
+        toast.success(`Broadcast delivered to ${r.data.sent} user${r.data.sent === 1 ? "" : "s"}`);
+      } else {
+        await adminApi(token).post("/admin/messages/send", { user_id: dmTarget.id, text });
+        toast.success(`DM sent to @${dmTarget.username}`);
+      }
+      setDmTarget(null);
+      setDmText("");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to send");
+    } finally {
+      setDmSending(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -3625,6 +3649,14 @@ function UsersPanel({ token }) {
                     </td>
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-2 justify-end">
+                        <button
+                          onClick={() => { setDmTarget(u); setDmText(""); }}
+                          data-testid={`dm-user-${u.id}`}
+                          title="Send a DM from @BetterSocial"
+                          className="text-white/60 hover:text-emerald-300"
+                        >
+                          <Send className="w-4 h-4" />
+                        </button>
                         <button
                           onClick={() => startEdit(u)}
                           data-testid={`edit-user-${u.id}`}
