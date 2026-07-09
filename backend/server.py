@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Header, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Header, Depends, Body
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -2138,6 +2138,100 @@ async def _get_or_create_system_bot() -> dict:
     }
     await db.users.insert_one(bot_doc.copy())
     return {"id": bot_doc["id"], "username": "BetterSocial"}
+
+
+# ============ Admin — DM any user from BetterSocial ============
+
+class AdminDmRequest(BaseModel):
+    user_id: Optional[str] = None
+    username: Optional[str] = None
+    text: str = Field(..., min_length=1, max_length=4000)
+
+
+@api_router.post("/admin/messages/send")
+async def admin_send_dm(payload: AdminDmRequest, x_admin_token: Optional[str] = Header(None)):
+    """Send a DM from the BetterSocial system account to any user.
+    The recipient sees it as a normal DM in their Friends inbox, from @BetterSocial."""
+    check_admin(x_admin_token, "users")
+    if not payload.user_id and not payload.username:
+        raise HTTPException(status_code=400, detail="Provide user_id or username")
+    q = {"id": payload.user_id} if payload.user_id else {"username_lower": (payload.username or "").strip().lower()}
+    recipient = await db.users.find_one(q, {"_id": 0, "id": 1, "username": 1})
+    if not recipient:
+        # Fallback: case-insensitive username scan
+        if payload.username:
+            recipient = await db.users.find_one(
+                {"username": {"$regex": f"^{re.escape(payload.username.strip())}$", "$options": "i"}},
+                {"_id": 0, "id": 1, "username": 1},
+            )
+    if not recipient:
+        raise HTTPException(status_code=404, detail="User not found")
+    if recipient.get("role") == "system" or recipient["username"] == "BetterSocial":
+        raise HTTPException(status_code=400, detail="Can't message the system account")
+    bot = await _get_or_create_system_bot()
+    from messaging import _pair_key  # local import to avoid circular
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "thread_key": _pair_key(bot["id"], recipient["id"]),
+        "from_id": bot["id"],
+        "from_username": bot["username"],
+        "to_id": recipient["id"],
+        "to_username": recipient["username"],
+        "text": payload.text.strip()[:4000],
+        "kind": "admin_broadcast",
+        "created_at": now,
+        "read": False,
+    }
+    await db.direct_messages.insert_one(doc.copy())
+    return {"ok": True, "recipient": recipient["username"], "message_id": doc["id"]}
+
+
+@api_router.post("/admin/messages/send-bulk")
+async def admin_send_dm_bulk(
+    payload: dict = Body(...),
+    x_admin_token: Optional[str] = Header(None),
+):
+    """Broadcast to many users at once. Body: { user_ids: [...], text: '...' } or
+    { all: true, text: '...' } to hit every non-system user."""
+    check_admin(x_admin_token, "users")
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty text")
+    if len(text) > 4000:
+        raise HTTPException(status_code=400, detail="Text too long (max 4000 chars)")
+    if payload.get("all"):
+        cursor = db.users.find(
+            {"role": {"$ne": "system"}, "username": {"$ne": "BetterSocial"}},
+            {"_id": 0, "id": 1, "username": 1},
+        )
+        recipients = await cursor.to_list(None)
+    else:
+        ids = payload.get("user_ids") or []
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(status_code=400, detail="Provide user_ids or set all=true")
+        cursor = db.users.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "username": 1, "role": 1})
+        recipients = [r for r in await cursor.to_list(None) if r.get("role") != "system"]
+    bot = await _get_or_create_system_bot()
+    from messaging import _pair_key
+    now = datetime.now(timezone.utc).isoformat()
+    docs = []
+    for r in recipients:
+        docs.append({
+            "id": str(uuid.uuid4()),
+            "thread_key": _pair_key(bot["id"], r["id"]),
+            "from_id": bot["id"],
+            "from_username": bot["username"],
+            "to_id": r["id"],
+            "to_username": r["username"],
+            "text": text[:4000],
+            "kind": "admin_broadcast",
+            "created_at": now,
+            "read": False,
+        })
+    if docs:
+        await db.direct_messages.insert_many(docs)
+    return {"ok": True, "sent": len(docs)}
 
 
 
