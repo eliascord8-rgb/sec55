@@ -183,5 +183,19 @@ a[href*="emergent.sh"][id*="badge"] {
 /* Base page background */
 .theme-green .bg-\[\#0a0a14\] { background-color: #0a1a0a !important; }
 .theme-green .bg-\[\#0d0a14\] { background-color: #0a1a0a !important; }
+.theme-green .bg-\[\#050505\] { background-color: #0a1a0a !important; }
+.theme-green .bg-\[\#050505\]\/80 { background-color: rgba(10, 26, 10, 0.8) !important; }
+.theme-green .bg-\[\#1a1525\] { background-color: #0f2a15 !important; }
+/* Purple #7000FF gradients also swept to emerald so brand chips/pills match */
+.theme-green .bg-\[\#7000FF\], .theme-green .hover\:bg-\[\#7000FF\]:hover { background-color: #059669 !important; }
+.theme-green .text-\[\#7000FF\] { color: #34d399 !important; }
+.theme-green .border-\[\#7000FF\] { border-color: #059669 !important; }
+.theme-green .from-\[\#7000FF\] { --tw-gradient-from: #059669 !important; }
+.theme-green .to-\[\#7000FF\] { --tw-gradient-to: #059669 !important; }
+.theme-green [class*="bg-[#7000FF]/"] { background-color: rgba(5, 150, 105, 0.15) !important; }
+/* Admin console leftovers — gradient logo tile & Tabs active pill */
+.theme-green .gradient-pp { background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important; }
+.theme-green .gradient-text { background: linear-gradient(135deg, #34d399 0%, #10b981 50%, #a7f3d0 100%) !important; -webkit-background-clip: text !important; background-clip: text !important; color: transparent !important; }
+.theme-green [data-state="active"][role="tab"] { background-color: #10b981 !important; color: #052e16 !important; }
 .theme-green .bg-\[\#1a1525\] { background-color: #0f2a15 !important; }
 .theme-green .bg-\[\#12101a\] { background-color: #0f2a15 !important; }

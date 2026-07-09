@@ -43,6 +43,30 @@ export default function Admin() {
 
   const can = (p) => role === "owner" || perms.includes(p);
 
+  // Auto-elevate: if the visitor already signed in on the client dashboard
+  // AND their DB role is 'owner', exchange their user JWT for an admin session
+  // silently — no separate admin login required.
+  useEffect(() => {
+    if (token) return;
+    const userToken = localStorage.getItem("bs_user_token");
+    if (!userToken) return;
+    setSecretLoggingIn(true);
+    api
+      .post("/admin/session-from-user", null, {
+        headers: { Authorization: `Bearer ${userToken}` },
+      })
+      .then((r) => {
+        localStorage.setItem("bs_admin_token", r.data.token);
+        setToken(r.data.token);
+        toast.success(`Welcome, ${r.data.username || "owner"}`);
+      })
+      .catch(() => {
+        // Not an owner — fall through to the classic login form silently
+      })
+      .finally(() => setSecretLoggingIn(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Auto-login via secret URL (e.g. /admin?key=mysecret)
   useEffect(() => {
     if (token) return;
@@ -204,9 +228,15 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
     }
   };
 
+  // Add matching page background & green theme scope for the admin dashboard.
+  useEffect(() => {
+    document.body.classList.add("theme-green-body");
+    return () => document.body.classList.remove("theme-green-body");
+  }, []);
+
   return (
-    <div className="min-h-screen bg-[#0d0a14]">
-      <header className="border-b border-white/5 bg-[#050505]/80 backdrop-blur sticky top-0 z-10">
+    <div className="theme-green min-h-screen bg-[#0a1a0a]" data-testid="admin-shell">
+      <header className="border-b border-emerald-500/20 bg-[#0d2b12]/90 backdrop-blur sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-6 md:px-10 h-16 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-sm gradient-pp flex items-center justify-center">
