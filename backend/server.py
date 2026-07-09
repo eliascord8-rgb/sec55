@@ -650,6 +650,18 @@ async def admin_login_secret(payload: AdminSecretLogin, request: Request):
     return {"token": token}
 
 
+@api_router.post("/admin/session-from-user")
+async def admin_session_from_user(user: CurrentUser = Depends(current_user_dep)):
+    """Auto-elevate: any client-logged-in user whose DB role is 'owner' can call
+    this to receive an admin session token. Removes the need for a separate
+    admin login screen / URL secret when signed-in as the owner."""
+    if user.role != "owner":
+        raise HTTPException(status_code=403, detail="Owner only")
+    token = secrets.token_urlsafe(24)
+    ADMIN_SESSIONS.add(token)
+    return {"token": token, "role": "owner", "username": user.username}
+
+
 # ============ STAFF ACCOUNTS ============
 
 from auth_and_chat import hash_password as _hash_password, verify_password as _verify_password  # noqa: E402

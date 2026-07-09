@@ -323,6 +323,13 @@ export default function ClientDashboard() {
                 <Grid3x3 className="w-3.5 h-3.5" />
                 Classic
               </button>
+              {user.role === "owner" && (
+                <a href="/admin" data-testid="nav-admin-green" title="Open admin panel"
+                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition shadow-sm shadow-emerald-500/40">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Admin
+                </a>
+              )}
               <button onClick={() => { logout(); nav("/"); }} data-testid="client-logout" className="w-9 h-9 rounded-md hover:bg-white/10 flex items-center justify-center text-white/70" title="Logout">
                 <LogOut className="w-4 h-4" />
               </button>
@@ -397,6 +404,13 @@ export default function ClientDashboard() {
               <Grid3x3 className="w-3.5 h-3.5" />
               New
             </button>
+            {user.role === "owner" && (
+              <a href="/admin" data-testid="nav-admin-classic" title="Open admin panel"
+                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition">
+                <Sparkles className="w-3.5 h-3.5" />
+                Admin
+              </a>
+            )}
             <button
               onClick={() => {
                 logout();
