@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 import os
+import re
 import logging
 import uuid
 import base64
@@ -2337,6 +2338,287 @@ async def spin_wheel(user: CurrentUser = Depends(current_user_dep)):
 
 
 
+# ============ Slot Machine (Wild-Hot-style) ============
+# 5 reels × 6 rows = 30 boxes. Bet $0.20–$5. RTP ~ 92%.
+# Any 3+ same symbols starting from the leftmost reel on ANY of 6 rows pays.
+SLOT_SYMBOLS = [
+    # (id, name, weight-per-reel, payout_multiplier[3,4,5])
+    ("cherry", "Cherry",     26, [0.2, 0.5, 2.0]),
+    ("lemon", "Lemon",       22, [0.3, 0.8, 3.0]),
+    ("orange", "Orange",     18, [0.5, 1.5, 5.0]),
+    ("plum", "Plum",         15, [1.0, 3.0, 10.0]),
+    ("grape", "Grape",       10, [2.0, 6.0, 20.0]),
+    ("melon", "Watermelon",   6, [5.0, 15.0, 50.0]),
+    ("seven", "Lucky Seven",  3, [10.0, 40.0, 200.0]),  # top-tier
+]
+_SLOT_TOTAL_W = sum(w for _, _, w, _ in SLOT_SYMBOLS)
+
+
+def _slot_spin_reel() -> str:
+    """One symbol pick weighted by SLOT_SYMBOLS."""
+    import secrets as _s
+    r = _s.randbelow(_SLOT_TOTAL_W)
+    acc = 0
+    for sid, _, w, _p in SLOT_SYMBOLS:
+        acc += w
+        if r < acc:
+            return sid
+    return SLOT_SYMBOLS[0][0]
+
+
+def _slot_evaluate(grid: list) -> list:
+    """grid = 5 reels × 6 rows list-of-lists. Returns wins list [{row, symbol, matches, mult}]."""
+    payouts = {s[0]: s[3] for s in SLOT_SYMBOLS}
+    wins = []
+    for row in range(6):
+        first = grid[0][row]
+        count = 1
+        for reel in range(1, 5):
+            if grid[reel][row] == first:
+                count += 1
+            else:
+                break
+        if count >= 3:
+            mult = payouts[first][count - 3]
+            wins.append({"row": row, "symbol": first, "matches": count, "mult": mult})
+    return wins
+
+
+class SlotSpinRequest(BaseModel):
+    bet: float = Field(..., ge=0.20, le=5.00)
+
+
+@api_router.post("/games/slot/spin")
+async def slot_spin(payload: SlotSpinRequest, user: CurrentUser = Depends(current_user_dep)):
+    bet = round(float(payload.bet), 2)
+    if bet < 0.20 or bet > 5.00:
+        raise HTTPException(status_code=400, detail="Bet must be between $0.20 and $5.00")
+    balance = await _get_user_balance(user.id)
+    if balance < bet:
+        raise HTTPException(status_code=400, detail=f"Not enough balance — need ${bet:.2f}, you have ${balance:.2f}")
+    # Roll 5 reels × 6 rows
+    grid = [[_slot_spin_reel() for _ in range(6)] for _ in range(5)]
+    wins = _slot_evaluate(grid)
+    total_mult = sum(w["mult"] for w in wins)
+    payout = round(bet * total_mult, 2)
+    now = datetime.now(timezone.utc).isoformat()
+    tx_id_bet = str(uuid.uuid4())
+    await db.transactions.insert_one({
+        "id": tx_id_bet, "user_id": user.id, "username": user.username,
+        "amount": -bet, "method": "slot", "status": "approved",
+        "type": "slot_bet", "note": f"Slot bet ${bet:.2f}",
+        "created_at": now, "approved_at": now,
+    })
+    if payout > 0:
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+            "amount": payout, "method": "slot", "status": "approved",
+            "type": "slot_win", "note": f"Slot win ${payout:.2f} ({total_mult:.1f}× bet)",
+            "created_at": now, "approved_at": now,
+        })
+        await db.users.update_one(
+            {"id": user.id},
+            {"$inc": {"withdrawable_balance": payout}},
+        )
+    new_balance = await _get_user_balance(user.id)
+    return {
+        "ok": True, "bet": bet, "grid": grid, "wins": wins,
+        "total_mult": round(total_mult, 2), "payout": payout, "balance": new_balance,
+    }
+
+
+# ============ Daily Stairs Game ============
+# Fixed stake $0.80. 10 steps. Each step user picks left/right — one is safe, other is bomb.
+# Multipliers grow per step. User can cash out any time; bomb loses stake.
+# Eligibility: lifetime approved deposits >= $50; playable once per day.
+STAIRS_STAKE = 0.80
+STAIRS_MIN_DEPOSIT = 50.0
+STAIRS_MULTS = [1.20, 1.50, 2.00, 2.50, 3.00, 5.00, 8.00, 12.00, 20.00, 40.00]
+
+
+@api_router.get("/games/stairs/status")
+async def stairs_status(user: CurrentUser = Depends(current_user_dep)):
+    total = await _user_deposits_total(user.id)
+    eligible = total >= STAIRS_MIN_DEPOSIT
+    today = datetime.now(timezone.utc).date().isoformat()
+    played_today = await db.stairs_games.find_one(
+        {"user_id": user.id, "day": today},
+        {"_id": 0, "status": 1, "step": 1, "path": 1, "cashed_out_at": 1, "id": 1},
+    )
+    active = played_today and played_today.get("status") == "active"
+    return {
+        "eligible": eligible,
+        "lifetime_deposits": total,
+        "can_play": eligible and (played_today is None or active),
+        "played_today": bool(played_today and played_today.get("status") != "active"),
+        "active_game": played_today if active else None,
+        "stake": STAIRS_STAKE,
+        "multipliers": STAIRS_MULTS,
+    }
+
+
+@api_router.post("/games/stairs/start")
+async def stairs_start(user: CurrentUser = Depends(current_user_dep)):
+    total = await _user_deposits_total(user.id)
+    if total < STAIRS_MIN_DEPOSIT:
+        raise HTTPException(status_code=403, detail=f"Need at least ${STAIRS_MIN_DEPOSIT:.0f} in lifetime deposits to play.")
+    today = datetime.now(timezone.utc).date().isoformat()
+    existing = await db.stairs_games.find_one({"user_id": user.id, "day": today})
+    if existing:
+        if existing.get("status") == "active":
+            return {"ok": True, "game_id": existing["id"], "step": existing["step"], "path": existing.get("path", []), "already_active": True}
+        raise HTTPException(status_code=429, detail="You already played today. Come back tomorrow!")
+    balance = await _get_user_balance(user.id)
+    if balance < STAIRS_STAKE:
+        raise HTTPException(status_code=400, detail=f"Need ${STAIRS_STAKE:.2f} in balance to play.")
+    # Pre-roll all 10 bomb positions (0 = left is bomb, 1 = right is bomb) with a random seed.
+    import secrets as _s
+    bombs = [_s.randbelow(2) for _ in range(10)]
+    now = datetime.now(timezone.utc).isoformat()
+    game_id = str(uuid.uuid4())
+    # Reserve the stake
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+        "amount": -STAIRS_STAKE, "method": "stairs", "status": "approved",
+        "type": "stairs_stake", "note": "Daily stairs — stake",
+        "stairs_game_id": game_id, "created_at": now, "approved_at": now,
+    })
+    await db.stairs_games.insert_one({
+        "id": game_id, "user_id": user.id, "username": user.username,
+        "day": today, "bombs": bombs, "path": [], "step": 0,
+        "status": "active", "stake": STAIRS_STAKE, "created_at": now,
+    })
+    return {"ok": True, "game_id": game_id, "step": 0, "path": [], "multipliers": STAIRS_MULTS}
+
+
+class StairsStepRequest(BaseModel):
+    game_id: str
+    choice: int  # 0 = left, 1 = right
+
+
+@api_router.post("/games/stairs/step")
+async def stairs_step(payload: StairsStepRequest, user: CurrentUser = Depends(current_user_dep)):
+    game = await db.stairs_games.find_one({"id": payload.game_id, "user_id": user.id})
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    if game.get("status") != "active":
+        raise HTTPException(status_code=400, detail="Game already ended")
+    step = int(game.get("step", 0))
+    if step >= len(STAIRS_MULTS):
+        raise HTTPException(status_code=400, detail="Max reached — cash out")
+    choice = 0 if int(payload.choice) == 0 else 1
+    bombs = game.get("bombs") or []
+    bomb_side = int(bombs[step]) if step < len(bombs) else 0
+    hit_bomb = choice == bomb_side
+    path = list(game.get("path", []))
+    path.append({"step": step, "choice": choice, "bomb": bomb_side, "hit": hit_bomb})
+    now = datetime.now(timezone.utc).isoformat()
+    if hit_bomb:
+        await db.stairs_games.update_one({"id": game["id"]}, {"$set": {"status": "lost", "path": path, "ended_at": now}})
+        return {"ok": True, "hit_bomb": True, "step": step, "bomb_side": bomb_side, "status": "lost"}
+    new_step = step + 1
+    upd = {"path": path, "step": new_step}
+    if new_step >= len(STAIRS_MULTS):
+        # Auto cash out at max
+        mult = STAIRS_MULTS[-1]
+        payout = round(STAIRS_STAKE * mult, 2)
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+            "amount": payout, "method": "stairs", "status": "approved",
+            "type": "stairs_win", "note": f"Stairs max reached — ${payout:.2f}",
+            "stairs_game_id": game["id"], "created_at": now, "approved_at": now,
+        })
+        await db.users.update_one({"id": user.id}, {"$inc": {"withdrawable_balance": payout}})
+        upd.update({"status": "won", "cashed_out_at": now, "payout": payout, "final_mult": mult})
+    await db.stairs_games.update_one({"id": game["id"]}, {"$set": upd})
+    return {
+        "ok": True, "hit_bomb": False, "step": new_step, "current_mult": STAIRS_MULTS[step],
+        "next_mult": STAIRS_MULTS[new_step] if new_step < len(STAIRS_MULTS) else None,
+        "status": upd.get("status", "active"), "payout": upd.get("payout"),
+    }
+
+
+class StairsCashoutRequest(BaseModel):
+    game_id: str
+
+
+@api_router.post("/games/stairs/cashout")
+async def stairs_cashout(payload: StairsCashoutRequest, user: CurrentUser = Depends(current_user_dep)):
+    game = await db.stairs_games.find_one({"id": payload.game_id, "user_id": user.id})
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    if game.get("status") != "active":
+        raise HTTPException(status_code=400, detail="Game already ended")
+    step = int(game.get("step", 0))
+    if step == 0:
+        raise HTTPException(status_code=400, detail="Take at least one step before cashing out.")
+    mult = STAIRS_MULTS[step - 1]
+    payout = round(STAIRS_STAKE * mult, 2)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+        "amount": payout, "method": "stairs", "status": "approved",
+        "type": "stairs_win", "note": f"Stairs cashout {mult:.1f}× — ${payout:.2f}",
+        "stairs_game_id": game["id"], "created_at": now, "approved_at": now,
+    })
+    await db.users.update_one({"id": user.id}, {"$inc": {"withdrawable_balance": payout}})
+    await db.stairs_games.update_one({"id": game["id"]}, {"$set": {"status": "won", "cashed_out_at": now, "payout": payout, "final_mult": mult}})
+    return {"ok": True, "payout": payout, "mult": mult, "step": step}
+
+
+# ============ News modal (one-time popup per user) ============
+
+class NewsConfig(BaseModel):
+    enabled: bool = True
+    title: str = Field("", max_length=120)
+    body: str = Field("", max_length=4000)
+
+
+@api_router.get("/news")
+async def get_public_news():
+    """Public read — client shows this in a one-time modal (client remembers dismissal via localStorage keyed on news_id)."""
+    cfg = await db.news_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    if not cfg.get("enabled"):
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "id": cfg.get("id", "n1"),
+        "title": cfg.get("title", ""),
+        "body": cfg.get("body", ""),
+    }
+
+
+@api_router.get("/admin/news")
+async def admin_get_news(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.news_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "title": cfg.get("title", ""),
+        "body": cfg.get("body", ""),
+        "id": cfg.get("id", ""),
+    }
+
+
+@api_router.post("/admin/news")
+async def admin_set_news(payload: NewsConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    news_id = str(uuid.uuid4())[:8]  # new id → forces the modal to show again for every user
+    await db.news_config.update_one(
+        {"_id": "singleton"},
+        {"$set": {
+            "enabled": bool(payload.enabled),
+            "title": payload.title.strip()[:120],
+            "body": payload.body.strip()[:4000],
+            "id": news_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "id": news_id}
+
+
+
 # ============ 5sim.net phone-number rental integration ============
 
 SIM5_BASE = "https://5sim.net/v1"
@@ -2524,7 +2806,17 @@ async def _sim5_refresh_order(order: dict) -> dict:
 @api_router.get("/numbers/orders/my")
 async def sim5_my_orders(user: CurrentUser = Depends(current_user_dep)):
     cur = db.sim5_orders.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).limit(20)
-    return {"orders": await cur.to_list(20)}
+    orders = await cur.to_list(20)
+    # Auto-refresh active orders so newly-received SMS codes show up without the
+    # user having to open the detail view.
+    active_statuses = {"", "WAITING", "PENDING", "RECEIVED"}
+    for i, o in enumerate(orders):
+        if str(o.get("status", "")).upper() in active_statuses:
+            try:
+                orders[i] = await _sim5_refresh_order(o)
+            except Exception as e:
+                logger.warning("Refresh order %s failed: %s", o.get("id"), e)
+    return {"orders": orders}
 
 
 @api_router.get("/5sim/orders/{oid}")

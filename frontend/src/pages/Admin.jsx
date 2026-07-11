@@ -237,18 +237,18 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
   return (
     <div className="theme-green min-h-screen bg-[#0a1a0a]" data-testid="admin-shell">
       <header className="border-b border-emerald-500/20 bg-[#0d2b12]/90 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 md:px-10 h-16 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-sm gradient-pp flex items-center justify-center">
+        <div className="max-w-7xl mx-auto px-3 md:px-10 h-14 md:h-16 flex items-center justify-between gap-2">
+          <Link to="/" className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-sm gradient-pp flex items-center justify-center shrink-0">
               <Sparkles className="w-4 h-4" strokeWidth={2.5} />
             </div>
-            <span className="font-display font-black">Admin Console</span>
+            <span className="font-display font-black text-sm md:text-base truncate">Admin Console</span>
           </Link>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => setNickOpen(true)}
               data-testid="admin-nickname-btn"
-              className="hidden sm:inline-flex items-center gap-2 px-3 py-2 border border-emerald-400/30 bg-emerald-500/10 rounded-sm text-xs hover:bg-emerald-500/20 transition"
+              className="hidden md:inline-flex items-center gap-2 px-3 py-2 border border-emerald-400/30 bg-emerald-500/10 rounded-sm text-xs hover:bg-emerald-500/20 transition"
               title="Click to change the nickname shown to clients"
             >
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -256,12 +256,17 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
                 Posting as <span className="font-bold text-white">{displayName || username || "—"}</span>
               </span>
             </button>
+            <a href="/client/dashboard" data-testid="admin-return-shop"
+               className="inline-flex items-center gap-1 px-3 py-2 border border-white/10 rounded-sm text-[11px] uppercase tracking-wider hover:bg-white/5 transition"
+               title="Go back to the client view">
+              Shop
+            </a>
             <button
               onClick={onLogout}
               data-testid="admin-logout"
-              className="inline-flex items-center gap-2 px-4 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5 transition"
+              className="inline-flex items-center gap-1 px-3 py-2 border border-white/10 rounded-sm text-[11px] uppercase tracking-wider hover:bg-white/5 transition"
             >
-              <LogOut className="w-3 h-3" /> Logout
+              <LogOut className="w-3 h-3" /> <span className="hidden sm:inline">Logout</span>
             </button>
           </div>
         </div>
@@ -294,9 +299,9 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
         </div>
       )}
 
-      <main className="max-w-7xl mx-auto px-6 md:px-10 py-10">
+      <main className="max-w-7xl mx-auto px-3 md:px-10 py-6 md:py-10">
         <Tabs defaultValue={role === "staff" ? (can("ai_inbox") ? "inbox" : "tickets") : "orders"} className="w-full">
-          <TabsList className="grid grid-cols-12 max-w-7xl bg-[#1a1525] mb-6 rounded-sm">
+          <TabsList className="flex flex-wrap gap-1 h-auto justify-start p-1 bg-[#1a1525] mb-6 rounded-sm w-full">
             {can("orders") && (
             <TabsTrigger
               value="orders"
@@ -1298,11 +1303,75 @@ function SettingsPanel({ token }) {
   return (
     <div className="space-y-6">
       <UILayoutTogglePanel token={token} />
+      <NewsAnnouncementPanel token={token} />
       <FakeOnlineTogglePanel token={token} />
       <Sim5ConfigPanel token={token} />
       <SmmConfigPanel token={token} />
       <NowpaymentsConfigPanel token={token} />
       <EmailConfigPanel token={token} />
+    </div>
+  );
+}
+
+function NewsAnnouncementPanel({ token }) {
+  const [enabled, setEnabled] = useState(false);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await adminApi(token).get("/admin/news");
+        setEnabled(!!r.data.enabled);
+        setTitle(r.data.title || "");
+        setBody(r.data.body || "");
+      } catch {}
+      setLoading(false);
+    })();
+  }, [token]);
+  const save = async () => {
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/news", { enabled, title, body });
+      toast.success(enabled
+        ? "News saved — will show once for every user."
+        : "News disabled — no popup shown.");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Save failed");
+    }
+    setSaving(false);
+  };
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="news-panel">
+      <h2 className="font-display font-bold text-lg mb-1">News modal (one-time popup)</h2>
+      <p className="text-xs text-white/50 mb-4">Shown once per user in a dismissable modal. Every time you edit &amp; save, the modal reappears for everyone (new news_id).</p>
+      {loading ? <div className="text-white/40 text-xs">Loading…</div> : (
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setEnabled((v) => !v)} data-testid="news-toggle"
+              className={`relative w-14 h-7 rounded-full transition ${enabled ? "bg-emerald-500" : "bg-white/15"}`}>
+              <span className={`absolute top-0.5 ${enabled ? "left-8" : "left-0.5"} w-6 h-6 rounded-full bg-white shadow transition-all`} />
+            </button>
+            <span className="text-sm font-bold" data-testid="news-status">{enabled ? "Enabled" : "Disabled"}</span>
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Title</Label>
+            <Input data-testid="news-title-input" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} className="bg-[#0d0a14] border-white/10 mt-1" placeholder="e.g. New feature released!" />
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Body</Label>
+            <textarea data-testid="news-body-input" value={body} onChange={(e) => setBody(e.target.value)} maxLength={4000} rows={5}
+              className="w-full bg-[#0d0a14] border border-white/10 rounded-sm px-3 py-2 mt-1 text-sm outline-none focus:border-emerald-500/60 resize-y"
+              placeholder="Type the announcement your users will see…" />
+            <div className="text-[10px] text-white/30 mt-1">{body.length} / 4000</div>
+          </div>
+          <button onClick={save} disabled={saving} data-testid="news-save-btn"
+            className="px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider bg-emerald-500 text-black hover:bg-emerald-400 transition disabled:opacity-50">
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Save & broadcast"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -3703,6 +3772,49 @@ function UsersPanel({ token }) {
           </table>
         </div>
       </div>
+
+      {dmTarget && (
+        <div
+          data-testid="admin-dm-modal"
+          className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => !dmSending && setDmTarget(null)}
+        >
+          <div
+            className="w-full max-w-md bg-[#1a1525] border border-emerald-500/30 rounded-sm p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display font-bold text-lg mb-1">
+              {dmTarget.broadcast ? "📢 Broadcast to everyone" : `DM @${dmTarget.username}`}
+            </h3>
+            <div className="text-xs text-white/50 mb-4">
+              Sent from <span className="font-mono text-emerald-300">@BetterSocial</span> — appears in the user&apos;s Friends inbox.
+            </div>
+            <textarea
+              data-testid="admin-dm-text"
+              rows={5}
+              maxLength={4000}
+              value={dmText}
+              onChange={(e) => setDmText(e.target.value)}
+              autoFocus
+              placeholder="Type your message…"
+              className="w-full bg-[#0d0a14] border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-emerald-500/60 resize-y"
+            />
+            <div className="text-[10px] text-white/40 mt-1 mb-4">{dmText.length} / 4000</div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setDmTarget(null)} disabled={dmSending}
+                className="px-4 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5">
+                Cancel
+              </button>
+              <button onClick={sendDm} disabled={dmSending || !dmText.trim()} data-testid="admin-dm-send"
+                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-50 inline-flex items-center gap-2">
+                {dmSending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                {dmTarget.broadcast ? "Send to all" : "Send DM"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {balUser && (
         <div

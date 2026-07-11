@@ -42,6 +42,8 @@ import {
 } from "lucide-react";
 import SlotsView from "./SlotsView";
 import MessagesView from "./MessagesView";
+import GamesView from "./GamesView";
+import NewsModal from "@/components/NewsModal";
 import { toast } from "sonner";
 
 const POLL_MS = 3000;
@@ -278,6 +280,7 @@ export default function ClientDashboard() {
                 { id: "home", label: "Home", testId: "nav-home" },
                 { id: "buy", label: "Purchase", testId: "nav-buy" },
                 { id: "numbers", label: "Numbers", testId: "nav-numbers", isNew: true },
+                { id: "games", label: "Games", testId: "nav-games" },
                 { id: "messages", label: "Friends", testId: "nav-messages", badge: unreadDms },
                 { id: "tickets", label: "Support", testId: "nav-tickets", badge: unreadTickets },
                 { id: "funds", label: "Wallet", testId: "nav-funds" },
@@ -458,6 +461,7 @@ export default function ClientDashboard() {
           <nav className="px-3 space-y-0.5">
             <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => changeView("buy")} testId="nav-buy" />
             <SideLinkV2 icon={Phone} label="Virtual Numbers" active={view === "numbers"} onClick={() => changeView("numbers")} testId="nav-numbers" badge="NEW" />
+            <SideLinkV2 icon={Dices} label="Games" active={view === "games"} onClick={() => changeView("games")} testId="nav-games" />
           </nav>
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Support</div>
@@ -522,6 +526,9 @@ export default function ClientDashboard() {
               {view === "numbers" && (
                 <NumbersView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
               )}
+              {view === "games" && (
+                <GamesView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
+              )}
               {view === "redeem" && (
                 <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
               )}
@@ -541,6 +548,7 @@ export default function ClientDashboard() {
 
       {/* Better Social AI floating widget */}
       <AIWidget open={aiOpen} onOpenChange={setAiOpen} />
+      <NewsModal />
       {!aiOpen && !(typeof window !== "undefined" && localStorage.getItem("bs_chat_banned") === "1") && (
         <button
           onClick={() => setAiOpen(true)}
@@ -1390,8 +1398,27 @@ function FundsView({ authedApi, balance, reloadBalance }) {
   useEffect(() => {
     loadTxns();
     loadPending();
-    // Note: the ?nowpay=1&tx=... URL param is handled at the parent Dashboard level
-    // (so it fires even when the user lands on Home). We only load pending here.
+    // Auto-verify any pending NOWPayments deposits every 30s so users don't have
+    // to press the manual "Verify" button when the IPN webhook is late.
+    const t = setInterval(async () => {
+      try {
+        const r = await authedApi().get("/client/funds/pending-deposits");
+        const list = r.data.pending || [];
+        setPending(list);
+        for (const p of list) {
+          try {
+            const v = await authedApi().post(`/client/funds/nowpayments-verify/${p.id}`);
+            if (v.data.credited) {
+              toast.success(`Deposit credited: +$${v.data.amount}${v.data.bonus ? ` (+ $${v.data.bonus} bonus)` : ""}`);
+              reloadBalance && reloadBalance();
+              loadTxns();
+              loadPending();
+            }
+          } catch {}
+        }
+      } catch {}
+    }, 30000);
+    return () => clearInterval(t);
     // eslint-disable-next-line
   }, []);
 
