@@ -1573,6 +1573,116 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
     }
 
 
+class BulkOrderRequest(BaseModel):
+    service_id: int
+    quantity: int = Field(..., ge=1, le=1000000)
+    targets: List[str] = Field(..., min_items=1, max_items=200)  # links or usernames
+    comments: Optional[str] = None
+
+
+@client_router.post("/order-bulk")
+async def order_bulk(body: BulkOrderRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Bulk-order the SAME service to many different profiles/streams at once.
+    Skips duplicates, calculates total charge, deducts from balance atomically, then
+    fires all provider calls in parallel and returns per-target results."""
+    db_local: AsyncIOMotorDatabase = request.app.state.db
+    svc = await db_local.curated_services.find_one({"service_id": body.service_id, "enabled": True}, {"_id": 0})
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not available")
+    if bool(svc.get("manual")):
+        raise HTTPException(status_code=400, detail="Manual services can't be bulk-ordered — place them one at a time.")
+    if bool(svc.get("needs_custom_text")) and not (body.comments or "").strip():
+        raise HTTPException(status_code=400, detail="This service needs custom text — bulk not supported without comments.")
+    rate = float(svc.get("custom_rate", 0))
+    if rate <= 0:
+        raise HTTPException(status_code=400, detail="Service price not set")
+    smin = int(svc.get("min", 1) or 1)
+    smax = int(svc.get("max", 100000) or 100000)
+    if body.quantity < smin or body.quantity > smax:
+        raise HTTPException(status_code=400, detail=f"Quantity must be between {smin} and {smax}")
+
+    # Normalize targets: dedupe (case-insensitive), strip whitespace, filter empties
+    seen = set()
+    targets = []
+    for t in body.targets:
+        v = (t or "").strip()
+        if not v:
+            continue
+        k = v.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        targets.append(v)
+    if not targets:
+        raise HTTPException(status_code=400, detail="No valid targets")
+
+    per_charge = round((rate * body.quantity) / 1000.0, 4)
+    total_charge = round(per_charge * len(targets), 2)
+    balance = await _get_user_balance(user.id)
+    if balance < total_charge:
+        raise HTTPException(status_code=402, detail=f"Not enough balance — needs ${total_charge:.2f} for {len(targets)} orders, you have ${balance:.2f}")
+
+    place_smm_order = request.app.state.place_smm_order
+    comments = (body.comments or "").strip() or None
+    provider_id = svc.get("provider_id")
+    svc_name = svc.get("custom_name") or svc.get("name") or ""
+
+    import asyncio
+    async def _one(link_or_user: str):
+        try:
+            resp = await place_smm_order(body.service_id, link_or_user, body.quantity, comments=comments, provider_id=provider_id)
+            return {"target": link_or_user, "ok": True, "smm_order_id": resp.get("order"), "response": resp} if resp.get("order") else {"target": link_or_user, "ok": False, "error": resp.get("error") or str(resp)}
+        except Exception as e:
+            return {"target": link_or_user, "ok": False, "error": str(e)[:200]}
+
+    results = await asyncio.gather(*[_one(t) for t in targets])
+    now = datetime.now(timezone.utc).isoformat()
+    successes = [r for r in results if r["ok"]]
+    failures = [r for r in results if not r["ok"]]
+
+    # Charge only for successful orders
+    charged = round(per_charge * len(successes), 2)
+    if charged > 0:
+        await db_local.transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user.id, "username": user.username,
+            "amount": -charged, "method": "balance", "status": "approved",
+            "type": "bulk_order",
+            "service_id": body.service_id, "bulk_count": len(successes),
+            "created_at": now, "approved_at": now,
+        })
+
+    # Persist one order per successful target so they show up in /client/orders
+    order_docs = []
+    for r in successes:
+        order_docs.append({
+            "id": str(uuid.uuid4()),
+            "smm_order_id": r.get("smm_order_id"),
+            "service_id": body.service_id,
+            "service_name": svc_name,
+            "link": r["target"],
+            "quantity": body.quantity,
+            "charge": per_charge,
+            "user_id": user.id, "username": user.username,
+            "payment_method": "balance", "source": "bulk",
+            "status": "Pending", "created_at": now,
+            "comments": comments, "provider_id": provider_id,
+        })
+    if order_docs:
+        await db_local.orders.insert_many(order_docs)
+
+    new_balance = await _get_user_balance(user.id)
+    return {
+        "ok": True,
+        "total_targets": len(targets),
+        "successes": len(successes),
+        "failures": len(failures),
+        "charged": charged,
+        "results": results,
+        "balance": new_balance,
+    }
+
+
 @client_router.get("/transactions")
 async def get_my_transactions(user: CurrentUser = Depends(current_user_dep)):
     items = await db.transactions.find(
@@ -1580,6 +1690,42 @@ async def get_my_transactions(user: CurrentUser = Depends(current_user_dep)):
         {"_id": 0},
     ).sort("created_at", -1).limit(100).to_list(100)
     return {"transactions": items}
+
+
+@client_router.get("/invoices")
+async def get_my_invoices(user: CurrentUser = Depends(current_user_dep)):
+    """User-facing invoice list — deposits & withdrawals with paid/unpaid/cancelled status."""
+    cur = db.transactions.find(
+        {
+            "user_id": user.id,
+            "type": {"$in": ["deposit", "withdrawal"]},
+        },
+        {"_id": 0},
+    ).sort("created_at", -1).limit(200)
+    items = await cur.to_list(200)
+    out = []
+    for it in items:
+        out.append({
+            "id": it.get("id"),
+            "amount": it.get("amount"),
+            "status": it.get("status", "pending"),
+            "method": it.get("method"),
+            "type": it.get("type"),
+            "created_at": it.get("created_at"),
+            "approved_at": it.get("approved_at"),
+            "checkout_url": it.get("nowpayments_url") or it.get("selly_url"),
+        })
+    return {"invoices": out}
+
+
+@client_router.get("/invoices-unpaid-count")
+async def unpaid_invoices_count(user: CurrentUser = Depends(current_user_dep)):
+    n = await db.transactions.count_documents({
+        "user_id": user.id,
+        "type": "deposit",
+        "status": "pending",
+    })
+    return {"unpaid": n}
 
 
 class CasinoSpinRequest(BaseModel):
@@ -2937,7 +3083,7 @@ async def admin_set_fake_online(payload: FakeOnlineConfig, x_admin_token: Option
 
 
 class NowpaymentsFundsRequest(BaseModel):
-    amount: float = Field(..., ge=1, le=10000)
+    amount: float = Field(..., ge=0.10, le=10000)
 
 
 @client_router.post("/funds/nowpayments-create")

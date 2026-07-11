@@ -43,6 +43,7 @@ import {
 import SlotsView from "./SlotsView";
 import MessagesView from "./MessagesView";
 import GamesView from "./GamesView";
+import { InvoicesView, HelpCenterView } from "./InvoicesAndHelp";
 import NewsModal from "@/components/NewsModal";
 import { toast } from "sonner";
 
@@ -63,6 +64,7 @@ export default function ClientDashboard() {
   const [withdrawable, setWithdrawable] = useState(0);
   const [unreadTickets, setUnreadTickets] = useState(0);
   const [unreadDms, setUnreadDms] = useState(0);
+  const [unpaidInvoices, setUnpaidInvoices] = useState(0);
   const [useNewLayout, setUseNewLayout] = useState(false);
   const chatEndRef = useRef(null);
 
@@ -102,16 +104,33 @@ export default function ClientDashboard() {
     } catch {}
   };
 
+  const loadUnpaidInvoices = async () => {
+    try {
+      const r = await authedApi().get("/client/invoices-unpaid-count");
+      setUnpaidInvoices(r.data.unpaid || 0);
+    } catch {}
+  };
+
   useEffect(() => {
     if (user) {
       loadUnreadTickets();
       loadUnreadDms();
+      loadUnpaidInvoices();
       const t1 = setInterval(loadUnreadTickets, 15000);
       const t2 = setInterval(loadUnreadDms, 10000);
-      return () => { clearInterval(t1); clearInterval(t2); };
+      const t3 = setInterval(loadUnpaidInvoices, 20000);
+      return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3); };
     }
     // eslint-disable-next-line
   }, [user]);
+
+  // Cross-view navigation shortcuts fired from HelpCenterView
+  useEffect(() => {
+    const h = (e) => e?.detail && changeView(e.detail);
+    window.addEventListener("bs:goto", h);
+    return () => window.removeEventListener("bs:goto", h);
+    // eslint-disable-next-line
+  }, []);
 
   // Clear badge instantly when user opens the Tickets view
   useEffect(() => {
@@ -281,6 +300,8 @@ export default function ClientDashboard() {
                 { id: "buy", label: "Purchase", testId: "nav-buy" },
                 { id: "numbers", label: "Numbers", testId: "nav-numbers", isNew: true },
                 { id: "games", label: "Games", testId: "nav-games" },
+                { id: "invoices", label: "Invoices", testId: "nav-invoices", badge: unpaidInvoices },
+                { id: "help", label: "Help", testId: "nav-help" },
                 { id: "messages", label: "Friends", testId: "nav-messages", badge: unreadDms },
                 { id: "tickets", label: "Support", testId: "nav-tickets", badge: unreadTickets },
                 { id: "funds", label: "Wallet", testId: "nav-funds" },
@@ -379,18 +400,18 @@ export default function ClientDashboard() {
           {/* Right cluster */}
           <div className="flex items-center gap-2 md:gap-3 px-4 md:px-6 ml-auto">
             <button
-              onClick={() => unreadDms > 0 ? changeView("messages") : (unreadTickets > 0 && changeView("tickets"))}
+              onClick={() => unpaidInvoices > 0 ? changeView("invoices") : (unreadDms > 0 ? changeView("messages") : (unreadTickets > 0 && changeView("tickets")))}
               data-testid="header-bell"
               className="relative w-9 h-9 rounded-md hover:bg-white/15 flex items-center justify-center transition"
-              title={unreadDms > 0 ? `${unreadDms} unread message${unreadDms > 1 ? "s" : ""}` : unreadTickets > 0 ? `${unreadTickets} ticket update${unreadTickets > 1 ? "s" : ""}` : "No new notifications"}
+              title={unpaidInvoices > 0 ? `${unpaidInvoices} unpaid invoice${unpaidInvoices > 1 ? "s" : ""}` : unreadDms > 0 ? `${unreadDms} unread message${unreadDms > 1 ? "s" : ""}` : unreadTickets > 0 ? `${unreadTickets} ticket update${unreadTickets > 1 ? "s" : ""}` : "No new notifications"}
             >
               <Bell className="w-4 h-4 text-white" />
-              {(unreadDms > 0 || unreadTickets > 0) && (
+              {(unreadDms > 0 || unreadTickets > 0 || unpaidInvoices > 0) && (
                 <>
-                  <span className="absolute top-0.5 right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 ring-2 ring-[#2563eb] text-[9px] font-bold text-white flex items-center justify-center leading-none">
-                    {unreadDms + unreadTickets}
+                  <span className={`absolute top-0.5 right-0.5 min-w-[16px] h-4 px-1 rounded-full ${unpaidInvoices > 0 ? "bg-amber-500" : "bg-red-500"} ring-2 ring-[#2563eb] text-[9px] font-bold text-white flex items-center justify-center leading-none`}>
+                    {unreadDms + unreadTickets + unpaidInvoices}
                   </span>
-                  <span className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-red-500 ring-2 ring-[#2563eb] animate-ping opacity-60" />
+                  <span className={`absolute top-0.5 right-0.5 w-4 h-4 rounded-full ${unpaidInvoices > 0 ? "bg-amber-500" : "bg-red-500"} ring-2 ring-[#2563eb] animate-ping opacity-60`} />
                 </>
               )}
             </button>
@@ -462,6 +483,8 @@ export default function ClientDashboard() {
             <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => changeView("buy")} testId="nav-buy" />
             <SideLinkV2 icon={Phone} label="Virtual Numbers" active={view === "numbers"} onClick={() => changeView("numbers")} testId="nav-numbers" badge="NEW" />
             <SideLinkV2 icon={Dices} label="Games" active={view === "games"} onClick={() => changeView("games")} testId="nav-games" />
+            <SideLinkV2 icon={FileText} label="Invoices" active={view === "invoices"} onClick={() => changeView("invoices")} testId="nav-invoices" badge={unpaidInvoices > 0 ? String(unpaidInvoices) : null} />
+            <SideLinkV2 icon={LifeBuoy} label="Help Center" active={view === "help"} onClick={() => changeView("help")} testId="nav-help" />
           </nav>
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Support</div>
@@ -529,6 +552,10 @@ export default function ClientDashboard() {
               {view === "games" && (
                 <GamesView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
               )}
+              {view === "invoices" && (
+                <InvoicesView authedApi={authedApi} reloadBalance={loadBalance} />
+              )}
+              {view === "help" && <HelpCenterView />}
               {view === "redeem" && (
                 <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
               )}
@@ -1440,8 +1467,8 @@ function FundsView({ authedApi, balance, reloadBalance }) {
 
   const payNowpayments = async () => {
     const a = Number(amount) || 0;
-    if (a < 1) {
-      toast.error("Min $1 for crypto checkout");
+    if (a < 0.10) {
+      toast.error("Min $0.10 for crypto checkout");
       return;
     }
     setCreating(true);
@@ -1551,7 +1578,7 @@ function FundsView({ authedApi, balance, reloadBalance }) {
             Pay ${Number(amount) || 0} with Crypto (300+ coins · No KYC)
           </button>
           <div className="text-[10px] text-center text-white/40 uppercase tracking-wider">
-            Min $1 · Instant credit after payment confirmation
+            Min $0.10 · Instant credit after payment confirmation
           </div>
         </div>
       </div>
@@ -2004,6 +2031,9 @@ function BuyView({ authedApi, balance, reloadBalance }) {
   const [comments, setComments] = useState("");
   const [placing, setPlacing] = useState(false);
   const [last, setLast] = useState(null);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkTargets, setBulkTargets] = useState("");
+  const [bulkResult, setBulkResult] = useState(null);
 
   const loadServices = async () => {
     setLoadingSvc(true);
@@ -2053,6 +2083,43 @@ function BuyView({ authedApi, balance, reloadBalance }) {
       reloadBalance();
     } catch (err) {
       toast.error(err.response?.data?.detail || "Order failed");
+    } finally {
+      setPlacing(false);
+    }
+  };
+
+  // Parse the bulk-targets textarea into a clean array of links/usernames.
+  const parseBulkTargets = () => bulkTargets
+    .split(/[\n,]+/g)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    // Dedupe (case-insensitive) client-side too so the count shown matches
+    .filter((v, i, a) => a.findIndex((x) => x.toLowerCase() === v.toLowerCase()) === i);
+  const bulkTargetList = parseBulkTargets();
+  const bulkTotal = selected && qty ? (Number(selected.rate) * Number(qty) * bulkTargetList.length) / 1000 : 0;
+  const canBulkBuy = selected && qty >= (selected.min || 1) && qty <= (selected.max || 1e9) && bulkTargetList.length >= 1 && bulkTotal <= balance && commentsOk;
+  const isTiktokService = selected && /tiktok/i.test((selected.category || "") + " " + (selected.name || ""));
+
+  const placeBulk = async () => {
+    if (!selected) return;
+    setPlacing(true);
+    setBulkResult(null);
+    try {
+      const r = await authedApi().post("/client/order-bulk", {
+        service_id: selected.service,
+        quantity: Number(qty),
+        targets: bulkTargetList,
+        comments: needsComments ? comments.trim() : undefined,
+      });
+      const { successes, failures, charged, results } = r.data;
+      setBulkResult({ successes, failures, charged, results });
+      if (successes > 0) toast.success(`✅ Placed ${successes}/${bulkTargetList.length} orders — charged $${charged.toFixed(2)}`);
+      if (failures > 0) toast.error(`${failures} target(s) failed — see details below`);
+      reloadBalance();
+      // Keep the service selected so user can review results; but clear the list
+      setBulkTargets("");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Bulk order failed");
     } finally {
       setPlacing(false);
     }
@@ -2163,26 +2230,77 @@ function BuyView({ authedApi, balance, reloadBalance }) {
           )}
 
           <div className="flex items-center justify-between bg-[#1a1525]/60 border border-white/5 rounded-sm px-4 py-3">
-            <div className="text-xs uppercase tracking-wider text-white/50">Total</div>
-            <div className="font-display font-black text-2xl text-[#FF007F]" data-testid="buy-total">
-              ${total.toFixed(4)}
+            <div className="flex items-center gap-3">
+              <div className="text-xs uppercase tracking-wider text-white/50">Bulk order</div>
+              <button
+                onClick={() => { setBulkMode((v) => !v); setBulkResult(null); }}
+                data-testid="buy-bulk-toggle"
+                className={`relative w-11 h-6 rounded-full transition ${bulkMode ? "bg-emerald-500" : "bg-white/15"}`}
+              >
+                <span className={`absolute top-0.5 ${bulkMode ? "left-6" : "left-0.5"} w-5 h-5 rounded-full bg-white shadow transition-all`} />
+              </button>
+              <span className="text-[11px] text-white/50">{bulkMode ? `${bulkTargetList.length} target(s)` : "single"}</span>
+            </div>
+            <div className="text-right">
+              <div className="text-xs uppercase tracking-wider text-white/50">Total</div>
+              <div className="font-display font-black text-2xl text-[#FF007F]" data-testid="buy-total">
+                ${(bulkMode ? bulkTotal : total).toFixed(4)}
+              </div>
             </div>
           </div>
 
-          {total > balance && qty > 0 && (
+          {bulkMode && (
+            <div className="bg-emerald-500/5 border border-emerald-500/30 rounded-sm p-4 space-y-2" data-testid="buy-bulk-panel">
+              <Label className="text-[11px] uppercase tracking-wider text-emerald-300">
+                Targets — one link or @username per line (up to 200)
+              </Label>
+              <textarea
+                data-testid="buy-bulk-targets"
+                value={bulkTargets}
+                onChange={(e) => setBulkTargets(e.target.value.slice(0, 20000))}
+                rows={6}
+                placeholder={"https://tiktok.com/@user1/live\n@streamer2\nhttps://tiktok.com/@creator3/live"}
+                className="w-full bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm font-mono text-white outline-none focus:border-emerald-500"
+              />
+              <div className="text-[10px] text-white/40">
+                {bulkTargetList.length} unique target(s) · each will receive {qty || 0} × ${(Number(selected.rate) * Number(qty || 0) / 1000).toFixed(4)} = <span className="text-emerald-300 font-bold">${bulkTotal.toFixed(2)} total</span>
+                {isTiktokService ? " · optimised for TikTok Live" : ""}
+              </div>
+            </div>
+          )}
+
+          {bulkResult && (
+            <div className="bg-black/40 border border-white/10 rounded-sm p-3 max-h-56 overflow-y-auto text-xs space-y-1" data-testid="buy-bulk-results">
+              <div className="text-white/60 mb-1">
+                Result: <span className="text-emerald-300 font-bold">{bulkResult.successes} placed</span>
+                {bulkResult.failures > 0 && <> · <span className="text-red-300 font-bold">{bulkResult.failures} failed</span></>}
+                {" · charged "}<span className="text-emerald-300 font-mono">${bulkResult.charged.toFixed(2)}</span>
+              </div>
+              {(bulkResult.results || []).map((r, i) => (
+                <div key={i} className={`flex justify-between gap-2 ${r.ok ? "text-white/70" : "text-red-300/80"}`}>
+                  <span className="truncate font-mono">{r.target}</span>
+                  <span>{r.ok ? `#${r.smm_order_id}` : (r.error || "failed").slice(0, 40)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {(bulkMode ? bulkTotal : total) > balance && qty > 0 && (
             <div className="text-xs text-amber-400">
               Not enough balance. Top up via Add Funds or redeem a coupon.
             </div>
           )}
 
           <button
-            disabled={!canBuy || placing}
-            onClick={place}
-            data-testid="buy-confirm"
+            disabled={bulkMode ? (!canBulkBuy || placing) : (!canBuy || placing)}
+            onClick={bulkMode ? placeBulk : place}
+            data-testid={bulkMode ? "buy-bulk-confirm" : "buy-confirm"}
             className="w-full py-3 gradient-pp rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40"
           >
             {placing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-            Place order — ${total.toFixed(2)}
+            {bulkMode
+              ? `Place ${bulkTargetList.length} orders — $${bulkTotal.toFixed(2)}`
+              : `Place order — $${total.toFixed(2)}`}
           </button>
         </div>
       ) : (
