@@ -111,11 +111,12 @@ def verify_password(pw: str, hashed: str) -> bool:
         return False
 
 
-def create_token(user_id: str, username: str, role: str) -> str:
+def create_token(user_id: str, username: str, role: str, session_epoch: int = 0) -> str:
     payload = {
         "sub": user_id,
         "username": username,
         "role": role,
+        "session_epoch": int(session_epoch or int(time.time())),
         "exp": datetime.now(timezone.utc) + ACCESS_TTL,
     }
     return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
@@ -246,6 +247,14 @@ async def current_user_dep(request: Request) -> CurrentUser:
     doc = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
     if not doc:
         raise HTTPException(status_code=401, detail="User not found")
+    # Ban enforcement — banned users can't touch anything except public routes
+    if doc.get("banned"):
+        raise HTTPException(status_code=403, detail="Your account has been banned. Contact support.")
+    # Session kill: session_epoch on user must match token payload iat/session_epoch
+    session_epoch = int(doc.get("session_epoch", 0))
+    tok_epoch = int(payload.get("session_epoch", 0))
+    if session_epoch and tok_epoch and tok_epoch < session_epoch:
+        raise HTTPException(status_code=401, detail="Session expired — please log in again.")
     # Heartbeat: mark online
     await db.users.update_one(
         {"id": doc["id"]},

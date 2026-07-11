@@ -1728,6 +1728,186 @@ async def unpaid_invoices_count(user: CurrentUser = Depends(current_user_dep)):
     return {"unpaid": n}
 
 
+# ============ Account settings (self-service) ============
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=200)
+    new_password: str = Field(..., min_length=8, max_length=120)
+
+
+@client_router.post("/change-password")
+async def change_password(payload: ChangePasswordRequest, user: CurrentUser = Depends(current_user_dep)):
+    from auth_and_chat import hash_password, verify_password
+    doc = await db.users.find_one({"id": user.id}, {"_id": 0, "password_hash": 1})
+    if not doc or not verify_password(payload.current_password, doc.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Current password is wrong")
+    await db.users.update_one({"id": user.id}, {"$set": {"password_hash": hash_password(payload.new_password)}})
+    return {"ok": True}
+
+
+class ChangeEmailRequest(BaseModel):
+    email: EmailStr
+    current_password: str = Field(..., min_length=1, max_length=200)
+
+
+@client_router.post("/change-email")
+async def change_email(payload: ChangeEmailRequest, user: CurrentUser = Depends(current_user_dep)):
+    from auth_and_chat import verify_password
+    doc = await db.users.find_one({"id": user.id}, {"_id": 0, "password_hash": 1})
+    if not doc or not verify_password(payload.current_password, doc.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Password is wrong")
+    email = payload.email.strip().lower()
+    # Uniqueness
+    if await db.users.find_one({"email": email, "id": {"$ne": user.id}}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=409, detail="Email already in use")
+    await db.users.update_one({"id": user.id}, {"$set": {"email": email}})
+    return {"ok": True, "email": email}
+
+
+class ThemePrefRequest(BaseModel):
+    theme: str = Field(..., pattern=r"^[a-z0-9\-]{2,32}$")
+
+
+@client_router.post("/theme-pref")
+async def set_theme_pref(payload: ThemePrefRequest, user: CurrentUser = Depends(current_user_dep)):
+    await db.users.update_one({"id": user.id}, {"$set": {"theme_pref": payload.theme}})
+    return {"ok": True, "theme": payload.theme}
+
+
+@client_router.get("/theme-pref")
+async def get_theme_pref(user: CurrentUser = Depends(current_user_dep)):
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "theme_pref": 1})
+    return {"theme": (u or {}).get("theme_pref", "green")}
+
+
+# ============ Realtime user commands ============
+# Client polls this every ~3s; picks up admin commands (kick / redirect).
+@client_router.get("/live-poll")
+async def client_live_poll(user: CurrentUser = Depends(current_user_dep)):
+    # Fetch the most-recent unconsumed command for this user (if any)
+    cmd = await db.live_commands.find_one(
+        {"user_id": user.id, "consumed_at": None},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if cmd:
+        await db.live_commands.update_one(
+            {"id": cmd["id"]},
+            {"$set": {"consumed_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    return {"command": cmd, "banned": False}
+
+
+# ============ Admin user actions (kick / ban / redirect / drill-down) ============
+
+class RedirectRequest(BaseModel):
+    path: str = Field(..., min_length=1, max_length=200)
+
+
+async def _push_live_cmd(user_id: str, cmd: str, payload: dict | None = None) -> None:
+    await db.live_commands.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "cmd": cmd,
+        "payload": payload or {},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "consumed_at": None,
+    })
+
+
+@api_router.post("/admin/users/{uid}/kick")
+async def admin_kick_user(uid: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "users")
+    doc = await db.users.find_one({"id": uid}, {"_id": 0, "username": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    import time as _t
+    await db.users.update_one({"id": uid}, {"$set": {"session_epoch": int(_t.time())}})
+    await _push_live_cmd(uid, "kick", {"reason": "logged out by admin"})
+    return {"ok": True, "username": doc["username"]}
+
+
+@api_router.post("/admin/users/{uid}/ban")
+async def admin_ban_user(uid: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "users")
+    doc = await db.users.find_one({"id": uid}, {"_id": 0, "username": 1, "role": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    if doc.get("role") == "owner":
+        raise HTTPException(status_code=400, detail="Cannot ban the owner")
+    import time as _t
+    await db.users.update_one(
+        {"id": uid},
+        {"$set": {"banned": True, "banned_at": datetime.now(timezone.utc).isoformat(), "session_epoch": int(_t.time())}},
+    )
+    await _push_live_cmd(uid, "ban", {"reason": "banned by admin"})
+    return {"ok": True, "username": doc["username"]}
+
+
+@api_router.post("/admin/users/{uid}/unban")
+async def admin_unban_user(uid: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "users")
+    r = await db.users.update_one({"id": uid}, {"$set": {"banned": False}, "$unset": {"banned_at": ""}})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True}
+
+
+@api_router.post("/admin/users/{uid}/redirect")
+async def admin_redirect_user(uid: str, payload: RedirectRequest, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "users")
+    doc = await db.users.find_one({"id": uid}, {"_id": 0, "username": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    await _push_live_cmd(uid, "redirect", {"path": payload.path.strip()})
+    return {"ok": True, "path": payload.path, "username": doc["username"]}
+
+
+@api_router.post("/admin/broadcast/redirect")
+async def admin_redirect_all(payload: RedirectRequest, x_admin_token: Optional[str] = Header(None)):
+    """Push a redirect command to EVERY non-owner user online. Great for launches."""
+    check_admin(x_admin_token, "users")
+    threshold = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    users = await db.users.find(
+        {"role": {"$nin": ["owner", "system"]}, "last_seen": {"$gte": threshold}},
+        {"_id": 0, "id": 1},
+    ).to_list(None)
+    docs = [{
+        "id": str(uuid.uuid4()),
+        "user_id": u["id"],
+        "cmd": "redirect",
+        "payload": {"path": payload.path.strip()},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "consumed_at": None,
+    } for u in users]
+    if docs:
+        await db.live_commands.insert_many(docs)
+    return {"ok": True, "sent": len(docs)}
+
+
+@api_router.get("/admin/users/{uid}/orders")
+async def admin_user_orders(uid: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "orders")
+    doc = await db.users.find_one({"id": uid}, {"_id": 0, "username": 1, "email": 1, "role": 1, "banned": 1, "created_at": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    orders = await db.orders.find({"user_id": uid}, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+    txns = await db.transactions.find({"user_id": uid}, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
+    # Aggregate status counts
+    status_counts = {}
+    for o in orders:
+        s = str(o.get("status", "Pending"))
+        status_counts[s] = status_counts.get(s, 0) + 1
+    return {
+        "user": doc,
+        "orders": orders,
+        "transactions": txns,
+        "status_counts": status_counts,
+        "total_spent": round(sum(-t["amount"] for t in txns if float(t.get("amount", 0)) < 0 and t.get("type") in ("order", "bulk_order", "slot_bet", "stairs_stake", "aviator_stake", "spin_stake")), 2),
+        "total_deposits": round(sum(t["amount"] for t in txns if t.get("type") == "deposit" and t.get("status") == "approved"), 2),
+    }
+
+
 class CasinoSpinRequest(BaseModel):
     stake: float = Field(..., ge=1, le=100)
 
@@ -2485,23 +2665,26 @@ async def spin_wheel(user: CurrentUser = Depends(current_user_dep)):
 
 
 # ============ Slot Machine (Wild-Hot-style) ============
-# 5 reels × 6 rows = 30 boxes. Bet $0.20–$5. RTP ~ 92%.
-# Any 3+ same symbols starting from the leftmost reel on ANY of 6 rows pays.
+# 5 reels × 4 rows on display. Bet $0.20–$5. Easier win frequency, WILDs with
+# multipliers, and 3+ SCATTER (FREE SPIN) symbols anywhere award free spins.
 SLOT_SYMBOLS = [
     # (id, name, weight-per-reel, payout_multiplier[3,4,5])
-    ("cherry", "Cherry",     26, [0.2, 0.5, 2.0]),
-    ("lemon", "Lemon",       22, [0.3, 0.8, 3.0]),
-    ("orange", "Orange",     18, [0.5, 1.5, 5.0]),
-    ("plum", "Plum",         15, [1.0, 3.0, 10.0]),
-    ("grape", "Grape",       10, [2.0, 6.0, 20.0]),
-    ("melon", "Watermelon",   6, [5.0, 15.0, 50.0]),
-    ("seven", "Lucky Seven",  3, [10.0, 40.0, 200.0]),  # top-tier
+    ("cherry",  "Cherry",       40, [0.5, 1.0, 3.0]),
+    ("lemon",   "Lemon",        34, [0.6, 1.5, 4.0]),
+    ("orange",  "Orange",       28, [1.0, 2.5, 6.0]),
+    ("plum",    "Plum",         22, [1.5, 4.0, 12.0]),
+    ("grape",   "Grape",        16, [3.0, 8.0, 25.0]),
+    ("melon",   "Watermelon",   10, [6.0, 18.0, 60.0]),
+    ("seven",   "Lucky Seven",   6, [15.0, 60.0, 250.0]),
+    ("wild",    "Wild",          4, [0.0, 0.0, 0.0]),  # substitutes anything, no line win alone
+    ("scatter", "Free Spins",    4, [0.0, 0.0, 0.0]),  # 3+ anywhere triggers free spins
 ]
 _SLOT_TOTAL_W = sum(w for _, _, w, _ in SLOT_SYMBOLS)
+SLOT_WILD_MULTS = [1, 1, 1, 2, 2, 3, 5]  # random pick per wild (skewed to low)
+SLOT_FREE_SPINS_TABLE = {3: 5, 4: 10, 5: 15}
 
 
 def _slot_spin_reel() -> str:
-    """One symbol pick weighted by SLOT_SYMBOLS."""
     import secrets as _s
     r = _s.randbelow(_SLOT_TOTAL_W)
     acc = 0
@@ -2512,26 +2695,65 @@ def _slot_spin_reel() -> str:
     return SLOT_SYMBOLS[0][0]
 
 
-def _slot_evaluate(grid: list) -> list:
-    """grid = 5 reels × 6 rows list-of-lists. Returns wins list [{row, symbol, matches, mult}]."""
-    payouts = {s[0]: s[3] for s in SLOT_SYMBOLS}
+def _slot_evaluate(grid: list, wild_mults: dict) -> list:
+    """grid = 5 reels × N rows. Returns wins list with wild substitution + multipliers.
+    wild_mults maps (reel,row) → multiplier when the wild lands there.
+    Scatters are counted separately — they don't participate in payline wins."""
+    payouts = {s[0]: s[3] for s in SLOT_SYMBOLS if s[0] not in ("wild", "scatter")}
     wins = []
-    for row in range(6):
-        first = grid[0][row]
-        count = 1
-        for reel in range(1, 5):
-            if grid[reel][row] == first:
+    rows = len(grid[0])
+    for row in range(rows):
+        # Find leftmost non-wild anchor symbol
+        anchor = None
+        anchor_reel = 0
+        for reel in range(5):
+            sym = grid[reel][row]
+            if sym == "scatter":
+                break  # scatter breaks the payline
+            if sym != "wild":
+                anchor = sym
+                anchor_reel = reel
+                break
+            # wild counted separately below
+        # If ALL 5 were wild (very rare) → treat as top-symbol payout
+        if anchor is None:
+            # check no scatter in row
+            if any(grid[r][row] == "scatter" for r in range(5)):
+                continue
+            anchor = "seven"
+            anchor_reel = 0
+        # Count contiguous match from reel 0, treating wild as match
+        count = 0
+        wilds_used = []
+        for reel in range(5):
+            sym = grid[reel][row]
+            if sym == anchor or sym == "wild":
                 count += 1
+                if sym == "wild":
+                    wilds_used.append((reel, row))
             else:
                 break
-        if count >= 3:
-            mult = payouts[first][count - 3]
-            wins.append({"row": row, "symbol": first, "matches": count, "mult": mult})
+        if count < 3 or anchor not in payouts:
+            continue
+        base = payouts[anchor][count - 3]
+        # Combine any wild-tile multipliers in the winning stretch
+        total_wild_mult = 1
+        for pos in wilds_used:
+            total_wild_mult *= wild_mults.get(pos, 1)
+        wins.append({
+            "row": row,
+            "symbol": anchor,
+            "matches": count,
+            "mult": base * total_wild_mult,
+            "wild_mult": total_wild_mult,
+            "wilds": wilds_used,
+        })
     return wins
 
 
 class SlotSpinRequest(BaseModel):
     bet: float = Field(..., ge=0.20, le=5.00)
+    free_spin: bool = False  # server ignores if user has no free spins remaining
 
 
 @api_router.post("/games/slot/spin")
@@ -2539,22 +2761,56 @@ async def slot_spin(payload: SlotSpinRequest, user: CurrentUser = Depends(curren
     bet = round(float(payload.bet), 2)
     if bet < 0.20 or bet > 5.00:
         raise HTTPException(status_code=400, detail="Bet must be between $0.20 and $5.00")
-    balance = await _get_user_balance(user.id)
-    if balance < bet:
-        raise HTTPException(status_code=400, detail=f"Not enough balance — need ${bet:.2f}, you have ${balance:.2f}")
-    # Roll 5 reels × 6 rows
-    grid = [[_slot_spin_reel() for _ in range(6)] for _ in range(5)]
-    wins = _slot_evaluate(grid)
+    # Free-spin bookkeeping
+    state = await db.slot_state.find_one({"user_id": user.id}, {"_id": 0}) or {}
+    free_spins_left = int(state.get("free_spins", 0))
+    use_free = bool(payload.free_spin) and free_spins_left > 0
+    if not use_free:
+        balance = await _get_user_balance(user.id)
+        if balance < bet:
+            raise HTTPException(status_code=400, detail=f"Not enough balance — need ${bet:.2f}, you have ${balance:.2f}")
+    # Roll grid + place 0-5 wilds with multipliers
+    import secrets as _s
+    grid = [[_slot_spin_reel() for _ in range(4)] for _ in range(5)]
+    # Sprinkle extra wilds after the base roll — this makes wins much more frequent
+    # without touching the raw reel odds.  0-5 wilds, weighted toward 1-2.
+    extra_wild_bag = [0, 0, 1, 1, 1, 2, 2, 3, 4, 5]
+    extras = extra_wild_bag[_s.randbelow(len(extra_wild_bag))]
+    wild_mults = {}
+    placed = 0
+    tries = 0
+    while placed < extras and tries < 40:
+        r = _s.randbelow(5)
+        c = _s.randbelow(4)
+        tries += 1
+        if grid[r][c] in ("wild", "scatter"):
+            continue
+        grid[r][c] = "wild"
+        wild_mults[(r, c)] = SLOT_WILD_MULTS[_s.randbelow(len(SLOT_WILD_MULTS))]
+        placed += 1
+    # Evaluate
+    wins = _slot_evaluate(grid, wild_mults)
     total_mult = sum(w["mult"] for w in wins)
     payout = round(bet * total_mult, 2)
+    # Count scatters — 3+ anywhere → free spins
+    scatter_count = sum(1 for reel in grid for cell in reel if cell == "scatter")
+    free_spins_awarded = SLOT_FREE_SPINS_TABLE.get(scatter_count, 0)
+
     now = datetime.now(timezone.utc).isoformat()
-    tx_id_bet = str(uuid.uuid4())
-    await db.transactions.insert_one({
-        "id": tx_id_bet, "user_id": user.id, "username": user.username,
-        "amount": -bet, "method": "slot", "status": "approved",
-        "type": "slot_bet", "note": f"Slot bet ${bet:.2f}",
-        "created_at": now, "approved_at": now,
-    })
+    if use_free:
+        # deduct one free spin, no balance charge
+        await db.slot_state.update_one(
+            {"user_id": user.id},
+            {"$inc": {"free_spins": -1}, "$set": {"updated_at": now}},
+            upsert=True,
+        )
+    else:
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+            "amount": -bet, "method": "slot", "status": "approved",
+            "type": "slot_bet", "note": f"Slot bet ${bet:.2f}",
+            "created_at": now, "approved_at": now,
+        })
     if payout > 0:
         await db.transactions.insert_one({
             "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
@@ -2562,15 +2818,145 @@ async def slot_spin(payload: SlotSpinRequest, user: CurrentUser = Depends(curren
             "type": "slot_win", "note": f"Slot win ${payout:.2f} ({total_mult:.1f}× bet)",
             "created_at": now, "approved_at": now,
         })
-        await db.users.update_one(
-            {"id": user.id},
-            {"$inc": {"withdrawable_balance": payout}},
+        await db.users.update_one({"id": user.id}, {"$inc": {"withdrawable_balance": payout}})
+    if free_spins_awarded > 0:
+        await db.slot_state.update_one(
+            {"user_id": user.id},
+            {"$inc": {"free_spins": free_spins_awarded}, "$set": {"updated_at": now}},
+            upsert=True,
         )
+    new_state = await db.slot_state.find_one({"user_id": user.id}, {"_id": 0}) or {}
     new_balance = await _get_user_balance(user.id)
+    # Convert wild_mults keys (tuple) → list for JSON
+    wilds_out = [{"reel": r, "row": c, "mult": m} for (r, c), m in wild_mults.items()]
     return {
         "ok": True, "bet": bet, "grid": grid, "wins": wins,
-        "total_mult": round(total_mult, 2), "payout": payout, "balance": new_balance,
+        "wilds": wilds_out,
+        "scatter_count": scatter_count,
+        "free_spins_awarded": free_spins_awarded,
+        "free_spins_remaining": int(new_state.get("free_spins", 0)),
+        "used_free_spin": use_free,
+        "total_mult": round(total_mult, 2),
+        "payout": payout,
+        "balance": new_balance,
     }
+
+
+@api_router.get("/games/slot/state")
+async def slot_state(user: CurrentUser = Depends(current_user_dep)):
+    s = await db.slot_state.find_one({"user_id": user.id}, {"_id": 0}) or {}
+    return {"free_spins": int(s.get("free_spins", 0))}
+
+
+# ============ Aviator (daily crash game) ============
+# Player bets any amount, plane multiplier climbs from 1.00× exponentially.
+# Server pre-rolls a crash multiplier (heavy-tailed with a 3% instant-crash chance
+# for house edge). Cashout pays bet × current mult if game hasn't crashed yet.
+import math as _math
+AVIATOR_GROWTH_K = 0.35  # multiplier growth rate per second (~e^(0.35t))
+AVIATOR_MAX_MULT = 100.0
+AVIATOR_INSTANT_CRASH_RATE = 0.03  # 3% chance of instant crash → house edge
+
+
+def _roll_aviator_crash() -> float:
+    import secrets as _s
+    u = _s.randbelow(10_000_000) / 10_000_000.0  # [0, 1)
+    if u < AVIATOR_INSTANT_CRASH_RATE:
+        return 1.00
+    # crash = 0.99 / (1 - u)  → median ~ 2×, capped
+    crash = min(AVIATOR_MAX_MULT, 0.99 / max(0.0001, 1.0 - u))
+    return round(max(1.01, crash), 2)
+
+
+class AviatorStartRequest(BaseModel):
+    bet: float = Field(..., ge=0.20, le=100.00)
+
+
+@api_router.get("/games/aviator/status")
+async def aviator_status(user: CurrentUser = Depends(current_user_dep)):
+    today = datetime.now(timezone.utc).date().isoformat()
+    played_today = await db.aviator_games.find_one(
+        {"user_id": user.id, "day": today},
+        {"_id": 0, "id": 1, "status": 1, "bet": 1, "start_time": 1, "cashout_mult": 1},
+    )
+    active = played_today and played_today.get("status") == "active"
+    return {
+        "played_today": bool(played_today and played_today.get("status") != "active"),
+        "active_game": played_today if active else None,
+        "can_play": played_today is None or active,
+        "growth_k": AVIATOR_GROWTH_K,
+    }
+
+
+@api_router.post("/games/aviator/start")
+async def aviator_start(payload: AviatorStartRequest, user: CurrentUser = Depends(current_user_dep)):
+    today = datetime.now(timezone.utc).date().isoformat()
+    existing = await db.aviator_games.find_one({"user_id": user.id, "day": today})
+    if existing:
+        if existing.get("status") == "active":
+            return {"ok": True, "game_id": existing["id"], "bet": existing["bet"], "start_time": existing["start_time"], "already_active": True}
+        raise HTTPException(status_code=429, detail="You already played Aviator today. Come back tomorrow!")
+    bet = round(float(payload.bet), 2)
+    balance = await _get_user_balance(user.id)
+    if balance < bet:
+        raise HTTPException(status_code=400, detail=f"Not enough balance — need ${bet:.2f}, you have ${balance:.2f}")
+    game_id = str(uuid.uuid4())
+    crash_mult = _roll_aviator_crash()
+    start_ts = datetime.now(timezone.utc)
+    # Reserve the stake immediately
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+        "amount": -bet, "method": "aviator", "status": "approved",
+        "type": "aviator_stake", "note": f"Aviator stake ${bet:.2f}",
+        "aviator_game_id": game_id, "created_at": start_ts.isoformat(),
+        "approved_at": start_ts.isoformat(),
+    })
+    await db.aviator_games.insert_one({
+        "id": game_id, "user_id": user.id, "username": user.username,
+        "day": today, "bet": bet, "crash_mult": crash_mult,
+        "start_time": start_ts.isoformat(), "start_ts_epoch": start_ts.timestamp(),
+        "status": "active", "created_at": start_ts.isoformat(),
+    })
+    return {"ok": True, "game_id": game_id, "bet": bet, "start_time": start_ts.isoformat(), "growth_k": AVIATOR_GROWTH_K}
+
+
+class AviatorCashoutRequest(BaseModel):
+    game_id: str
+
+
+@api_router.post("/games/aviator/cashout")
+async def aviator_cashout(payload: AviatorCashoutRequest, user: CurrentUser = Depends(current_user_dep)):
+    game = await db.aviator_games.find_one({"id": payload.game_id, "user_id": user.id})
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    if game.get("status") != "active":
+        raise HTTPException(status_code=400, detail="Game already ended")
+    now = datetime.now(timezone.utc)
+    elapsed = now.timestamp() - float(game["start_ts_epoch"])
+    current_mult = round(min(AVIATOR_MAX_MULT, _math.exp(AVIATOR_GROWTH_K * max(0.0, elapsed))), 2)
+    crash_mult = float(game.get("crash_mult", 1.0))
+    if current_mult >= crash_mult:
+        # Crashed before user cashed out
+        await db.aviator_games.update_one(
+            {"id": game["id"]},
+            {"$set": {"status": "crashed", "cashout_mult": crash_mult, "ended_at": now.isoformat()}},
+        )
+        return {"ok": True, "result": "crashed", "crash_mult": crash_mult, "current_mult": crash_mult, "payout": 0}
+    # Successful cashout
+    payout = round(float(game["bet"]) * current_mult, 2)
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+        "amount": payout, "method": "aviator", "status": "approved",
+        "type": "aviator_win", "note": f"Aviator cashout {current_mult:.2f}× — ${payout:.2f}",
+        "aviator_game_id": game["id"], "created_at": now.isoformat(),
+        "approved_at": now.isoformat(),
+    })
+    await db.users.update_one({"id": user.id}, {"$inc": {"withdrawable_balance": payout}})
+    await db.aviator_games.update_one(
+        {"id": game["id"]},
+        {"$set": {"status": "cashed", "cashout_mult": current_mult, "payout": payout, "ended_at": now.isoformat()}},
+    )
+    return {"ok": True, "result": "cashed", "mult": current_mult, "payout": payout, "crash_mult": crash_mult}
 
 
 # ============ Daily Stairs Game ============

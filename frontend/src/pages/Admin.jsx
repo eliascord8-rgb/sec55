@@ -3478,6 +3478,45 @@ function UsersPanel({ token }) {
   const [dmTarget, setDmTarget] = useState(null); // user | { username: "@all" } for broadcast
   const [dmText, setDmText] = useState("");
   const [dmSending, setDmSending] = useState(false);
+  const [drillUser, setDrillUser] = useState(null); // selected user for orders drill-down
+  const [drillData, setDrillData] = useState(null);
+  const [redirectFor, setRedirectFor] = useState(null); // user or "all"
+  const [redirectPath, setRedirectPath] = useState("");
+
+  const runUserAction = async (u, action) => {
+    if (!u) return;
+    if (action === "ban" && !window.confirm(`Ban @${u.username}? They'll be kicked instantly and can't log back in.`)) return;
+    if (action === "kick" && !window.confirm(`Sign out @${u.username} now?`)) return;
+    try {
+      await adminApi(token).post(`/admin/users/${u.id}/${action}`);
+      toast.success(`${action.toUpperCase()} → @${u.username}`);
+      load?.();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+  };
+
+  const openDrill = async (u) => {
+    setDrillUser(u);
+    setDrillData(null);
+    try {
+      const r = await adminApi(token).get(`/admin/users/${u.id}/orders`);
+      setDrillData(r.data);
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to load"); }
+  };
+
+  const sendRedirect = async () => {
+    const path = redirectPath.trim();
+    if (!path) { toast.error("Enter a path"); return; }
+    try {
+      if (redirectFor === "all") {
+        const r = await adminApi(token).post("/admin/broadcast/redirect", { path });
+        toast.success(`Redirect broadcast → ${r.data.sent} online users`);
+      } else if (redirectFor) {
+        await adminApi(token).post(`/admin/users/${redirectFor.id}/redirect`, { path });
+        toast.success(`Redirect → @${redirectFor.username}`);
+      }
+      setRedirectFor(null); setRedirectPath("");
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+  };
 
   const sendDm = async () => {
     const text = (dmText || "").trim();
@@ -3718,6 +3757,49 @@ function UsersPanel({ token }) {
                     </td>
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-2 justify-end">
+                        <button
+                          onClick={() => openDrill(u)}
+                          data-testid={`orders-user-${u.id}`}
+                          title="View orders & full history"
+                          className="text-white/60 hover:text-emerald-300"
+                        >
+                          📋
+                        </button>
+                        <button
+                          onClick={() => { setRedirectFor(u); setRedirectPath(""); }}
+                          data-testid={`redirect-user-${u.id}`}
+                          title="Redirect this user in real time"
+                          className="text-white/60 hover:text-amber-300 text-lg leading-none"
+                        >
+                          ↪
+                        </button>
+                        <button
+                          onClick={() => runUserAction(u, "kick")}
+                          data-testid={`kick-user-${u.id}`}
+                          title="Sign this user out now"
+                          className="text-white/60 hover:text-yellow-300 text-sm font-bold"
+                        >
+                          Kick
+                        </button>
+                        {u.banned ? (
+                          <button
+                            onClick={() => runUserAction(u, "unban")}
+                            data-testid={`unban-user-${u.id}`}
+                            title="Lift ban"
+                            className="text-emerald-400 hover:text-emerald-300 text-sm font-bold"
+                          >
+                            Unban
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => runUserAction(u, "ban")}
+                            data-testid={`ban-user-${u.id}`}
+                            title="Ban this user"
+                            className="text-red-400 hover:text-red-300 text-sm font-bold"
+                          >
+                            Ban
+                          </button>
+                        )}
                         <button
                           onClick={() => { setDmTarget(u); setDmText(""); }}
                           data-testid={`dm-user-${u.id}`}

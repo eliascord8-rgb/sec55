@@ -197,5 +197,43 @@ a[href*="emergent.sh"][id*="badge"] {
 .theme-green .gradient-pp { background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important; }
 .theme-green .gradient-text { background: linear-gradient(135deg, #34d399 0%, #10b981 50%, #a7f3d0 100%) !important; -webkit-background-clip: text !important; background-clip: text !important; color: transparent !important; }
 .theme-green [data-state="active"][role="tab"] { background-color: #10b981 !important; color: #052e16 !important; }
+/* ============ Alternate color themes ============ */
+/* Applied by adding e.g. `theme-red` or `theme-blue` to <body>. Same rewrite
+   trick as theme-green — only overrides the accent + page-bg tokens so every
+   component follows without rewriting classes. */
+body.theme-red-body { background: #1a0505; }
+body.theme-blue-body { background: #050b1a; }
+body.theme-purple-body { background: #0f051a; }
+
+.theme-red .bg-\[\#FF007F\], .theme-red .hover\:bg-\[\#FF007F\]:hover { background-color: #dc2626 !important; }
+.theme-red .text-\[\#FF007F\] { color: #f87171 !important; }
+.theme-red .border-\[\#FF007F\] { border-color: #dc2626 !important; }
+.theme-red .from-\[\#FF007F\] { --tw-gradient-from: #dc2626 !important; }
+.theme-red .to-\[\#FF007F\] { --tw-gradient-to: #dc2626 !important; }
+.theme-red [class*="bg-[#FF007F]/"] { background-color: rgba(220, 38, 38, 0.15) !important; }
+.theme-red [class*="border-[#FF007F]/"] { border-color: rgba(220, 38, 38, 0.35) !important; }
+.theme-red .bg-\[\#0a0a14\], .theme-red .bg-\[\#0d0a14\] { background-color: #1a0505 !important; }
+.theme-red .gradient-pp { background: linear-gradient(135deg, #f87171 0%, #dc2626 100%) !important; }
+
+.theme-blue .bg-\[\#FF007F\], .theme-blue .hover\:bg-\[\#FF007F\]:hover { background-color: #2563eb !important; }
+.theme-blue .text-\[\#FF007F\] { color: #60a5fa !important; }
+.theme-blue .border-\[\#FF007F\] { border-color: #2563eb !important; }
+.theme-blue .from-\[\#FF007F\] { --tw-gradient-from: #2563eb !important; }
+.theme-blue .to-\[\#FF007F\] { --tw-gradient-to: #2563eb !important; }
+.theme-blue [class*="bg-[#FF007F]/"] { background-color: rgba(37, 99, 235, 0.15) !important; }
+.theme-blue [class*="border-[#FF007F]/"] { border-color: rgba(37, 99, 235, 0.35) !important; }
+.theme-blue .bg-\[\#0a0a14\], .theme-blue .bg-\[\#0d0a14\] { background-color: #050b1a !important; }
+.theme-blue .gradient-pp { background: linear-gradient(135deg, #60a5fa 0%, #2563eb 100%) !important; }
+
+.theme-purple .bg-\[\#FF007F\], .theme-purple .hover\:bg-\[\#FF007F\]:hover { background-color: #7c3aed !important; }
+.theme-purple .text-\[\#FF007F\] { color: #c084fc !important; }
+.theme-purple .border-\[\#FF007F\] { border-color: #7c3aed !important; }
+.theme-purple .from-\[\#FF007F\] { --tw-gradient-from: #7c3aed !important; }
+.theme-purple .to-\[\#FF007F\] { --tw-gradient-to: #7c3aed !important; }
+.theme-purple [class*="bg-[#FF007F]/"] { background-color: rgba(124, 58, 237, 0.15) !important; }
+.theme-purple [class*="border-[#FF007F]/"] { border-color: rgba(124, 58, 237, 0.35) !important; }
+.theme-purple .bg-\[\#0a0a14\], .theme-purple .bg-\[\#0d0a14\] { background-color: #0f051a !important; }
+.theme-purple .gradient-pp { background: linear-gradient(135deg, #c084fc 0%, #7c3aed 100%) !important; }
+
 .theme-green .bg-\[\#1a1525\] { background-color: #0f2a15 !important; }
 .theme-green .bg-\[\#12101a\] { background-color: #0f2a15 !important; }

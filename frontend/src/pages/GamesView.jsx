@@ -1,19 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Bomb, RotateCcw, Play, Music, Volume2 } from "lucide-react";
+import { AviatorGame } from "./SettingsAndAviator";
 
 // -----------------------------------------------------------------------------
 // GamesView — top-level wrapper. Two tabs: Slots (Wild-Hot-style) & Stairs.
 // -----------------------------------------------------------------------------
 
 const SYMBOL_ART = {
-  cherry: { emoji: "🍒", gradient: "from-red-500 to-red-800" },
-  lemon:  { emoji: "🍋", gradient: "from-yellow-300 to-amber-700" },
-  orange: { emoji: "🍊", gradient: "from-orange-400 to-orange-800" },
-  plum:   { emoji: "🍇", gradient: "from-purple-500 to-purple-900" },
-  grape:  { emoji: "🍇", gradient: "from-violet-500 to-purple-950" },
-  melon:  { emoji: "🍉", gradient: "from-red-400 to-emerald-800" },
-  seven:  { emoji: "7️⃣", gradient: "from-yellow-300 to-red-600" },
+  cherry:  { emoji: "🍒", gradient: "from-red-500 to-red-800" },
+  lemon:   { emoji: "🍋", gradient: "from-yellow-300 to-amber-700" },
+  orange:  { emoji: "🍊", gradient: "from-orange-400 to-orange-800" },
+  plum:    { emoji: "🍇", gradient: "from-purple-500 to-purple-900" },
+  grape:   { emoji: "🍇", gradient: "from-violet-500 to-purple-950" },
+  melon:   { emoji: "🍉", gradient: "from-red-400 to-emerald-800" },
+  seven:   { emoji: "7️⃣", gradient: "from-yellow-300 to-red-600" },
+  wild:    { emoji: "⭐", gradient: "from-fuchsia-400 via-purple-500 to-indigo-700", isSpecial: "wild" },
+  scatter: { emoji: "🎁", gradient: "from-pink-400 via-red-500 to-yellow-500", isSpecial: "scatter" },
 };
 const SYMBOL_KEYS = Object.keys(SYMBOL_ART);
 
@@ -35,10 +38,15 @@ export default function GamesView({ authedApi, balance, reloadBalance }) {
             className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider transition ${tab === "stairs" ? "bg-emerald-500 text-black" : "bg-[#0d0a14] text-white/70 hover:text-white border border-white/10"}`}>
             🪜 Stairs
           </button>
+          <button data-testid="games-tab-aviator" onClick={() => setTab("aviator")}
+            className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider transition ${tab === "aviator" ? "bg-emerald-500 text-black" : "bg-[#0d0a14] text-white/70 hover:text-white border border-white/10"}`}>
+            ✈️ Aviator
+          </button>
         </div>
       </div>
       {tab === "slots" && <SlotsGame authedApi={authedApi} balance={balance} reloadBalance={reloadBalance} />}
       {tab === "stairs" && <StairsGame authedApi={authedApi} reloadBalance={reloadBalance} />}
+      {tab === "aviator" && <AviatorGame authedApi={authedApi} balance={balance} reloadBalance={reloadBalance} />}
     </div>
   );
 }
@@ -62,32 +70,55 @@ function SlotsGame({ authedApi, balance, reloadBalance }) {
     )
   );
   const [wins, setWins] = useState([]);
+  const [wildMults, setWildMults] = useState({}); // "r,c" → mult
   const [lastPayout, setLastPayout] = useState(0);
+  const [freeSpins, setFreeSpins] = useState(0);
+  const [scatterCount, setScatterCount] = useState(0);
+  const [freeSpinsAwarded, setFreeSpinsAwarded] = useState(0);
   const spinTimer = useRef(null);
+
+  // Load initial free-spin balance
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await authedApi().get("/games/slot/state");
+        setFreeSpins(r.data.free_spins || 0);
+      } catch { /* first-time users have no state */ }
+    })();
+  }, []);
 
   const spin = async () => {
     if (spinning) return;
-    if (balance < bet) { toast.error("Not enough balance."); return; }
+    const usingFree = freeSpins > 0;
+    if (!usingFree && balance < bet) { toast.error("Not enough balance."); return; }
     setSpinning(true);
     setWins([]);
+    setWildMults({});
     setLastPayout(0);
-    // Shuffle animation
+    setFreeSpinsAwarded(0);
+    setScatterCount(0);
     spinTimer.current = setInterval(() => {
       setGrid(Array.from({ length: 5 }, () =>
         Array.from({ length: ROWS }, () => SYMBOL_KEYS[Math.floor(Math.random() * SYMBOL_KEYS.length)])
       ));
     }, 70);
     try {
-      const r = await authedApi().post("/games/slot/spin", { bet });
+      const r = await authedApi().post("/games/slot/spin", { bet, free_spin: usingFree });
       setTimeout(() => {
         clearInterval(spinTimer.current);
-        // Convert server 5×6 grid to 5×4 by slicing top 4 rows
         const g = (r.data.grid || []).map((reel) => reel.slice(0, ROWS));
         setGrid(g);
-        const filteredWins = (r.data.wins || []).filter((w) => w.row < ROWS);
-        setWins(filteredWins);
+        setWins((r.data.wins || []).filter((w) => w.row < ROWS));
+        // Build wildMults lookup
+        const wm = {};
+        (r.data.wilds || []).forEach((w) => { wm[`${w.reel},${w.row}`] = w.mult; });
+        setWildMults(wm);
         setLastPayout(r.data.payout);
-        if (r.data.payout > 0) toast.success(`🎉 +$${r.data.payout.toFixed(2)}`);
+        setScatterCount(r.data.scatter_count || 0);
+        setFreeSpinsAwarded(r.data.free_spins_awarded || 0);
+        setFreeSpins(r.data.free_spins_remaining || 0);
+        if (r.data.free_spins_awarded > 0) toast.success(`🎁 ${r.data.free_spins_awarded} FREE SPINS awarded!`);
+        else if (r.data.payout > 0) toast.success(`🎉 +$${r.data.payout.toFixed(2)}`);
         reloadBalance?.();
         setSpinning(false);
       }, 900);
@@ -103,13 +134,22 @@ function SlotsGame({ authedApi, balance, reloadBalance }) {
 
   return (
     <div className="rounded-2xl overflow-hidden shadow-2xl shadow-black/50 border border-yellow-600/40" data-testid="slot-machine">
-      {/* Top bar — jackpots (like the reference image) */}
+      {/* Top bar — jackpots */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-1 bg-gradient-to-b from-[#5a1010] to-[#3a0808] p-1.5 md:p-2 border-b border-yellow-600/40">
         <JackpotBadge icon="♠" label="Mini" amount={4.99} color="text-white" />
         <JackpotBadge icon="♥" label="Minor" amount={12.5} color="text-red-300" />
         <JackpotBadge icon="♦" label="Major" amount={SMALL_JACKPOT} color="text-amber-300" glow />
         <JackpotBadge icon="♣" label="Grand" amount={BIG_JACKPOT} color="text-emerald-300" glow big />
       </div>
+
+      {/* Free-spins celebration banner */}
+      {freeSpinsAwarded > 0 && !spinning && (
+        <div className="bg-gradient-to-r from-fuchsia-600 via-pink-500 to-yellow-500 py-2 text-center animate-pulse" data-testid="free-spins-banner">
+          <span className="font-display font-black text-lg md:text-2xl text-white drop-shadow-lg tracking-widest">
+            🎁 {freeSpinsAwarded} FREE SPINS! 🎁
+          </span>
+        </div>
+      )}
 
       {/* Slot canvas */}
       <div className="relative bg-gradient-to-b from-[#3a0808] via-[#2a0505] to-[#3a0808] p-3 md:p-5">
@@ -121,24 +161,44 @@ function SlotsGame({ authedApi, balance, reloadBalance }) {
           </div>
 
           {/* Reels */}
-          <div className="flex-1 grid grid-cols-5 gap-1 md:gap-1.5 bg-[#0a0530] rounded-lg p-2 md:p-3 border-2 border-yellow-400 shadow-inner">
+          <div className="flex-1 grid grid-cols-5 gap-1 md:gap-1.5 bg-[#0a0530] rounded-lg p-2 md:p-3 border-2 border-yellow-400 shadow-inner relative">
             {Array.from({ length: 5 }).map((_, reel) => (
               <div key={reel} className={`space-y-1 md:space-y-1.5 ${spinning ? "animate-pulse" : ""}`}>
                 {Array.from({ length: ROWS }).map((_, row) => {
                   const sym = grid[reel]?.[row] || "cherry";
                   const s = SYMBOL_ART[sym];
                   const isWin = winRows.has(row) && !spinning;
+                  const wildMult = !spinning && wildMults[`${reel},${row}`];
+                  const isScatter = !spinning && sym === "scatter";
+                  const isWild = !spinning && sym === "wild";
                   return (
                     <div
                       key={row}
                       data-testid={`slot-cell-${reel}-${row}`}
-                      className={`aspect-square rounded-md flex items-center justify-center text-2xl md:text-3xl font-bold border-2 transition bg-gradient-to-br ${s.gradient} ${
-                        isWin
-                          ? "border-yellow-300 shadow-lg shadow-yellow-500/60 scale-105 ring-2 ring-yellow-300/70"
-                          : "border-black/50"
+                      className={`relative aspect-square rounded-md flex items-center justify-center text-2xl md:text-3xl font-bold border-2 transition bg-gradient-to-br ${s.gradient} ${
+                        isWild ? "border-yellow-300 shadow-lg shadow-fuchsia-500/60 ring-2 ring-fuchsia-300/70 animate-pulse" :
+                        isScatter ? "border-pink-300 shadow-lg shadow-pink-500/60 ring-2 ring-pink-300/80 animate-bounce" :
+                        isWin ? "border-yellow-300 shadow-lg shadow-yellow-500/60 scale-105 ring-2 ring-yellow-300/70" :
+                        "border-black/50"
                       }`}
                     >
-                      <span className="drop-shadow-lg">{s.emoji}</span>
+                      <span className={`drop-shadow-lg ${isWild ? "animate-spin-slow" : ""}`}>{s.emoji}</span>
+                      {/* Wild multiplier badge */}
+                      {isWild && wildMult > 1 && (
+                        <span className="absolute -top-1 -right-1 bg-yellow-400 text-black text-[10px] font-black px-1 py-[1px] rounded shadow-lg" data-testid={`wild-mult-${reel}-${row}`}>
+                          x{wildMult}
+                        </span>
+                      )}
+                      {isWild && (
+                        <span className="absolute bottom-0.5 left-0 right-0 text-[7px] text-center font-black tracking-widest text-yellow-200 drop-shadow">
+                          WILD
+                        </span>
+                      )}
+                      {isScatter && (
+                        <span className="absolute bottom-0.5 left-0 right-0 text-[7px] text-center font-black tracking-widest text-yellow-200 drop-shadow">
+                          FREE
+                        </span>
+                      )}
                     </div>
                   );
                 })}
@@ -150,23 +210,28 @@ function SlotsGame({ authedApi, balance, reloadBalance }) {
           <div className="flex flex-col items-center gap-2">
             <button
               onClick={spin}
-              disabled={spinning || balance < bet}
+              disabled={spinning || (freeSpins === 0 && balance < bet)}
               data-testid="slot-spin-btn"
               className={`w-16 h-16 md:w-20 md:h-20 rounded-full font-display font-black uppercase tracking-wider transition
-                bg-gradient-to-b from-emerald-400 to-emerald-700 text-black shadow-xl shadow-emerald-500/40
-                border-4 border-yellow-400 hover:scale-105 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center`}
+                ${freeSpins > 0 ? "bg-gradient-to-b from-fuchsia-400 to-pink-700 shadow-fuchsia-500/50" : "bg-gradient-to-b from-emerald-400 to-emerald-700 shadow-emerald-500/40"}
+                text-black shadow-xl border-4 border-yellow-400 hover:scale-105 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center`}
             >
               {spinning ? <Loader2 className="w-6 h-6 animate-spin" /> : <Play className="w-6 h-6 md:w-7 md:h-7 fill-black" />}
             </button>
-            <div className="text-[9px] uppercase tracking-widest text-yellow-300 font-bold">Spin</div>
+            <div className="text-[9px] uppercase tracking-widest text-yellow-300 font-bold">
+              {freeSpins > 0 ? `FREE ×${freeSpins}` : "Spin"}
+            </div>
           </div>
         </div>
 
-        {/* Please place your bet strip */}
+        {/* Please place your bet / status strip */}
         <div className="mt-3 md:mt-4 text-center text-yellow-300 font-display font-bold text-xs md:text-sm uppercase tracking-widest">
           {lastPayout > 0
-            ? <span className="text-emerald-300">🎉 Last win: ${lastPayout.toFixed(2)}</span>
-            : "Please place your bet"}
+            ? <span className="text-emerald-300">🎉 Last win: ${lastPayout.toFixed(2)}{scatterCount >= 3 ? " + FREE SPINS!" : ""}</span>
+            : scatterCount === 2
+              ? <span className="text-pink-300">So close — 1 more 🎁 for free spins!</span>
+              : freeSpins > 0 ? <span className="text-fuchsia-300">Free spins active — no bet deducted</span>
+              : "Please place your bet"}
         </div>
       </div>
 
@@ -181,13 +246,13 @@ function SlotsGame({ authedApi, balance, reloadBalance }) {
             <button
               key={v}
               onClick={() => setBetIdx(i)}
-              disabled={spinning}
+              disabled={spinning || freeSpins > 0}
               data-testid={`slot-bet-preset-${v}`}
               className={`shrink-0 flex flex-col items-center justify-center rounded-md px-2 py-1.5 md:px-2.5 md:py-2 border-2 transition ${
                 betIdx === i
                   ? "bg-emerald-500 border-emerald-300 text-black shadow-lg shadow-emerald-500/40"
                   : "bg-black/30 border-yellow-500/30 text-yellow-100 hover:bg-black/50"
-              }`}
+              } disabled:opacity-40`}
             >
               <span className={`text-[8px] font-bold uppercase tracking-widest ${betIdx === i ? "text-black/80" : "text-yellow-300/70"}`}>Bet</span>
               <span className="font-mono font-black text-sm md:text-base">${v.toFixed(2)}</span>
@@ -198,15 +263,22 @@ function SlotsGame({ authedApi, balance, reloadBalance }) {
           <summary className="cursor-pointer px-3 py-2 rounded-md bg-black/30 border border-yellow-500/30 text-yellow-200 text-[10px] uppercase tracking-widest hover:bg-black/50 list-none select-none">
             Paytable
           </summary>
-          <div className="absolute right-0 bottom-full mb-2 w-64 bg-[#1a0303] border border-yellow-500/40 rounded-md p-3 shadow-2xl z-20">
+          <div className="absolute right-0 bottom-full mb-2 w-72 bg-[#1a0303] border border-yellow-500/40 rounded-md p-3 shadow-2xl z-20">
+            <div className="text-[10px] uppercase tracking-widest text-fuchsia-300 font-bold mb-1">Special symbols</div>
+            <div className="text-[11px] text-yellow-100/80 mb-2">
+              <span className="text-fuchsia-300">⭐ WILD</span> substitutes any symbol (except 🎁) and can carry a ×2 / ×3 / ×5 multiplier.
+              <br />
+              <span className="text-pink-300">🎁 SCATTER</span> — 3 anywhere = 5 free spins, 4 = 10, 5 = 15.
+            </div>
+            <div className="text-[10px] uppercase tracking-widest text-yellow-400/70 font-bold mb-1">Symbol payouts</div>
             {[
-              ["seven", "7️⃣", [10, 40, 200]],
-              ["melon", "🍉", [5, 15, 50]],
-              ["grape", "🍇", [2, 6, 20]],
-              ["plum", "🍇", [1, 3, 10]],
-              ["orange", "🍊", [0.5, 1.5, 5]],
-              ["lemon", "🍋", [0.3, 0.8, 3]],
-              ["cherry", "🍒", [0.2, 0.5, 2]],
+              ["seven", "7️⃣", [15, 60, 250]],
+              ["melon", "🍉", [6, 18, 60]],
+              ["grape", "🍇", [3, 8, 25]],
+              ["plum", "🍇", [1.5, 4, 12]],
+              ["orange", "🍊", [1, 2.5, 6]],
+              ["lemon", "🍋", [0.6, 1.5, 4]],
+              ["cherry", "🍒", [0.5, 1, 3]],
             ].map(([id, e, [a, b, c]]) => (
               <div key={id} className="flex items-center justify-between py-1 text-xs">
                 <span className="text-lg">{e}</span>

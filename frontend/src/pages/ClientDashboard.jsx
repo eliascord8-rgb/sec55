@@ -44,6 +44,7 @@ import SlotsView from "./SlotsView";
 import MessagesView from "./MessagesView";
 import GamesView from "./GamesView";
 import { InvoicesView, HelpCenterView } from "./InvoicesAndHelp";
+import { AviatorGame, SettingsView } from "./SettingsAndAviator";
 import NewsModal from "@/components/NewsModal";
 import { toast } from "sonner";
 
@@ -65,6 +66,7 @@ export default function ClientDashboard() {
   const [unreadTickets, setUnreadTickets] = useState(0);
   const [unreadDms, setUnreadDms] = useState(0);
   const [unpaidInvoices, setUnpaidInvoices] = useState(0);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [useNewLayout, setUseNewLayout] = useState(false);
   const chatEndRef = useRef(null);
 
@@ -121,6 +123,98 @@ export default function ClientDashboard() {
       const t3 = setInterval(loadUnpaidInvoices, 20000);
       return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3); };
     }
+    // eslint-disable-next-line
+  }, [user]);
+
+  // Apply saved theme on load (from server pref or localStorage)
+  useEffect(() => {
+    (async () => {
+      let theme = localStorage.getItem("bs_theme");
+      if (!theme && user) {
+        try {
+          const r = await authedApi().get("/client/theme-pref");
+          theme = r.data.theme || "green";
+        } catch { theme = "green"; }
+      }
+      if (!theme) theme = "green";
+      // Reset then apply
+      ["green", "blue", "red", "purple"].forEach((t) => document.body.classList.remove(`theme-${t}-body`));
+      document.body.classList.add(`theme-${theme}-body`);
+      const shells = document.querySelectorAll(".theme-green, .theme-blue, .theme-red, .theme-purple");
+      shells.forEach((el) => {
+        el.classList.remove("theme-green", "theme-blue", "theme-red", "theme-purple");
+        el.classList.add(`theme-${theme}`);
+      });
+      localStorage.setItem("bs_theme", theme);
+    })();
+    // eslint-disable-next-line
+  }, [user]);
+
+  // Global auto-verify NOWPayments deposits every 20s regardless of which
+  // view is open — credits land the moment the network confirms, even if the
+  // user is browsing Games / Numbers / Chat when they come back.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await authedApi().get("/client/funds/pending-deposits");
+        if (cancelled) return;
+        const list = r.data.pending || [];
+        for (const p of list) {
+          if (cancelled) return;
+          try {
+            const v = await authedApi().post(`/client/funds/nowpayments-verify/${p.id}`);
+            if (v.data.credited) {
+              toast.success(`💰 Deposit credited: +$${v.data.amount}${v.data.bonus ? ` (+ $${v.data.bonus} bonus)` : ""}`);
+              loadBalance();
+              loadUnpaidInvoices();
+            }
+          } catch { /* ignore per-tx errors */ }
+        }
+      } catch { /* offline / auth error */ }
+    };
+    tick();
+    const t = setInterval(tick, 20000);
+    return () => { cancelled = true; clearInterval(t); };
+    // eslint-disable-next-line
+  }, [user]);
+
+  // Real-time admin commands — poll every 3s for pending kick/ban/redirect commands.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const r = await authedApi().get("/client/live-poll");
+        if (cancelled) return;
+        const c = r.data?.command;
+        if (!c) return;
+        if (c.cmd === "kick") {
+          toast.error(c.payload?.reason || "You have been signed out by an admin.");
+          setTimeout(() => { logout(); nav("/"); }, 1200);
+        } else if (c.cmd === "ban") {
+          toast.error(c.payload?.reason || "Your account has been banned.");
+          setTimeout(() => { logout(); nav("/"); }, 1500);
+        } else if (c.cmd === "redirect") {
+          const path = c.payload?.path;
+          if (typeof path === "string" && path.length > 0) {
+            if (path.startsWith("/")) nav(path);
+            else changeView(path); // treat plain names as dashboard views
+            toast.info("Redirected by admin");
+          }
+        }
+      } catch (err) {
+        // 403 → banned mid-session; force logout
+        if (err?.response?.status === 403 && /banned/i.test(err.response?.data?.detail || "")) {
+          toast.error(err.response.data.detail);
+          setTimeout(() => { logout(); nav("/"); }, 1000);
+        }
+      }
+    };
+    poll();
+    const t = setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(t); };
     // eslint-disable-next-line
   }, [user]);
 
@@ -334,14 +428,43 @@ export default function ClientDashboard() {
                 <CreditCard className="w-3.5 h-3.5 text-emerald-300" />
                 <span className="text-sm font-bold text-emerald-300">${balance.toFixed(2)}</span>
               </div>
-              <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-white/10">
-                <div className="w-8 h-8 rounded-full bg-emerald-500/25 border border-emerald-500/40 flex items-center justify-center text-xs font-bold text-emerald-200" data-testid="client-username">
-                  {user.username.slice(0, 2).toUpperCase()}
-                </div>
-                <div className="hidden md:block text-xs">
-                  <div className="font-bold text-white leading-tight">{user.username}</div>
-                  <div className="text-emerald-400/70 leading-tight uppercase text-[10px] tracking-widest">{user.role || "member"}</div>
-                </div>
+              <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-white/10 relative" data-testid="profile-menu-wrap">
+                <button onClick={() => setProfileOpen((v) => !v)}
+                  data-testid="profile-menu-btn"
+                  className="flex items-center gap-2 hover:bg-white/5 rounded-md px-1.5 py-1 transition">
+                  <div className="w-8 h-8 rounded-full bg-emerald-500/25 border border-emerald-500/40 flex items-center justify-center text-xs font-bold text-emerald-200" data-testid="client-username">
+                    {user.username.slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="hidden md:block text-xs text-left">
+                    <div className="font-bold text-white leading-tight">{user.username}</div>
+                    <div className="text-emerald-400/70 leading-tight uppercase text-[10px] tracking-widest">{user.role || "member"}</div>
+                  </div>
+                </button>
+                {profileOpen && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setProfileOpen(false)} />
+                    <div className="absolute right-0 top-full mt-2 w-52 bg-[#0d2b12] border border-emerald-500/30 rounded-md shadow-2xl z-40 py-1" data-testid="profile-menu">
+                      <button onClick={() => { setProfileOpen(false); changeView("settings"); }}
+                        data-testid="profile-settings-btn"
+                        className="w-full text-left px-3 py-2 text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2">
+                        ⚙️ Settings
+                      </button>
+                      <button onClick={() => { setProfileOpen(false); changeView("invoices"); }}
+                        className="w-full text-left px-3 py-2 text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2">
+                        🧾 My invoices
+                      </button>
+                      <button onClick={() => { setProfileOpen(false); changeView("help"); }}
+                        className="w-full text-left px-3 py-2 text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2">
+                        ❓ Help center
+                      </button>
+                      <div className="border-t border-white/10 my-1" />
+                      <button onClick={() => { logout(); nav("/"); }}
+                        className="w-full text-left px-3 py-2 text-sm text-red-300 hover:bg-red-500/15 flex items-center gap-2">
+                        🚪 Sign out
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
               <button onClick={toggleLayoutPref} data-testid="switch-layout-btn" title="Switch to classic layout" className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/15 transition">
                 <Grid3x3 className="w-3.5 h-3.5" />
@@ -556,6 +679,7 @@ export default function ClientDashboard() {
                 <InvoicesView authedApi={authedApi} reloadBalance={loadBalance} />
               )}
               {view === "help" && <HelpCenterView />}
+              {view === "settings" && <SettingsView authedApi={authedApi} user={user} />}
               {view === "redeem" && (
                 <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
               )}
