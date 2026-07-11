@@ -3596,25 +3596,65 @@ async def nowpayments_webhook(request: Request):
     return await _credit_nowpayments_deposit(tx, data)
 
 
-async def _fetch_nowpayments_invoice_status(invoice_id: str) -> dict:
-    """Poll NOWPayments for the status of an invoice's payments. Returns the best-status payment doc."""
-    cfg = await _get_nowpayments_config()
+async def _get_nowpayments_jwt(cfg: dict) -> str | None:
+    """NOWPayments' /payment/ (list-payments) endpoint requires a JWT Bearer,
+    NOT the x-api-key.  If the admin saved email+password, exchange them for a
+    JWT via /v1/auth. Returns None if credentials aren't set (caller falls back)."""
+    email = (cfg or {}).get("email", "").strip()
+    password = (cfg or {}).get("password", "")
+    if not email or not password:
+        return None
     async with httpx.AsyncClient(timeout=20.0) as c:
-        # First: get payments linked to this invoice
+        r = await c.post(
+            f"{NOWPAYMENTS_API_BASE}/auth",
+            json={"email": email, "password": password},
+            headers={"Content-Type": "application/json"},
+        )
+        if r.status_code >= 400:
+            logger.warning("[nowpay] JWT auth failed %s: %s", r.status_code, r.text[:200])
+            return None
+        return (r.json() or {}).get("token")
+
+
+async def _fetch_nowpayments_invoice_status(invoice_id: str) -> dict:
+    """Poll NOWPayments for the status of an invoice's payments. Returns the best-status payment doc.
+    Uses JWT Bearer auth if the admin saved email+password (required for /payment/), otherwise
+    falls back to /invoice/{id} which works with x-api-key."""
+    cfg = await _get_nowpayments_config()
+    jwt = await _get_nowpayments_jwt(cfg)
+    async with httpx.AsyncClient(timeout=20.0) as c:
+        if jwt:
+            r = await c.get(
+                f"{NOWPAYMENTS_API_BASE}/payment/?invoiceId={invoice_id}&limit=10",
+                headers={"Authorization": f"Bearer {jwt}"},
+            )
+            if r.status_code < 400:
+                js = r.json()
+                payments = js.get("data") or js.get("payments") or ([] if not isinstance(js, list) else js)
+                if payments:
+                    order = {s: i for i, s in enumerate(["finished", "confirmed", "sending", "partially_paid", "confirming", "waiting", "expired", "failed"])}
+                    payments.sort(key=lambda p: order.get((p.get("payment_status") or "").lower(), 99))
+                    return payments[0]
+            else:
+                logger.warning("[nowpay] /payment/ list failed %s: %s", r.status_code, r.text[:200])
+        # Fallback: /invoice/{id} (x-api-key auth) — gives us the invoice status
         r = await c.get(
-            f"{NOWPAYMENTS_API_BASE}/payment/?invoice_id={invoice_id}&limit=10",
+            f"{NOWPAYMENTS_API_BASE}/invoice/{invoice_id}",
             headers={"x-api-key": cfg["api_key"]},
         )
         if r.status_code >= 400:
-            raise HTTPException(status_code=502, detail=f"NOWPayments payments lookup {r.status_code}: {r.text[:200]}")
-        js = r.json()
-    payments = js.get("data") or js.get("payments") or ([] if not isinstance(js, list) else js)
-    if not payments:
-        return {}
-    # Prefer the payment with a success status; else return the most recent one
-    order = {s: i for i, s in enumerate(["finished", "confirmed", "sending", "partially_paid", "confirming", "waiting", "expired", "failed"])}
-    payments.sort(key=lambda p: order.get((p.get("payment_status") or "").lower(), 99))
-    return payments[0]
+            raise HTTPException(status_code=502, detail=f"NOWPayments invoice lookup {r.status_code}: {r.text[:200]}")
+        inv = r.json()
+    # Normalise invoice → payment-shaped dict so downstream credit logic works
+    return {
+        "payment_status": (inv.get("payment_status") or inv.get("status") or "").lower(),
+        "pay_amount": inv.get("pay_amount"),
+        "pay_currency": inv.get("pay_currency"),
+        "actually_paid": inv.get("actually_paid") or inv.get("price_amount"),
+        "invoice_id": invoice_id,
+        "order_id": inv.get("order_id"),
+        "_source": "invoice",
+    }
 
 
 @client_router.post("/funds/nowpayments-verify/{tx_id}")

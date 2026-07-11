@@ -3897,6 +3897,133 @@ function UsersPanel({ token }) {
         </div>
       )}
 
+      {drillUser && (
+        <div
+          data-testid="admin-drill-modal"
+          className="fixed inset-0 z-[80] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setDrillUser(null)}
+        >
+          <div
+            className="w-full max-w-3xl max-h-[90vh] bg-[#1a1525] border border-emerald-500/30 rounded-sm p-6 shadow-2xl overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="text-[10px] uppercase tracking-widest text-white/50">User overview</div>
+                <h3 className="font-display font-black text-xl">@{drillUser.username}</h3>
+                {drillUser.email && <div className="text-xs text-white/50 font-mono">{drillUser.email}</div>}
+              </div>
+              <button onClick={() => setDrillUser(null)} className="text-white/60 hover:text-white text-2xl leading-none">×</button>
+            </div>
+            {!drillData ? (
+              <div className="flex items-center justify-center py-10 text-white/50">
+                <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading…
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  <StatCard label="Deposits" value={`$${(drillData.total_deposits || 0).toFixed(2)}`} tone="emerald" />
+                  <StatCard label="Spent" value={`$${(drillData.total_spent || 0).toFixed(2)}`} tone="amber" />
+                  <StatCard label="Orders" value={(drillData.orders || []).length} tone="cyan" />
+                  <StatCard label="Transactions" value={(drillData.transactions || []).length} tone="white" />
+                </div>
+                {Object.keys(drillData.status_counts || {}).length > 0 && (
+                  <div>
+                    <div className="text-[10px] uppercase tracking-widest text-white/50 mb-2">Orders by status</div>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(drillData.status_counts).map(([s, n]) => (
+                        <span key={s} className="text-[11px] uppercase tracking-widest px-2 py-1 rounded-sm bg-black/40 border border-white/10 text-white/70">
+                          <span className="font-bold text-white">{n}</span> {s}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-white/50 mb-2">Recent orders</div>
+                  <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                    {(drillData.orders || []).length === 0 && <div className="text-white/40 text-xs">No orders yet.</div>}
+                    {(drillData.orders || []).slice(0, 30).map((o) => (
+                      <div key={o.id} className="bg-black/40 rounded-sm px-3 py-2 flex flex-wrap items-center gap-2 text-xs">
+                        <span className="text-white/50 font-mono">#{o.smm_order_id || o.id.slice(0, 8)}</span>
+                        <span className="text-white/80 truncate flex-1 min-w-0">{o.service_name || o.service_id}</span>
+                        <span className="text-white/50">{o.quantity}×</span>
+                        <span className="text-emerald-300 font-bold font-mono">${Number(o.charge || 0).toFixed(3)}</span>
+                        <span className="text-[10px] uppercase tracking-widest px-1.5 py-0.5 rounded bg-white/10 text-white/70">{o.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-white/50 mb-2">Recent transactions</div>
+                  <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                    {(drillData.transactions || []).slice(0, 30).map((t) => (
+                      <div key={t.id} className="bg-black/40 rounded-sm px-3 py-2 flex flex-wrap items-center gap-2 text-xs">
+                        <span className={`font-mono font-bold ${Number(t.amount || 0) > 0 ? "text-emerald-300" : "text-red-300"}`}>
+                          {Number(t.amount || 0) > 0 ? "+" : ""}${Number(t.amount || 0).toFixed(2)}
+                        </span>
+                        <span className="text-white/60">{t.type}</span>
+                        <span className="text-white/40 truncate flex-1 min-w-0">{t.note || t.method}</span>
+                        <span className="text-[10px] uppercase tracking-widest text-white/50">{t.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {redirectFor && (
+        <div
+          data-testid="admin-redirect-modal"
+          className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => { setRedirectFor(null); setRedirectPath(""); }}
+        >
+          <div
+            className="w-full max-w-md bg-[#1a1525] border border-amber-500/40 rounded-sm p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display font-bold text-lg mb-1">
+              {redirectFor === "all" ? "↪ Redirect all online users" : `↪ Redirect @${redirectFor.username}`}
+            </h3>
+            <div className="text-xs text-white/50 mb-4">
+              Enter a path (e.g. <span className="font-mono text-amber-300">/tos</span> or <span className="font-mono text-amber-300">games</span>).
+              Fires within 3&nbsp;seconds via the live-command channel.
+            </div>
+            <Input
+              value={redirectPath}
+              onChange={(e) => setRedirectPath(e.target.value)}
+              placeholder="/tos or games"
+              data-testid="admin-redirect-path"
+              className="bg-[#0d0a14] border-white/10 mb-4"
+              autoFocus
+            />
+            <div className="flex flex-wrap gap-2 mb-4">
+              {["home", "buy", "games", "invoices", "tos", "/client/dashboard"].map((p) => (
+                <button key={p} onClick={() => setRedirectPath(p)}
+                  className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-sm ${redirectPath === p ? "bg-amber-500 text-black" : "bg-white/5 text-white/60 hover:bg-white/10"}`}>
+                  {p}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => { setRedirectFor(null); setRedirectPath(""); }}
+                className="px-4 py-2 border border-white/10 rounded-sm text-xs uppercase tracking-wider hover:bg-white/5">
+                Cancel
+              </button>
+              <button onClick={sendRedirect} data-testid="admin-redirect-send"
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black rounded-sm text-xs font-bold uppercase tracking-wider">
+                Send redirect
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+
 
       {balUser && (
         <div
