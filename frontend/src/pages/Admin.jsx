@@ -895,6 +895,31 @@ function ServicesPanel({ token }) {
     }
   };
 
+  const deleteOne = async (id) => {
+    if (!window.confirm(`Delete service #${id}? This can't be undone.`)) return;
+    try {
+      await adminApi(token).delete(`/admin/services/${id}`);
+      toast.success(`Deleted #${id}`);
+      setItems((prev) => prev.filter((s) => s.service_id !== id));
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to delete"); }
+  };
+
+  const renameId = async (oldId) => {
+    const raw = window.prompt(`Change service ID #${oldId} to what new numeric ID?`, String(oldId));
+    if (raw == null) return;
+    const newId = Number(String(raw).trim());
+    if (!newId || Number.isNaN(newId) || newId <= 0 || !Number.isInteger(newId)) {
+      toast.error("Enter a positive integer ID.");
+      return;
+    }
+    if (newId === oldId) return;
+    try {
+      await adminApi(token).post(`/admin/services/${oldId}/rename-id`, { new_service_id: newId });
+      toast.success(`Service #${oldId} → #${newId}`);
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Rename failed"); }
+  };
+
   const saveRow = async (id) => {
     const e = edits[id];
     if (!e) return;
@@ -1079,7 +1104,19 @@ function ServicesPanel({ token }) {
                 const customName = dirty?.custom_name ?? (s.custom_name ?? "");
                 return (
                   <tr key={s.service_id} className="border-t border-white/5 hover:bg-white/[0.02]">
-                    <td className="px-4 py-2 font-mono text-xs text-[#00E5FF]">#{s.service_id}</td>
+                    <td className="px-4 py-2 font-mono text-xs text-[#00E5FF]">
+                      <div className="flex items-center gap-1">
+                        <span>#{s.service_id}</span>
+                        <button
+                          onClick={() => renameId(s.service_id)}
+                          data-testid={`rename-id-${s.service_id}`}
+                          title="Change this service's numeric ID"
+                          className="opacity-40 hover:opacity-100 text-[10px] px-1 text-white/60 hover:text-emerald-300"
+                        >
+                          ✎
+                        </button>
+                      </div>
+                    </td>
                     <td className="px-4 py-2 max-w-md">
                       <div
                         className="text-xs truncate text-white/40"
@@ -1147,15 +1184,25 @@ function ServicesPanel({ token }) {
                       </button>
                     </td>
                     <td className="px-4 py-2 text-right">
-                      {dirty && (
+                      <div className="inline-flex items-center gap-1 justify-end">
+                        {dirty && (
+                          <button
+                            onClick={() => saveRow(s.service_id)}
+                            data-testid={`save-${s.service_id}`}
+                            className="px-3 py-1 gradient-pp rounded-sm text-[10px] uppercase tracking-wider font-bold"
+                          >
+                            Save
+                          </button>
+                        )}
                         <button
-                          onClick={() => saveRow(s.service_id)}
-                          data-testid={`save-${s.service_id}`}
-                          className="px-3 py-1 gradient-pp rounded-sm text-[10px] uppercase tracking-wider font-bold"
+                          onClick={() => deleteOne(s.service_id)}
+                          data-testid={`delete-svc-${s.service_id}`}
+                          title="Delete this service"
+                          className="px-2 py-1 rounded-sm text-[10px] uppercase tracking-wider font-bold text-red-300 hover:text-red-200 hover:bg-red-500/15"
                         >
-                          Save
+                          ✕
                         </button>
-                      )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -3959,12 +4006,28 @@ function UsersPanel({ token }) {
                   <div className="space-y-1.5 max-h-64 overflow-y-auto">
                     {(drillData.orders || []).length === 0 && <div className="text-white/40 text-xs">No orders yet.</div>}
                     {(drillData.orders || []).slice(0, 30).map((o) => (
-                      <div key={o.id} className="bg-black/40 rounded-sm px-3 py-2 flex flex-wrap items-center gap-2 text-xs">
-                        <span className="text-white/50 font-mono">#{o.smm_order_id || o.id.slice(0, 8)}</span>
-                        <span className="text-white/80 truncate flex-1 min-w-0">{o.service_name || o.service_id}</span>
-                        <span className="text-white/50">{o.quantity}×</span>
-                        <span className="text-emerald-300 font-bold font-mono">${Number(o.charge || 0).toFixed(3)}</span>
-                        <span className="text-[10px] uppercase tracking-widest px-1.5 py-0.5 rounded bg-white/10 text-white/70">{o.status}</span>
+                      <div key={o.id} className="bg-black/40 rounded-sm px-3 py-2 text-xs space-y-1" data-testid={`drill-order-${o.id}`}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-white/50 font-mono">#{o.smm_order_id || o.id.slice(0, 8)}</span>
+                          <span className="text-white/80 truncate flex-1 min-w-0">{o.service_name || o.service_id}</span>
+                          <span className="text-white/50">{o.quantity}×</span>
+                          <span className="text-emerald-300 font-bold font-mono">${Number(o.charge || 0).toFixed(3)}</span>
+                          <span className="text-[10px] uppercase tracking-widest px-1.5 py-0.5 rounded bg-white/10 text-white/70">{o.status}</span>
+                          {o.source && <span className="text-[10px] uppercase tracking-widest px-1.5 py-0.5 rounded bg-fuchsia-500/20 text-fuchsia-200">{o.source}</span>}
+                        </div>
+                        {o.link && (
+                          <div className="flex items-center gap-1.5 pl-1 text-[11px] text-white/60">
+                            <span className="text-[9px] uppercase tracking-widest text-white/40 shrink-0">Target:</span>
+                            <a href={o.link} target="_blank" rel="noopener noreferrer" className="font-mono text-emerald-200 hover:text-emerald-300 underline truncate min-w-0" title={o.link}>{o.link}</a>
+                          </div>
+                        )}
+                        {o.comments && (
+                          <div className="pl-1 text-[10px] text-white/50 line-clamp-2">
+                            <span className="uppercase tracking-widest text-white/40">Comments: </span>
+                            <span className="font-mono">{o.comments.slice(0, 200)}{o.comments.length > 200 ? "…" : ""}</span>
+                          </div>
+                        )}
+                        <div className="pl-1 text-[10px] text-white/40 font-mono">{o.created_at ? new Date(o.created_at).toLocaleString() : ""}</div>
                       </div>
                     ))}
                   </div>

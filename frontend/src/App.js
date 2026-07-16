@@ -10,6 +10,7 @@ import ResetPassword from "@/pages/ResetPassword";
 import ClientDashboard from "@/pages/ClientDashboard";
 import Splash from "@/components/Splash";
 import { AuthProvider } from "@/context/AuthContext";
+import { LanguageProvider } from "@/context/LanguageContext";
 import { Toaster } from "@/components/ui/sonner";
 
 function App() {
@@ -24,20 +25,22 @@ function App() {
   return (
     <div className="min-h-screen bg-[#050505] text-white">
       {!splashDone && <Splash onDone={() => setSplashDone(true)} />}
-      <AuthProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/" element={<Landing />} />
-            <Route path="/order/:serviceId" element={<OrderPage />} />
-            <Route path="/status/:orderId" element={<StatusPage />} />
-            <Route path="/client" element={<ClientDashboard />} />
-            <Route path="/client/login" element={<ClientDashboard />} />
-            <Route path="/reset" element={<ResetPassword />} />
-            <Route path="/client/dashboard" element={<ClientDashboard />} />
-            <Route path="/admin" element={<Admin />} />
-          </Routes>
-        </BrowserRouter>
-      </AuthProvider>
+      <LanguageProvider>
+        <AuthProvider>
+          <BrowserRouter>
+            <Routes>
+              <Route path="/" element={<Landing />} />
+              <Route path="/order/:serviceId" element={<OrderPage />} />
+              <Route path="/status/:orderId" element={<StatusPage />} />
+              <Route path="/client" element={<ClientDashboard />} />
+              <Route path="/client/login" element={<ClientDashboard />} />
+              <Route path="/reset" element={<ResetPassword />} />
+              <Route path="/client/dashboard" element={<ClientDashboard />} />
+              <Route path="/admin" element={<Admin />} />
+            </Routes>
+          </BrowserRouter>
+        </AuthProvider>
+      </LanguageProvider>
       <Toaster theme="dark" />
     </div>
   );
