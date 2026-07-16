@@ -339,27 +339,47 @@ export default function AIWidget({ open, onOpenChange }) {
         });
       }
     } catch (err) {
-      // AI backend is unreachable — offer a graceful fallback with human handover
+      // AI backend is unreachable — render an inline handover CTA in the chat
+      // instead of a generic error. The message has a `handover` flag the
+      // renderer picks up to draw a "Connect with our team" button.
       const detail = err?.response?.data?.detail || "";
       const isRateLimit = err?.response?.status === 429 || /rate.limit/i.test(String(detail));
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
+          handover: true,
           text: isRateLimit
-            ? "⏱ I'm getting a lot of questions right now — please retry in a few seconds, or tap the human icon to reach the team directly."
-            : "⚠️ I couldn't reach my AI backend just now. You can retry, or tap the human icon below to escalate to our team.",
+            ? "⏱ Sorry — I'm getting a lot of questions right now."
+            : "⚠️ Sorry, our AI operator is currently unreachable.",
         },
       ]);
-      // Best-effort: mark the session as needing handover so admins see it in the inbox
-      try {
-        if (sessionIdRef.current) {
-          await api.post("/ai/request-handover", { session_id: sessionIdRef.current }).catch(() => {});
-        }
-      } catch { /* non-fatal */ }
     } finally {
       setSending(false);
     }
+  };
+
+  // Called when the user taps the inline "Connect with our team" button.
+  // Fires the handover endpoint (best-effort) and drops the confirmation
+  // system message into the chat so the user knows help is on the way.
+  const requestHumanHandover = async () => {
+    // Replace the CTA message so the button can't be spammed
+    setMessages((prev) =>
+      prev.map((m) => (m.handover ? { ...m, handover: false, handoverPending: true } : m)),
+    );
+    try {
+      await api.post("/ai/request-handover", {
+        session_id: sessionIdRef.current,
+        reason: "ai_backend_unreachable",
+      });
+    } catch { /* non-fatal — we still show the confirmation locally */ }
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        text: "🤝 You'll be connected with a chat agent shortly — please stay in the chat, we'll be right with you.",
+      },
+    ]);
   };
 
   const submitOfflineMessage = async (e) => {
@@ -530,7 +550,27 @@ export default function AIWidget({ open, onOpenChange }) {
           data-testid="ai-widget-messages"
         >
           {messages.map((m, i) => (
-            <Bubble key={i} m={m} />
+            <div key={i}>
+              <Bubble m={m} />
+              {/* Handover CTA — appears under the assistant's error message when AI backend is unreachable */}
+              {m.handover && (
+                <div className="mx-3 -mt-1 mb-2 flex items-start gap-2" data-testid={`ai-handover-cta-${i}`}>
+                  <button
+                    onClick={requestHumanHandover}
+                    data-testid="ai-connect-team-btn"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm bg-emerald-500 hover:bg-emerald-400 text-black text-[11px] font-black uppercase tracking-wider transition"
+                  >
+                    <User className="w-3 h-3" />
+                    Connect with our team
+                  </button>
+                </div>
+              )}
+              {m.handoverPending && (
+                <div className="mx-3 -mt-1 mb-2 text-[10px] uppercase tracking-widest text-emerald-300/70">
+                  · Notifying team…
+                </div>
+              )}
+            </div>
           ))}
           {sending && <Bubble m={{ role: "assistant", text: "…" }} typing />}
           {staffTyping && !sending && (

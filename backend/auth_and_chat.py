@@ -411,12 +411,18 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
 @auth_router.post("/login")
 async def login(req: LoginRequest, request: Request):
     db: AsyncIOMotorDatabase = request.app.state.db
-    # Math captcha required on login too
-    if not verify_math_captcha(req.captcha_id, req.captcha_answer):
+    doc = await verify_login_credentials(req.identifier, req.password, req.captcha_id, req.captcha_answer, request)
+    token = create_token(doc["id"], doc["username"], doc.get("role", "user"))
+    return {"token": token, "user": _user_public(doc)}
+
+
+async def verify_login_credentials(identifier: str, password: str, captcha_id: Optional[str], captcha_answer: Optional[str], request: Request) -> dict:
+    """Shared login-check. Returns the raw user document on success, raises
+    HTTPException on failure. Used by both /auth/login and /admin/login-with-account."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    if not verify_math_captcha(captcha_id, captcha_answer):
         raise HTTPException(status_code=400, detail="Wrong captcha answer — please try again")
-    ident = req.identifier.strip()
-    # Login is case-insensitive on BOTH username and email so users can't
-    # accidentally register a "duplicate" by changing the casing.
+    ident = (identifier or "").strip()
     if "@" in ident:
         query = {"email": ident.lower()}
     else:
@@ -427,10 +433,9 @@ async def login(req: LoginRequest, request: Request):
             ]
         }
     doc = await db.users.find_one(query)
-    if not doc or not verify_password(req.password, doc.get("password_hash", "")):
+    if not doc or not verify_password(password, doc.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    token = create_token(doc["id"], doc["username"], doc.get("role", "user"))
-    return {"token": token, "user": _user_public(doc)}
+    return doc
 
 
 @auth_router.get("/captcha")
@@ -983,6 +988,53 @@ async def ai_chat(req: AIChatRequest, request: Request):
         "needs_handover": needs_handover,
         "admin_online": admin_online,
     }
+
+
+class HandoverRequest(BaseModel):
+    session_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@ai_router.post("/request-handover")
+async def ai_request_handover(req: HandoverRequest, request: Request):
+    """Explicit user opt-in to hand the conversation over to the human team.
+    Marks the session and drops a note in the AI inbox so team members are
+    pinged instantly. Called from the AIWidget when a user taps the
+    'Connect with our team' button after the AI backend failed."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    session_id = (req.session_id or "").strip()
+    if not session_id:
+        # Best-effort: allow it without a session_id — create a placeholder so
+        # the admin still sees the request in the inbox.
+        session_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {
+            "$set": {
+                "needs_handover": True,
+                "handover_requested_at": now,
+                "handover_reason": (req.reason or "user_manual_request")[:200],
+            },
+            "$setOnInsert": {
+                "session_id": session_id,
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+    # Confirm bot message to the user — persisted so the widget can show it
+    # if it re-opens later, and the admin can see it in the inbox too.
+    bot_msg_id = str(uuid.uuid4())
+    await db.ai_chat_messages.insert_one({
+        "id": bot_msg_id,
+        "session_id": session_id,
+        "role": "assistant",
+        "text": "🤝 Got it — I've paged the human team. You'll be connected with a chat agent as soon as one is available. Please stay in this chat.",
+        "created_at": now,
+        "kind": "handover_notice",
+    })
+    return {"ok": True, "session_id": session_id, "message_id": bot_msg_id}
 
 
 @ai_router.get("/poll")
