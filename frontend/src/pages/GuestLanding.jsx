@@ -21,8 +21,8 @@ export default function GuestLanding() {
             <div className="w-9 h-9 rounded-md bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
               <Sparkles className="w-4 h-4 text-emerald-300" strokeWidth={2.5} />
             </div>
-            <span className="font-display font-black text-base text-white">
-              BS<span className="text-emerald-300">.</span>GG
+            <span className="font-display font-black text-base text-white tracking-tight">
+              Better<span className="text-emerald-300">Social</span>
             </span>
           </div>
           <div className="flex-1" />
@@ -64,7 +64,7 @@ function GuestWelcome({ onSignIn, onSignUp }) {
         <Sparkles className="w-6 h-6 text-emerald-300" />
       </div>
       <h1 className="font-display text-3xl md:text-5xl font-black text-white mb-3">
-        Welcome to <span className="text-emerald-300">BS.GG</span>
+        Welcome to <span className="text-emerald-300">BetterSocial</span>
       </h1>
       <p className="text-white/70 text-sm md:text-base max-w-md">
         Sign in to place orders, play daily games, deposit crypto and manage your account.
@@ -231,53 +231,56 @@ function AuthModal({ mode, onClose, switchMode }) {
 
   return (
     <div className="fixed inset-0 z-[90] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose} data-testid="auth-modal-backdrop">
-      <div className="w-full max-w-sm bg-gradient-to-br from-[#0d2b12] to-[#0a1a0a] border border-emerald-500/40 rounded-lg p-6 shadow-2xl relative" onClick={(e) => e.stopPropagation()} data-testid={isLogin ? "login-modal" : "signup-modal"}>
-        <button onClick={onClose} className="absolute top-3 right-3 w-8 h-8 rounded-md hover:bg-white/10 text-white/70 flex items-center justify-center" aria-label="Close">
-          <X className="w-4 h-4" />
+      <div className="w-full max-w-lg bg-gradient-to-br from-emerald-500/15 via-[#0e2f18] to-[#0a1a0a] border-2 border-emerald-400/50 rounded-2xl p-8 md:p-10 shadow-[0_25px_80px_-15px_rgba(16,185,129,0.4)] relative" onClick={(e) => e.stopPropagation()} data-testid={isLogin ? "login-modal" : "signup-modal"}>
+        <button onClick={onClose} className="absolute top-4 right-4 w-9 h-9 rounded-md hover:bg-white/10 text-white/70 flex items-center justify-center transition" aria-label="Close">
+          <X className="w-5 h-5" />
         </button>
-        <div className="flex items-center gap-2 mb-1">
-          <div className="w-8 h-8 rounded-md bg-emerald-500/20 border border-emerald-500/50 flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-emerald-300" />
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-11 h-11 rounded-lg bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center shadow-lg shadow-emerald-500/30">
+            <Sparkles className="w-5 h-5 text-white" strokeWidth={2.5} />
           </div>
-          <div className="text-[10px] uppercase tracking-widest text-emerald-300/80">Better Social</div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-emerald-300 font-bold">BetterSocial</div>
+            <h2 className="font-display font-black text-2xl md:text-3xl text-white leading-tight">{isLogin ? "Welcome back" : "Create your account"}</h2>
+          </div>
         </div>
-        <h2 className="font-display font-black text-2xl text-white mb-4">{isLogin ? "Welcome back" : "Create account"}</h2>
+        <p className="text-white/60 text-sm mb-6">{isLogin ? "Sign in to place orders, deposit crypto and play games." : "Free to join. No card required — deposit later with crypto."}</p>
 
-        <form onSubmit={submit} className="space-y-3">
+        <form onSubmit={submit} className="space-y-4">
           {isLogin ? (
             <input required value={form.identifier} onChange={(e) => setForm({ ...form, identifier: e.target.value })}
               placeholder="Username or email"
               data-testid="modal-login-identifier"
-              className="w-full bg-black/40 border border-emerald-500/25 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
+              className="w-full bg-emerald-950/40 border-2 border-emerald-500/25 rounded-lg px-4 py-3 text-base text-white outline-none focus:border-emerald-400 transition placeholder-white/40" />
           ) : (
             <>
               <input required minLength={3} maxLength={30} value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })}
                 placeholder="Username" data-testid="modal-signup-username"
-                className="w-full bg-black/40 border border-emerald-500/25 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
+                className="w-full bg-emerald-950/40 border-2 border-emerald-500/25 rounded-lg px-4 py-3 text-base text-white outline-none focus:border-emerald-400 transition placeholder-white/40" />
               <input required type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
                 placeholder="Email" data-testid="modal-signup-email"
-                className="w-full bg-black/40 border border-emerald-500/25 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
+                className="w-full bg-emerald-950/40 border-2 border-emerald-500/25 rounded-lg px-4 py-3 text-base text-white outline-none focus:border-emerald-400 transition placeholder-white/40" />
             </>
           )}
           <input required type="password" minLength={isLogin ? 1 : 8} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })}
             placeholder="Password" data-testid="modal-auth-password"
-            className="w-full bg-black/40 border border-emerald-500/25 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
+            className="w-full bg-emerald-950/40 border-2 border-emerald-500/25 rounded-lg px-4 py-3 text-base text-white outline-none focus:border-emerald-400 transition placeholder-white/40" />
 
-          <div className="flex items-center gap-2" data-testid="modal-captcha">
-            <span className="text-[11px] text-white/60 whitespace-nowrap">{captcha?.question || "…"}</span>
+          <div className="flex items-center gap-2 bg-emerald-950/40 border-2 border-emerald-500/25 rounded-lg px-3 py-1" data-testid="modal-captcha">
+            <span className="text-sm text-emerald-200 font-mono whitespace-nowrap">{captcha?.question || "…"}</span>
             <input required value={form.answer} onChange={(e) => setForm({ ...form, answer: e.target.value })}
               placeholder="Answer" data-testid="modal-captcha-answer"
-              className="flex-1 bg-black/40 border border-emerald-500/25 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
-            <button type="button" onClick={loadCaptcha} className="text-emerald-300 text-xs" title="Refresh captcha">↻</button>
+              className="flex-1 bg-transparent px-2 py-2 text-base text-white outline-none placeholder-white/30" />
+            <button type="button" onClick={loadCaptcha} className="text-emerald-300 hover:text-emerald-200 text-lg px-1" title="Refresh captcha">↻</button>
           </div>
 
           <button type="submit" disabled={submitting || !captcha} data-testid={isLogin ? "modal-login-submit" : "modal-signup-submit"}
-            className="w-full py-3 rounded-md font-display font-black text-sm uppercase tracking-widest bg-emerald-500 text-black hover:bg-emerald-400 transition disabled:opacity-50 inline-flex items-center justify-center gap-2">
-            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : (isLogin ? "Sign in" : "Create account")}
+            className="w-full py-4 rounded-lg font-display font-black text-base uppercase tracking-widest bg-gradient-to-r from-emerald-400 to-emerald-500 text-black hover:from-emerald-300 hover:to-emerald-400 transition disabled:opacity-50 inline-flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/30">
+            {submitting ? <Loader2 className="w-5 h-5 animate-spin" /> : (isLogin ? "Sign in" : "Create account")}
           </button>
         </form>
 
-        <div className="mt-4 text-center text-xs text-white/60">
+        <div className="mt-6 text-center text-sm text-white/60">
           {isLogin ? "New here? " : "Already have an account? "}
           <button onClick={() => switchMode(isLogin ? "signup" : "login")}
             data-testid={isLogin ? "switch-to-signup" : "switch-to-login"}

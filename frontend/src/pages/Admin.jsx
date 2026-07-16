@@ -3758,6 +3758,21 @@ function UsersPanel({ token }) {
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-2 justify-end">
                         <button
+                          onClick={async () => {
+                            const next = !u.auto_live_enabled;
+                            try {
+                              await adminApi(token).post(`/admin/users/${u.id}/auto-live`, { enabled: next });
+                              toast.success(next ? `Auto-Live enabled for @${u.username}` : `Auto-Live disabled for @${u.username}`);
+                              load?.();
+                            } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+                          }}
+                          data-testid={`autolive-user-${u.id}`}
+                          title={u.auto_live_enabled ? "Auto-Live is ON — click to disable" : "Auto-Live is OFF — click to enable"}
+                          className={`text-lg leading-none ${u.auto_live_enabled ? "text-emerald-300 hover:text-emerald-200" : "text-white/40 hover:text-white/70"}`}
+                        >
+                          {u.auto_live_enabled ? "🔴" : "⚫"}
+                        </button>
+                        <button
                           onClick={() => openDrill(u)}
                           data-testid={`orders-user-${u.id}`}
                           title="View orders & full history"
