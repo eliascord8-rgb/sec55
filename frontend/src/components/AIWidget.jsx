@@ -274,11 +274,26 @@ export default function AIWidget({ open, onOpenChange }) {
     setMessages(history);
     setText("");
     setSending(true);
+    // Retry-once helper: LLM providers throttle bursts, so first request may 502.
+    // A single retry with a short backoff catches most transient failures cleanly.
+    const attempt = async () => aiApi().post("/ai/chat", {
+      messages: history,
+      session_id: sessionIdRef.current,
+    });
+    let r;
     try {
-      const r = await aiApi().post("/ai/chat", {
-        messages: history,
-        session_id: sessionIdRef.current,
-      });
+      try {
+        r = await attempt();
+      } catch (err1) {
+        const st = err1?.response?.status;
+        // Only retry on transient errors (network, 429, 500-599)
+        if (!st || st === 429 || st >= 500) {
+          await new Promise((res) => setTimeout(res, 900));
+          r = await attempt();
+        } else {
+          throw err1;
+        }
+      }
       sessionIdRef.current = r.data.session_id;
       setHumanTakeover(!!r.data.human_takeover);
       const reply = r.data.reply;
@@ -324,13 +339,24 @@ export default function AIWidget({ open, onOpenChange }) {
         });
       }
     } catch (err) {
+      // AI backend is unreachable — offer a graceful fallback with human handover
+      const detail = err?.response?.data?.detail || "";
+      const isRateLimit = err?.response?.status === 429 || /rate.limit/i.test(String(detail));
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          text: "⚠️ I had trouble reaching my brain. Try again in a moment.",
+          text: isRateLimit
+            ? "⏱ I'm getting a lot of questions right now — please retry in a few seconds, or tap the human icon to reach the team directly."
+            : "⚠️ I couldn't reach my AI backend just now. You can retry, or tap the human icon below to escalate to our team.",
         },
       ]);
+      // Best-effort: mark the session as needing handover so admins see it in the inbox
+      try {
+        if (sessionIdRef.current) {
+          await api.post("/ai/request-handover", { session_id: sessionIdRef.current }).catch(() => {});
+        }
+      } catch { /* non-fatal */ }
     } finally {
       setSending(false);
     }

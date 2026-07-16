@@ -47,12 +47,14 @@ import { InvoicesView, HelpCenterView } from "./InvoicesAndHelp";
 import { AviatorGame, SettingsView } from "./SettingsAndAviator";
 import GuestLanding from "./GuestLanding";
 import NewsModal from "@/components/NewsModal";
+import { LanguagePicker, useLang } from "@/context/LanguageContext";
 import { toast } from "sonner";
 
 const POLL_MS = 3000;
 
 export default function ClientDashboard() {
   const { user, loading, logout, authedApi } = useAuth();
+  const { t } = useLang();
   const nav = useNavigate();
   const [stats, setStats] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -69,6 +71,8 @@ export default function ClientDashboard() {
   const [unpaidInvoices, setUnpaidInvoices] = useState(0);
   const [profileOpen, setProfileOpen] = useState(false);
   const [useNewLayout, setUseNewLayout] = useState(false);
+  const [addonsOwned, setAddonsOwned] = useState([]);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const chatEndRef = useRef(null);
 
   // Smooth-preloader when switching tabs (short delay for perceived polish, no full-page reload)
@@ -90,6 +94,13 @@ export default function ClientDashboard() {
       const r = await authedApi().get("/client/balance");
       setBalance(r.data.balance || 0);
       setWithdrawable(r.data.withdrawable || 0);
+    } catch {}
+  };
+
+  const loadAddons = async () => {
+    try {
+      const r = await authedApi().get("/client/addons/mine");
+      setAddonsOwned(r.data.owned || []);
     } catch {}
   };
 
@@ -260,6 +271,7 @@ export default function ClientDashboard() {
     loadStats();
     loadMessages();
     loadBalance();
+    loadAddons();
     const statInt = setInterval(loadStats, 12000);
     const msgInt = setInterval(loadMessages, POLL_MS);
     const balInt = setInterval(loadBalance, 15000);
@@ -353,6 +365,23 @@ export default function ClientDashboard() {
     toast.success(next ? "Switched to the new layout." : "Switched back to the classic layout.");
   };
 
+  const ownsAutoLive = addonsOwned.includes("auto_live");
+  const navTabs = [
+    { id: "home", label: t("nav_home"), testId: "nav-home" },
+    { id: "buy", label: t("nav_buy"), testId: "nav-buy" },
+    ...(ownsAutoLive ? [{ id: "live", label: t("nav_live"), testId: "nav-live", isNew: true }] : []),
+    { id: "addons", label: t("nav_addons"), testId: "nav-addons" },
+    { id: "numbers", label: t("nav_numbers"), testId: "nav-numbers" },
+    { id: "games", label: t("nav_games"), testId: "nav-games" },
+    { id: "invoices", label: t("nav_invoices"), testId: "nav-invoices", badge: unpaidInvoices },
+    { id: "help", label: t("nav_help"), testId: "nav-help" },
+    { id: "messages", label: t("nav_messages"), testId: "nav-messages", badge: unreadDms },
+    { id: "tickets", label: t("nav_tickets"), testId: "nav-tickets", badge: unreadTickets },
+    { id: "funds", label: t("nav_funds"), testId: "nav-funds" },
+    { id: "redeem", label: t("nav_redeem"), testId: "nav-redeem" },
+    { id: "withdraw", label: t("nav_withdraw"), testId: "nav-withdraw" },
+  ];
+
   const send = async (e) => {
     e?.preventDefault();
     const t = text.trim();
@@ -385,27 +414,24 @@ export default function ClientDashboard() {
       {useNewLayout ? (
         /* GREEN TOP-NAV shell — no sidebar */
         <header className="bg-[#0d2b12] sticky top-0 z-20 shadow-lg shadow-emerald-900/40 border-b border-emerald-500/20">
-          <div className="flex items-center h-16 px-4 md:px-6 gap-4">
-            <div className="flex items-center gap-2">
+          <div className="flex items-center h-16 px-3 md:px-6 gap-2 md:gap-4">
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Mobile hamburger — reveals full tab list */}
+              <button
+                onClick={() => setMobileMenuOpen(true)}
+                data-testid="mobile-nav-toggle"
+                className="md:hidden w-9 h-9 rounded-md hover:bg-emerald-500/15 flex items-center justify-center text-emerald-200"
+                title="Menu"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
               <div className="w-9 h-9 rounded-md bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
                 <Sparkles className="w-4 h-4 text-emerald-300" strokeWidth={2.5} />
               </div>
               <span className="hidden md:inline-block font-display font-black text-base text-white">BS<span className="text-emerald-300">.</span>GG</span>
             </div>
-            <nav className="flex-1 flex items-center justify-center gap-1 md:gap-2 overflow-x-auto no-scrollbar" data-testid="top-nav">
-              {[
-                { id: "home", label: "Home", testId: "nav-home" },
-                { id: "buy", label: "Purchase", testId: "nav-buy" },
-                { id: "numbers", label: "Numbers", testId: "nav-numbers", isNew: true },
-                { id: "games", label: "Games", testId: "nav-games" },
-                { id: "invoices", label: "Invoices", testId: "nav-invoices", badge: unpaidInvoices },
-                { id: "help", label: "Help", testId: "nav-help" },
-                { id: "messages", label: "Friends", testId: "nav-messages", badge: unreadDms },
-                { id: "tickets", label: "Support", testId: "nav-tickets", badge: unreadTickets },
-                { id: "funds", label: "Wallet", testId: "nav-funds" },
-                { id: "redeem", label: "Gifts", testId: "nav-redeem" },
-                { id: "withdraw", label: "Withdraw", testId: "nav-withdraw" },
-              ].map((t) => (
+            <nav className="hidden md:flex flex-1 items-center justify-center gap-1 md:gap-2 overflow-x-auto no-scrollbar" data-testid="top-nav">
+              {navTabs.map((t) => (
                 <button
                   key={t.id}
                   onClick={() => changeView(t.id)}
@@ -427,10 +453,23 @@ export default function ClientDashboard() {
                 </button>
               ))}
             </nav>
-            <div className="flex items-center gap-2 md:gap-3">
-              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/30" data-testid="topbar-balance">
-                <CreditCard className="w-3.5 h-3.5 text-emerald-300" />
-                <span className="text-sm font-bold text-emerald-300">${balance.toFixed(2)}</span>
+            {/* Mobile: current view label in the middle */}
+            <div className="md:hidden flex-1 text-center text-xs font-bold uppercase tracking-widest text-emerald-200 truncate">
+              {(navTabs.find((t) => t.id === view) || {}).label || "Home"}
+            </div>
+            <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
+              {/* Balance + inline Buy button — visible on all sizes */}
+              <div className="flex items-center gap-1.5 px-2 md:px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/30" data-testid="topbar-balance">
+                <CreditCard className="w-3.5 h-3.5 text-emerald-300 hidden sm:inline-block" />
+                <span className="text-xs md:text-sm font-bold text-emerald-300 whitespace-nowrap">${balance.toFixed(2)}</span>
+                <button
+                  onClick={() => changeView("buy")}
+                  data-testid="topbar-buy-btn"
+                  title="Open purchase page"
+                  className="ml-1 pl-2 border-l border-emerald-500/30 text-[10px] md:text-[11px] font-black uppercase tracking-wider text-emerald-200 hover:text-white transition"
+                >
+                  Buy
+                </button>
               </div>
               <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-white/10 relative" data-testid="profile-menu-wrap">
                 <button onClick={() => setProfileOpen((v) => !v)}
@@ -470,13 +509,14 @@ export default function ClientDashboard() {
                   </>
                 )}
               </div>
-              <button onClick={toggleLayoutPref} data-testid="switch-layout-btn" title="Switch to classic layout" className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/15 transition">
+              <button onClick={toggleLayoutPref} data-testid="switch-layout-btn" title="Switch to classic layout" className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/15 transition">
                 <Grid3x3 className="w-3.5 h-3.5" />
                 Classic
               </button>
+              <div className="hidden md:block"><LanguagePicker compact /></div>
               {user.role === "owner" && (
                 <a href="/admin" data-testid="nav-admin-green" title="Open admin panel"
-                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition shadow-sm shadow-emerald-500/40">
+                   className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition shadow-sm shadow-emerald-500/40">
                   <Sparkles className="w-3.5 h-3.5" />
                   Admin
                 </a>
@@ -486,6 +526,39 @@ export default function ClientDashboard() {
               </button>
             </div>
           </div>
+          {/* Mobile drawer — full tab list */}
+          {mobileMenuOpen && (
+            <>
+              <div className="fixed inset-0 top-16 bg-black/70 backdrop-blur-sm z-30 md:hidden" onClick={() => setMobileMenuOpen(false)} />
+              <div className="fixed top-16 left-0 right-0 z-40 bg-[#0d2b12] border-b border-emerald-500/30 shadow-2xl md:hidden max-h-[70vh] overflow-y-auto" data-testid="mobile-nav-drawer">
+                <div className="p-2 grid grid-cols-2 gap-1">
+                  {navTabs.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => { changeView(t.id); setMobileMenuOpen(false); }}
+                      data-testid={`m-${t.testId}`}
+                      className={`relative flex items-center justify-between px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider transition ${view === t.id ? "bg-emerald-500/20 text-emerald-200" : "text-white/70 hover:bg-emerald-500/10"}`}
+                    >
+                      <span>{t.label}</span>
+                      {t.isNew && (
+                        <span className="text-[8px] font-black px-1.5 py-[1px] rounded-full bg-emerald-400 text-black tracking-wider leading-none">NEW</span>
+                      )}
+                      {t.badge > 0 && (
+                        <span className="min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none">
+                          {t.badge}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                {user.role === "owner" && (
+                  <div className="p-2 border-t border-emerald-500/20">
+                    <a href="/admin" className="block px-3 py-2 rounded-md text-xs font-black uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 text-center">Admin panel</a>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </header>
       ) : (
       <header className="bg-[#2563eb] sticky top-0 z-20 shadow-lg shadow-[#2563eb]/20">
@@ -671,7 +744,13 @@ export default function ClientDashboard() {
                 <FundsView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
               )}
               {view === "buy" && (
-                <BuyView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
+                <BuyView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} ownsAutoLive={ownsAutoLive} onGoAddons={() => changeView("addons")} onGoLive={() => changeView("live")} />
+              )}
+              {view === "live" && (
+                <LiveOrdersView authedApi={authedApi} ownsAutoLive={ownsAutoLive} onGoAddons={() => changeView("addons")} onGoBuy={() => changeView("buy")} />
+              )}
+              {view === "addons" && (
+                <AddonsView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} reloadAddons={loadAddons} onGoBuy={() => changeView("buy")} onGoLive={() => changeView("live")} />
               )}
               {view === "numbers" && (
                 <NumbersView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
@@ -2148,7 +2227,303 @@ function RedeemView({ authedApi, balance, reloadBalance }) {
   );
 }
 
-function BuyView({ authedApi, balance, reloadBalance }) {
+function LiveOrdersView({ authedApi, ownsAutoLive, onGoAddons, onGoBuy }) {
+  const [subs, setSubs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [autoEnabled, setAutoEnabled] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await authedApi().get("/client/live-sub/my");
+      setSubs(r.data.subscriptions || []);
+      setAutoEnabled(!!r.data.auto_live_enabled);
+    } catch {}
+    setLoading(false);
+  };
+  useEffect(() => { load(); const t = setInterval(load, 20000); return () => clearInterval(t); }, []);
+
+  const cancel = async (sid) => {
+    if (!window.confirm("Cancel this auto-live subscription? No more bursts will be placed.")) return;
+    try {
+      await authedApi().post(`/client/live-sub/${sid}/cancel`);
+      toast.success("Subscription cancelled.");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Cancel failed"); }
+  };
+
+  const active = subs.filter((s) => s.status === "active");
+  const inactive = subs.filter((s) => s.status !== "active");
+
+  if (!ownsAutoLive && !autoEnabled) {
+    return (
+      <div className="max-w-3xl mx-auto space-y-6" data-testid="live-orders-view">
+        <div>
+          <h1 className="font-display text-3xl md:text-4xl font-black tracking-tight flex items-center gap-2">
+            <Zap className="w-7 h-7 text-fuchsia-400" /> Live orders
+          </h1>
+          <p className="text-white/50 text-sm mt-2">Automatic TikTok-live SMM bursts every 10 minutes while your target streams.</p>
+        </div>
+        <div className="bg-fuchsia-500/10 border border-fuchsia-500/30 rounded-lg p-8 text-center space-y-4" data-testid="live-locked">
+          <div className="text-4xl">🔒</div>
+          <div className="font-display font-black text-xl">Auto-Live is a paid add-on</div>
+          <div className="text-sm text-white/60 max-w-md mx-auto">Purchase the Auto-Live add-on once — then this page becomes your control panel for recurring TikTok orders.</div>
+          <button onClick={onGoAddons} data-testid="live-goto-addons" className="mt-2 px-5 py-2.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-black uppercase tracking-wider transition">
+            View add-ons →
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-5xl mx-auto space-y-6" data-testid="live-orders-view">
+      <div className="flex items-end justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="font-display text-3xl md:text-4xl font-black tracking-tight flex items-center gap-2">
+            <Zap className="w-7 h-7 text-fuchsia-400" /> Live orders
+          </h1>
+          <p className="text-white/50 text-sm mt-2">Every 5 min we check TikTok. When live, a fresh order is placed — repeated every 10 minutes.</p>
+        </div>
+        <button
+          onClick={onGoBuy}
+          data-testid="live-goto-buy"
+          className="px-4 py-2 rounded-md bg-fuchsia-500 hover:bg-fuchsia-400 text-white text-xs font-black uppercase tracking-wider transition"
+        >
+          + New auto-live
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-[#0d0a14] border border-emerald-500/20 rounded-md p-4">
+          <div className="text-[10px] uppercase tracking-widest text-white/50">Active</div>
+          <div className="font-display font-black text-3xl text-emerald-300 mt-1" data-testid="live-active-count">{active.length}</div>
+        </div>
+        <div className="bg-[#0d0a14] border border-white/10 rounded-md p-4">
+          <div className="text-[10px] uppercase tracking-widest text-white/50">Bursts placed</div>
+          <div className="font-display font-black text-3xl text-white mt-1">{subs.reduce((a, s) => a + (s.total_bursts || 0), 0)}</div>
+        </div>
+        <div className="bg-[#0d0a14] border border-fuchsia-500/20 rounded-md p-4">
+          <div className="text-[10px] uppercase tracking-widest text-white/50">Total spent</div>
+          <div className="font-display font-black text-3xl text-fuchsia-300 mt-1">${subs.reduce((a, s) => a + (s.total_spent || 0), 0).toFixed(2)}</div>
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[10px] uppercase tracking-widest text-emerald-300 mb-2 font-bold">Active subscriptions</div>
+        {loading ? (
+          <div className="flex items-center justify-center py-10"><Loader2 className="w-6 h-6 animate-spin text-emerald-400" /></div>
+        ) : active.length === 0 ? (
+          <div className="bg-[#0d0a14] border border-white/10 rounded-md p-6 text-center text-sm text-white/50">
+            No active auto-live subscriptions. <button onClick={onGoBuy} className="text-emerald-300 underline">Create one →</button>
+          </div>
+        ) : (
+          <div className="space-y-2" data-testid="live-active-list">
+            {active.map((s) => (
+              <div key={s.id} className="bg-[#0d0a14] border border-fuchsia-500/30 rounded-md p-4" data-testid={`live-row-${s.id}`}>
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-fuchsia-400 animate-pulse" />
+                      <a href={`https://www.tiktok.com/@${s.tiktok_username}/live`} target="_blank" rel="noopener noreferrer" className="font-bold text-fuchsia-200 hover:underline">@{s.tiktok_username}</a>
+                    </div>
+                    <div className="text-xs text-white/60 mt-1">{s.service_name} — <span className="font-mono">{s.quantity_per_burst}</span> per burst · ${(s.charge_per_burst || 0).toFixed(3)} each</div>
+                  </div>
+                  <button
+                    onClick={() => cancel(s.id)}
+                    data-testid={`live-cancel-${s.id}`}
+                    className="px-3 py-1.5 rounded-md bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30 text-[11px] font-black uppercase tracking-wider transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3 text-[10px]">
+                  <div className="bg-black/40 rounded p-2">
+                    <div className="text-white/40 uppercase tracking-widest">Bursts</div>
+                    <div className="text-emerald-300 font-bold text-sm">{s.total_bursts || 0}</div>
+                  </div>
+                  <div className="bg-black/40 rounded p-2">
+                    <div className="text-white/40 uppercase tracking-widest">Spent</div>
+                    <div className="text-emerald-300 font-bold text-sm">${(s.total_spent || 0).toFixed(2)}</div>
+                  </div>
+                  <div className="bg-black/40 rounded p-2">
+                    <div className="text-white/40 uppercase tracking-widest">Last burst</div>
+                    <div className="text-white/80 font-mono text-[11px]">{s.last_burst_at ? new Date(s.last_burst_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}</div>
+                  </div>
+                  <div className="bg-black/40 rounded p-2">
+                    <div className="text-white/40 uppercase tracking-widest">Expires</div>
+                    <div className="text-white/80 font-mono text-[11px]">{s.expires_at ? new Date(s.expires_at).toLocaleDateString() : "—"}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {inactive.length > 0 && (
+        <div>
+          <div className="text-[10px] uppercase tracking-widest text-white/40 mb-2 font-bold">History ({inactive.length})</div>
+          <div className="space-y-1.5 max-h-64 overflow-y-auto">
+            {inactive.map((s) => (
+              <div key={s.id} className="bg-[#0d0a14] border border-white/5 rounded-md px-4 py-2.5 text-xs flex items-center gap-3 flex-wrap">
+                <span className="text-white/70 font-mono">@{s.tiktok_username}</span>
+                <span className="text-white/50 truncate flex-1 min-w-0">{s.service_name}</span>
+                <span className="text-[10px] uppercase tracking-widest px-2 py-0.5 rounded bg-white/10 text-white/60">{s.status}</span>
+                <span className="text-white/50">${(s.total_spent || 0).toFixed(2)} · {s.total_bursts || 0} bursts</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function AddonsView({ authedApi, balance, reloadBalance, reloadAddons, onGoBuy, onGoLive }) {
+  const [addons, setAddons] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [buying, setBuying] = useState(null); // addon.id in-flight
+  const [checkout, setCheckout] = useState(null); // addon in confirm-modal
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await authedApi().get("/client/addons/catalog");
+      setAddons(r.data.addons || []);
+    } catch {}
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const purchase = async (addon) => {
+    setBuying(addon.id);
+    try {
+      const r = await authedApi().post("/client/addons/purchase", { addon_id: addon.id });
+      toast.success(`✅ ${addon.name} unlocked — new balance $${r.data.balance.toFixed(2)}`);
+      setCheckout(null);
+      await Promise.all([reloadBalance?.(), reloadAddons?.(), load()]);
+      // If the user bought Auto-Live, drop them into the Live orders panel
+      if (addon.id === "auto_live" && onGoLive) {
+        setTimeout(() => onGoLive(), 400);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Purchase failed");
+    } finally { setBuying(null); }
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto space-y-6" data-testid="addons-view">
+      <div className="flex items-end justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="font-display text-3xl md:text-4xl font-black tracking-tight flex items-center gap-2">
+            <Sparkles className="w-7 h-7 text-emerald-400" /> Add-ons store
+          </h1>
+          <p className="text-white/50 text-sm mt-2">Unlock premium features with your account balance — one-time payment, permanent access.</p>
+        </div>
+        <div className="bg-[#0d0a14] border border-emerald-500/30 rounded-md px-4 py-2">
+          <div className="text-[10px] uppercase tracking-widest text-white/50">Balance</div>
+          <div className="font-display font-black text-xl text-emerald-300" data-testid="addons-balance">${balance.toFixed(2)}</div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-emerald-400" /></div>
+      ) : addons.length === 0 ? (
+        <div className="text-center py-10 text-white/50">No add-ons available yet.</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {addons.map((a) => (
+            <div key={a.id} className={`relative bg-gradient-to-br ${a.owned ? "from-emerald-500/10 to-transparent border-emerald-500/50" : "from-fuchsia-500/10 to-transparent border-fuchsia-500/30 hover:border-fuchsia-400"} border rounded-lg p-6 transition`} data-testid={`addon-card-${a.id}`}>
+              {a.owned && (
+                <div className="absolute top-3 right-3 px-2 py-1 rounded-full bg-emerald-500 text-black text-[10px] font-black uppercase tracking-wider">Owned</div>
+              )}
+              <div className="font-display font-black text-2xl mb-1">{a.name}</div>
+              <div className="text-sm text-white/60 mb-4">{a.tagline}</div>
+              <p className="text-sm text-white/75 leading-relaxed mb-4">{a.description}</p>
+              <ul className="space-y-1.5 mb-6">
+                {(a.features || []).map((f, i) => (
+                  <li key={i} className="flex items-start gap-2 text-xs text-white/70">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 mt-0.5 shrink-0" />
+                    <span>{f}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="flex items-end justify-between gap-3 pt-4 border-t border-white/10">
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-white/40">Price</div>
+                  <div className="font-display font-black text-3xl text-emerald-300">${a.price.toFixed(2)}</div>
+                </div>
+                {a.owned ? (
+                  <button
+                    onClick={() => (a.id === "auto_live" ? onGoLive?.() : onGoBuy?.())}
+                    data-testid={`addon-open-${a.id}`}
+                    className="px-5 py-2.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-black uppercase tracking-wider transition"
+                  >
+                    Open
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setCheckout(a)}
+                    data-testid={`addon-buy-${a.id}`}
+                    disabled={buying === a.id}
+                    className="px-5 py-2.5 rounded-md bg-fuchsia-500 hover:bg-fuchsia-400 text-white text-sm font-black uppercase tracking-wider transition disabled:opacity-40"
+                  >
+                    {buying === a.id ? <Loader2 className="w-4 h-4 animate-spin" /> : "Unlock"}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {checkout && (
+        <div
+          data-testid="addon-checkout-modal"
+          className="fixed inset-0 z-[85] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => (buying ? null : setCheckout(null))}
+        >
+          <div className="w-full max-w-md bg-[#0d2b12] border border-emerald-500/40 rounded-lg p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="text-[10px] uppercase tracking-widest text-emerald-300 mb-1 font-bold">Checkout</div>
+            <h3 className="font-display font-black text-2xl mb-1">{checkout.name}</h3>
+            <p className="text-sm text-white/60 mb-4">{checkout.tagline}</p>
+            <div className="bg-black/30 rounded-md p-4 space-y-2 mb-4 text-sm">
+              <div className="flex justify-between"><span className="text-white/60">Price</span><span className="text-white font-bold">${checkout.price.toFixed(2)}</span></div>
+              <div className="flex justify-between"><span className="text-white/60">Payment</span><span className="text-emerald-300 font-bold">Account balance</span></div>
+              <div className="flex justify-between border-t border-white/10 pt-2"><span className="text-white/60">Balance after</span><span className={`font-bold ${balance - checkout.price >= 0 ? "text-emerald-300" : "text-red-300"}`}>${(balance - checkout.price).toFixed(2)}</span></div>
+            </div>
+            {balance < checkout.price && (
+              <div className="mb-3 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded p-2 text-center">
+                Not enough balance. Top up in the Wallet tab first.
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setCheckout(null)}
+                disabled={buying === checkout.id}
+                className="py-2.5 rounded-md bg-white/10 hover:bg-white/15 text-white text-sm font-bold uppercase tracking-wider transition disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => purchase(checkout)}
+                data-testid="addon-checkout-confirm"
+                disabled={buying === checkout.id || balance < checkout.price}
+                className="py-2.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-black uppercase tracking-wider transition disabled:opacity-40"
+              >
+                {buying === checkout.id ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Pay & Unlock"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, onGoLive }) {
   const [services, setServices] = useState([]);
   const [loadingSvc, setLoadingSvc] = useState(true);
   const [search, setSearch] = useState("");
@@ -2167,6 +2542,60 @@ function BuyView({ authedApi, balance, reloadBalance }) {
   const [subDays, setSubDays] = useState(7);
   const [subSubmitting, setSubSubmitting] = useState(false);
   const [mySubs, setMySubs] = useState([]);
+  // Saved bulk-target lists
+  const [bulkLists, setBulkLists] = useState([]);
+  const [saveListName, setSaveListName] = useState("");
+  const [savingList, setSavingList] = useState(false);
+  // Repeat-order flow
+  const [repeating, setRepeating] = useState(false);
+
+  const loadBulkLists = async () => {
+    try {
+      const r = await authedApi().get("/client/bulk-lists");
+      setBulkLists(r.data.lists || []);
+    } catch { /* ignore */ }
+  };
+  useEffect(() => { loadBulkLists(); }, []);
+
+  const saveCurrentBulk = async () => {
+    const name = saveListName.trim();
+    if (!name) { toast.error("Name your list first"); return; }
+    if (bulkTargetList.length === 0) { toast.error("Enter at least one target"); return; }
+    setSavingList(true);
+    try {
+      await authedApi().post("/client/bulk-lists", { name, targets: bulkTargetList });
+      toast.success(`Saved "${name}" (${bulkTargetList.length} targets)`);
+      setSaveListName("");
+      loadBulkLists();
+    } catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
+    finally { setSavingList(false); }
+  };
+
+  const loadList = (l) => {
+    setBulkTargets((l.targets || []).join("\n"));
+    toast.success(`Loaded "${l.name}" (${(l.targets || []).length} targets)`);
+  };
+
+  const deleteList = async (lid, name) => {
+    if (!window.confirm(`Delete saved list "${name}"?`)) return;
+    try {
+      await authedApi().delete(`/client/bulk-lists/${lid}`);
+      toast.success("List deleted");
+      loadBulkLists();
+    } catch (e) { toast.error(e.response?.data?.detail || "Delete failed"); }
+  };
+
+  const repeatLast = async () => {
+    if (!last?.orderId) return;
+    setRepeating(true);
+    try {
+      const r = await authedApi().post(`/client/orders/${last.orderId}/repeat`);
+      toast.success(`Order repeated! New ID #${r.data.smm_order_id}`);
+      setLast({ id: r.data.smm_order_id, charge: r.data.charge, orderId: last.orderId });
+      reloadBalance();
+    } catch (e) { toast.error(e.response?.data?.detail || "Repeat failed"); }
+    finally { setRepeating(false); }
+  };
 
   const loadMySubs = async () => {
     try {
@@ -2245,7 +2674,7 @@ function BuyView({ authedApi, balance, reloadBalance }) {
         comments: needsComments ? comments.trim() : undefined,
       });
       toast.success(`Order placed! ID #${r.data.smm_order_id}`);
-      setLast({ id: r.data.smm_order_id, charge: r.data.charge });
+      setLast({ id: r.data.smm_order_id, charge: r.data.charge, orderId: r.data.order_id });
       setSelected(null);
       setLink("");
       setQty(0);
@@ -2341,18 +2770,31 @@ function BuyView({ authedApi, balance, reloadBalance }) {
       </div>
 
       {last && (
-        <div className="bg-[#0d0a14] border border-emerald-500/40 rounded-sm p-4 flex items-center justify-between gap-3">
+        <div className="bg-[#0d0a14] border border-emerald-500/40 rounded-sm p-4 flex items-center justify-between gap-3 flex-wrap">
           <div className="text-xs">
             <span className="text-emerald-400 font-bold">Last order placed</span>{" "}
             — Order ID <span className="font-mono">#{last.id}</span> · charged{" "}
             <span className="text-[#FF007F] font-bold">${last.charge.toFixed(2)}</span>
           </div>
-          <button
-            onClick={() => setLast(null)}
-            className="text-[10px] uppercase tracking-wider text-white/50 hover:text-white"
-          >
-            dismiss
-          </button>
+          <div className="flex items-center gap-2">
+            {last.orderId && (
+              <button
+                onClick={repeatLast}
+                disabled={repeating}
+                data-testid="buy-repeat-last"
+                className="px-3 py-1.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black text-[11px] font-black uppercase tracking-wider transition inline-flex items-center gap-1.5 disabled:opacity-40"
+              >
+                {repeating ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                Repeat same order
+              </button>
+            )}
+            <button
+              onClick={() => setLast(null)}
+              className="text-[10px] uppercase tracking-wider text-white/50 hover:text-white"
+            >
+              dismiss
+            </button>
+          </div>
         </div>
       )}
 
@@ -2424,8 +2866,8 @@ function BuyView({ authedApi, balance, reloadBalance }) {
             </div>
           )}
 
-          <div className="flex items-center justify-between bg-[#1a1525]/60 border border-white/5 rounded-sm px-4 py-3">
-            <div className="flex items-center gap-3">
+          <div className="flex items-center justify-between bg-[#1a1525]/60 border border-white/5 rounded-sm px-4 py-3 flex-wrap gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <div className="text-xs uppercase tracking-wider text-white/50">Bulk order</div>
               <button
                 onClick={() => { setBulkMode((v) => !v); setBulkResult(null); if (!bulkMode) setSubMode(false); }}
@@ -2436,16 +2878,27 @@ function BuyView({ authedApi, balance, reloadBalance }) {
               </button>
               <span className="text-[11px] text-white/50">{bulkMode ? `${bulkTargetList.length} target(s)` : "single"}</span>
               {isTiktokService && /live/i.test(selected?.name || selected?.category || "") && (
-                <>
-                  <div className="ml-4 text-xs uppercase tracking-wider text-fuchsia-300">Auto-Live</div>
+                ownsAutoLive ? (
+                  <>
+                    <div className="ml-2 md:ml-4 text-xs uppercase tracking-wider text-fuchsia-300">Auto-Live</div>
+                    <button
+                      onClick={() => { setSubMode((v) => !v); if (!subMode) setBulkMode(false); }}
+                      data-testid="buy-sub-toggle"
+                      className={`relative w-11 h-6 rounded-full transition ${subMode ? "bg-fuchsia-500" : "bg-white/15"}`}
+                    >
+                      <span className={`absolute top-0.5 ${subMode ? "left-6" : "left-0.5"} w-5 h-5 rounded-full bg-white shadow transition-all`} />
+                    </button>
+                  </>
+                ) : (
                   <button
-                    onClick={() => { setSubMode((v) => !v); if (!subMode) setBulkMode(false); }}
-                    data-testid="buy-sub-toggle"
-                    className={`relative w-11 h-6 rounded-full transition ${subMode ? "bg-fuchsia-500" : "bg-white/15"}`}
+                    onClick={onGoAddons}
+                    data-testid="buy-auto-live-locked"
+                    title="Unlock Auto-Live in the Add-ons store"
+                    className="ml-2 md:ml-4 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-black uppercase tracking-wider text-fuchsia-300 border border-fuchsia-500/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/20 transition"
                   >
-                    <span className={`absolute top-0.5 ${subMode ? "left-6" : "left-0.5"} w-5 h-5 rounded-full bg-white shadow transition-all`} />
+                    🔒 Auto-Live — Unlock
                   </button>
-                </>
+                )
               )}
             </div>
             <div className="text-right">
@@ -2457,7 +2910,33 @@ function BuyView({ authedApi, balance, reloadBalance }) {
           </div>
 
           {bulkMode && (
-            <div className="bg-emerald-500/5 border border-emerald-500/30 rounded-sm p-4 space-y-2" data-testid="buy-bulk-panel">
+            <div className="bg-emerald-500/5 border border-emerald-500/30 rounded-sm p-4 space-y-3" data-testid="buy-bulk-panel">
+              {/* Saved lists row */}
+              {bulkLists.length > 0 && (
+                <div className="flex items-center gap-2 flex-wrap" data-testid="bulk-saved-lists">
+                  <div className="text-[10px] uppercase tracking-widest text-emerald-300 font-bold">Saved lists</div>
+                  {bulkLists.map((l) => (
+                    <div key={l.id} className="inline-flex items-center gap-1 bg-black/40 border border-emerald-500/30 rounded-md">
+                      <button
+                        onClick={() => loadList(l)}
+                        data-testid={`bulk-list-load-${l.id}`}
+                        title="Load into the textarea"
+                        className="px-2.5 py-1 text-[11px] font-bold text-emerald-200 hover:text-white"
+                      >
+                        {l.name} <span className="text-emerald-400/60 font-mono ml-1">·{(l.targets || []).length}</span>
+                      </button>
+                      <button
+                        onClick={() => deleteList(l.id, l.name)}
+                        data-testid={`bulk-list-del-${l.id}`}
+                        title="Delete list"
+                        className="px-1.5 py-1 text-white/40 hover:text-red-300 text-xs"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <Label className="text-[11px] uppercase tracking-wider text-emerald-300">
                 Targets — one link or @username per line (up to 200)
               </Label>
@@ -2473,6 +2952,83 @@ function BuyView({ authedApi, balance, reloadBalance }) {
                 {bulkTargetList.length} unique target(s) · each will receive {qty || 0} × ${(Number(selected.rate) * Number(qty || 0) / 1000).toFixed(4)} = <span className="text-emerald-300 font-bold">${bulkTotal.toFixed(2)} total</span>
                 {isTiktokService ? " · optimised for TikTok Live" : ""}
               </div>
+              {/* Save current list */}
+              <div className="flex flex-col sm:flex-row gap-2 pt-2 border-t border-emerald-500/20">
+                <Input
+                  data-testid="bulk-save-name"
+                  value={saveListName}
+                  onChange={(e) => setSaveListName(e.target.value.slice(0, 60))}
+                  placeholder="Give this list a name (e.g. Regulars)"
+                  className="bg-[#1a1525] border-white/10 text-sm flex-1"
+                />
+                <button
+                  onClick={saveCurrentBulk}
+                  disabled={savingList || bulkTargetList.length === 0 || !saveListName.trim()}
+                  data-testid="bulk-save-btn"
+                  className="px-4 py-2 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black uppercase tracking-wider transition disabled:opacity-40 inline-flex items-center justify-center gap-1.5"
+                  title="Save the current targets as a reusable list"
+                >
+                  {savingList ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "💾"}
+                  Save list
+                </button>
+              </div>
+            </div>
+          )}
+
+          {subMode && ownsAutoLive && (
+            <div className="bg-fuchsia-500/5 border border-fuchsia-500/40 rounded-sm p-4 space-y-3" data-testid="buy-sub-panel">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-fuchsia-400 animate-pulse" />
+                <div className="text-[11px] uppercase tracking-widest text-fuchsia-300 font-bold">Auto-Live setup</div>
+              </div>
+              <p className="text-xs text-white/60">
+                We&apos;ll check the TikTok profile every 5 minutes. Each time they&apos;re live, we place a fresh order for <span className="text-fuchsia-200 font-bold">{qty || 0}</span> {selected?.name || "unit(s)"}, repeating every 10 minutes while the stream stays up. Balance is charged only per burst.
+              </p>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-[11px] uppercase tracking-wider text-white/60">TikTok @username</Label>
+                  <Input
+                    data-testid="buy-sub-username"
+                    value={subUsername}
+                    onChange={(e) => setSubUsername(e.target.value)}
+                    placeholder="creatorhandle"
+                    className="bg-[#1a1525] border-fuchsia-500/30 mt-1"
+                  />
+                </div>
+                <div>
+                  <Label className="text-[11px] uppercase tracking-wider text-white/60">Duration</Label>
+                  <select
+                    data-testid="buy-sub-days"
+                    value={subDays}
+                    onChange={(e) => setSubDays(Number(e.target.value))}
+                    className="mt-1 w-full bg-[#1a1525] border border-fuchsia-500/30 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-fuchsia-400"
+                  >
+                    {[7, 14, 30, 60, 90, 365].map((d) => (
+                      <option key={d} value={d} className="bg-[#0a1a0a]">{d} days</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="text-[11px] text-fuchsia-200/70 bg-black/30 rounded-md px-3 py-2">
+                Charged <span className="text-fuchsia-300 font-bold font-mono">${(Number(selected?.rate || 0) * Number(qty || 0) / 1000).toFixed(4)}</span> per burst.
+                We need at least this much in your balance to start.
+              </div>
+              <button
+                onClick={subscribe}
+                disabled={subSubmitting || !subUsername.trim() || !qty}
+                data-testid="buy-sub-confirm"
+                className="w-full py-3 rounded-md bg-fuchsia-500 hover:bg-fuchsia-400 text-white font-black text-sm uppercase tracking-wider transition disabled:opacity-40 inline-flex items-center justify-center gap-2"
+              >
+                {subSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                Activate Auto-Live for {subDays} days
+              </button>
+              <button
+                onClick={onGoLive}
+                data-testid="buy-sub-go-live"
+                className="w-full text-center text-[11px] text-fuchsia-200/70 hover:text-white uppercase tracking-widest transition"
+              >
+                → Manage active subscriptions
+              </button>
             </div>
           )}
 
@@ -2498,17 +3054,19 @@ function BuyView({ authedApi, balance, reloadBalance }) {
             </div>
           )}
 
-          <button
-            disabled={bulkMode ? (!canBulkBuy || placing) : (!canBuy || placing)}
-            onClick={bulkMode ? placeBulk : place}
-            data-testid={bulkMode ? "buy-bulk-confirm" : "buy-confirm"}
-            className="w-full py-3 gradient-pp rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40"
-          >
-            {placing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-            {bulkMode
-              ? `Place ${bulkTargetList.length} orders — $${bulkTotal.toFixed(2)}`
-              : `Place order — $${total.toFixed(2)}`}
-          </button>
+          {!subMode && (
+            <button
+              disabled={bulkMode ? (!canBulkBuy || placing) : (!canBuy || placing)}
+              onClick={bulkMode ? placeBulk : place}
+              data-testid={bulkMode ? "buy-bulk-confirm" : "buy-confirm"}
+              className="w-full py-3 gradient-pp rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40"
+            >
+              {placing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+              {bulkMode
+                ? `Place ${bulkTargetList.length} orders — $${bulkTotal.toFixed(2)}`
+                : `Place order — $${total.toFixed(2)}`}
+            </button>
+          )}
         </div>
       ) : (
         <>

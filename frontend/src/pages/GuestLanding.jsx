@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { Sparkles, Loader2, X, MessageCircle, ShoppingBag } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
+import { useLang, LanguagePicker } from "@/context/LanguageContext";
 
 // Green-themed guest landing shown on /client/dashboard when the user is NOT
 // signed in.  Renders a compact green header with Sign-in / Sign-up buttons
@@ -11,6 +12,7 @@ import { useAuth } from "@/context/AuthContext";
 // auth modal so users never leave the dashboard shell.
 export default function GuestLanding() {
   const [authOpen, setAuthOpen] = useState(null); // 'login' | 'signup' | null
+  const { t } = useLang();
 
   return (
     <div className="min-h-screen text-white bg-[#0a1a0a] theme-green" data-testid="guest-landing">
@@ -27,19 +29,20 @@ export default function GuestLanding() {
           </div>
           <div className="flex-1" />
           <div className="flex items-center gap-2">
+            <LanguagePicker />
             <button
               onClick={() => setAuthOpen("login")}
               data-testid="guest-signin-btn"
-              className="px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider text-emerald-200 border border-emerald-500/40 hover:bg-emerald-500/15 transition"
+              className="px-3 md:px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider text-emerald-200 border border-emerald-500/40 hover:bg-emerald-500/15 transition"
             >
-              Sign in
+              {t("sign_in")}
             </button>
             <button
               onClick={() => setAuthOpen("signup")}
               data-testid="guest-signup-btn"
-              className="px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition"
+              className="px-3 md:px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition"
             >
-              Sign up
+              {t("sign_up")}
             </button>
           </div>
         </div>
@@ -58,26 +61,26 @@ export default function GuestLanding() {
 }
 
 function GuestWelcome({ onSignIn, onSignUp }) {
+  const { t } = useLang();
   return (
     <div className="bg-gradient-to-br from-[#0d2b12] to-[#0a1a0a] rounded-lg border border-emerald-500/30 p-8 md:p-10 flex flex-col items-center justify-center text-center min-h-[300px]">
       <div className="w-14 h-14 rounded-full bg-emerald-500/20 border border-emerald-500/50 flex items-center justify-center mb-4">
         <Sparkles className="w-6 h-6 text-emerald-300" />
       </div>
       <h1 className="font-display text-3xl md:text-5xl font-black text-white mb-3">
-        Welcome to <span className="text-emerald-300">BetterSocial</span>
+        {t("welcome_to")} <span className="text-emerald-300">BetterSocial</span>
       </h1>
       <p className="text-white/70 text-sm md:text-base max-w-md">
-        Sign in to place orders, play daily games, deposit crypto and manage your account.
-        Peek around — the live chat and community orders are open to everyone.
+        {t("welcome_sub")}
       </p>
       <div className="mt-6 flex flex-wrap gap-3 justify-center">
         <button onClick={onSignIn} data-testid="guest-cta-signin"
           className="px-6 py-3 rounded-md text-sm font-bold uppercase tracking-wider bg-emerald-500 text-black hover:bg-emerald-400 transition">
-          Sign in
+          {t("sign_in")}
         </button>
         <button onClick={onSignUp} data-testid="guest-cta-signup"
           className="px-6 py-3 rounded-md text-sm font-bold uppercase tracking-wider border border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/10 transition">
-          Create account
+          {t("create_account")}
         </button>
       </div>
     </div>
@@ -136,18 +139,34 @@ function GuestPublicChat() {
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs.length]);
   return (
     <aside className="bg-[#0d2b12] rounded-lg border border-emerald-500/20 p-3 h-[520px] overflow-hidden flex flex-col" data-testid="guest-public-chat">
-      <div className="flex items-center gap-2 mb-3">
-        <MessageCircle className="w-4 h-4 text-emerald-300" />
-        <div className="text-[10px] uppercase tracking-widest text-emerald-300 font-bold">Community chat</div>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          <MessageCircle className="w-4 h-4 text-emerald-300" />
+          <div className="text-[10px] uppercase tracking-widest text-emerald-300 font-bold">Community chat</div>
+        </div>
+        <span className="text-[9px] text-emerald-400/60 uppercase tracking-widest">read-only</span>
       </div>
-      <div className="flex-1 overflow-y-auto space-y-1.5 no-scrollbar text-xs">
-        {msgs.length === 0 && <div className="text-white/40">Chat is quiet — be the first to say hi (sign in required).</div>}
-        {msgs.map((m) => (
-          <div key={m.id} className="bg-black/30 rounded-sm px-2 py-1.5">
-            <span className="text-emerald-300 font-bold mr-1">@{m.sender_username || "user"}</span>
-            <span className="text-white/80 break-words">{m.content}</span>
-          </div>
-        ))}
+      <div className="flex-1 overflow-y-auto space-y-1.5 no-scrollbar text-xs" data-testid="guest-chat-messages">
+        {msgs.length === 0 && <div className="text-white/40 text-center py-6">Chat is quiet — be the first to say hi (sign in required).</div>}
+        {msgs.map((m) => {
+          const roleTag = m.role === "owner" ? "OWNER" : m.role === "admin" ? "ADMIN" : m.role === "moderator" || m.role === "staff" ? "STAFF" : null;
+          const roleCls = m.role === "owner" ? "text-amber-300 bg-amber-500/20 border-amber-500/40" : m.role === "admin" ? "text-emerald-200 bg-emerald-500/20 border-emerald-500/40" : "text-sky-200 bg-sky-500/20 border-sky-500/40";
+          return (
+            <div key={m.id} className="bg-black/30 rounded-sm px-2 py-1.5" data-testid={`guest-msg-${m.id}`}>
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span className="text-emerald-300 font-bold">@{m.username || m.sender_username || "user"}</span>
+                {roleTag && (
+                  <span className={`text-[8px] px-1 py-px rounded-sm border font-bold uppercase tracking-wider ${roleCls}`}>{roleTag}</span>
+                )}
+                <span className="ml-auto text-[9px] text-emerald-400/40">
+                  {m.created_at ? new Date(m.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : ""}
+                </span>
+              </div>
+              <div className="text-white/80 break-words">{m.text || m.content}</div>
+            </div>
+          );
+        })}
         <div ref={bottomRef} />
       </div>
       <div className="mt-2 text-[10px] text-white/40 text-center">Sign in to join the conversation.</div>

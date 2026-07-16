@@ -1568,6 +1568,7 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
     new_balance = await _get_user_balance(user.id)
     return {
         "ok": True,
+        "order_id": order_doc["id"],
         "smm_order_id": smm_order_id,
         "charge": charge,
         "balance": new_balance,
@@ -1684,6 +1685,152 @@ async def order_bulk(body: BulkOrderRequest, user: CurrentUser = Depends(current
     }
 
 
+# ============ Repeat previous order — one-click re-buy of the same params ============
+@client_router.post("/orders/{oid}/repeat")
+async def repeat_order(oid: str, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Re-run an order the user already placed (same service, link, quantity, comments).
+    Charges balance again and returns the new order id."""
+    db_local: AsyncIOMotorDatabase = request.app.state.db
+    prev = await db_local.orders.find_one({"id": oid, "user_id": user.id}, {"_id": 0})
+    if not prev:
+        raise HTTPException(status_code=404, detail="Order not found")
+    body = BuyWithBalanceRequest(
+        service_id=int(prev.get("service_id")),
+        link=prev.get("link") or "",
+        quantity=int(prev.get("quantity") or 0),
+        comments=prev.get("comments") or None,
+    )
+    return await order_with_balance(body, user=user, request=request)
+
+
+# ============ Saved bulk-target lists (per-user favorites) ============
+class BulkListCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=60)
+    targets: List[str] = Field(..., min_items=1, max_items=500)
+
+
+@client_router.get("/bulk-lists")
+async def bulk_lists_mine(user: CurrentUser = Depends(current_user_dep)):
+    cur = db.bulk_lists.find({"user_id": user.id}, {"_id": 0}).sort("updated_at", -1).limit(50)
+    return {"lists": await cur.to_list(50)}
+
+
+@client_router.post("/bulk-lists")
+async def bulk_lists_create(body: BulkListCreate, user: CurrentUser = Depends(current_user_dep)):
+    # Dedupe + trim so what we store matches what we render
+    seen = set()
+    targets = []
+    for t in body.targets:
+        v = (t or "").strip()
+        if not v:
+            continue
+        k = v.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        targets.append(v)
+    if not targets:
+        raise HTTPException(status_code=400, detail="No valid targets")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "name": body.name.strip()[:60],
+        "targets": targets,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.bulk_lists.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return {"ok": True, "list": doc}
+
+
+@client_router.delete("/bulk-lists/{lid}")
+async def bulk_lists_delete(lid: str, user: CurrentUser = Depends(current_user_dep)):
+    r = await db.bulk_lists.delete_one({"id": lid, "user_id": user.id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+# ============ Addons store — one-time-purchase feature unlocks ============
+ADDONS_CATALOG = [
+    {
+        "id": "auto_live",
+        "name": "Auto-Live TikTok Automation",
+        "tagline": "Fire recurring SMM bursts every time your target goes live",
+        "description": "Unlocks the Live-orders panel. Set a TikTok username, pick a service (likes / comments / views), and we automatically place an order the moment they go live — repeating every 10 minutes while the stream stays up. Runs for the duration you pick.",
+        "price": 4.99,
+        "features": [
+            "Poll TikTok every 5 minutes for live status",
+            "Automatic burst every 10 min while live",
+            "Live orders dashboard with 1-click cancel",
+            "Balance-charged (no upfront lockup)",
+            "7 / 14 / 30 / 60 / 90 / 365 day durations",
+        ],
+        "flag": "auto_live_enabled",
+    },
+]
+
+
+@client_router.get("/addons/catalog")
+async def addons_catalog(user: CurrentUser = Depends(current_user_dep)):
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1, "addons": 1})
+    owned_flags = {a: True for a in ((u or {}).get("addons") or []) if a}
+    if (u or {}).get("auto_live_enabled"):
+        owned_flags["auto_live"] = True
+    return {
+        "addons": [
+            {**a, "owned": bool(owned_flags.get(a["id"]))}
+            for a in ADDONS_CATALOG
+        ],
+    }
+
+
+class AddonPurchase(BaseModel):
+    addon_id: str
+
+
+@client_router.post("/addons/purchase")
+async def addons_purchase(body: AddonPurchase, user: CurrentUser = Depends(current_user_dep)):
+    addon = next((a for a in ADDONS_CATALOG if a["id"] == body.addon_id), None)
+    if not addon:
+        raise HTTPException(status_code=404, detail="Addon not found")
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1, "addons": 1})
+    owned = ((u or {}).get("addons") or [])
+    if addon["id"] in owned or ((u or {}).get("auto_live_enabled") and addon["id"] == "auto_live"):
+        raise HTTPException(status_code=400, detail="You already own this addon.")
+    price = float(addon["price"])
+    balance = await _get_user_balance(user.id)
+    if balance < price:
+        raise HTTPException(status_code=402, detail=f"Not enough balance — needs ${price:.2f}, you have ${balance:.2f}")
+    now = datetime.now(timezone.utc).isoformat()
+    # Debit + record + unlock in one shot
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user.id, "username": user.username,
+        "amount": -price, "method": "balance", "status": "approved",
+        "type": "addon_purchase", "note": f"Addon: {addon['name']}",
+        "addon_id": addon["id"],
+        "created_at": now, "approved_at": now,
+    })
+    update = {"$addToSet": {"addons": addon["id"]}}
+    if addon["id"] == "auto_live":
+        update.setdefault("$set", {})["auto_live_enabled"] = True
+    await db.users.update_one({"id": user.id}, update)
+    new_balance = await _get_user_balance(user.id)
+    return {"ok": True, "balance": new_balance, "addon": addon["id"]}
+
+
+@client_router.get("/addons/mine")
+async def addons_mine(user: CurrentUser = Depends(current_user_dep)):
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1, "addons": 1})
+    owned = set((u or {}).get("addons") or [])
+    if (u or {}).get("auto_live_enabled"):
+        owned.add("auto_live")
+    return {"owned": sorted(owned)}
+
+
 @client_router.get("/transactions")
 async def get_my_transactions(user: CurrentUser = Depends(current_user_dep)):
     items = await db.transactions.find(
@@ -1788,7 +1935,8 @@ async def get_theme_pref(user: CurrentUser = Depends(current_user_dep)):
 # it places an order using the buyer's balance. When offline / balance depleted,
 # it skips silently.
 
-TIKTOK_CHECK_INTERVAL_SEC = 300  # 5 minutes
+TIKTOK_CHECK_INTERVAL_SEC = 300         # 5 minutes — how often we PING TikTok
+TIKTOK_REPEAT_INTERVAL_SEC = 600        # 10 minutes — minimum gap between order bursts
 LIVE_SUB_ALLOWED_DAYS = [7, 14, 30, 60, 90, 365]
 
 
@@ -1942,15 +2090,40 @@ async def _live_sub_worker_loop():
 
 
 async def _process_live_sub_burst(sub: dict):
+    """Called when the sub's `next_check_at` is due. Ping TikTok, and if live
+    AND at least 10 min since last burst, fire one order. Otherwise reschedule
+    the next check without ordering."""
     now = datetime.now(timezone.utc)
-    next_at = (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat()
+    # Always record this check
     await db.live_subscriptions.update_one(
-        {"id": sub["id"]}, {"$set": {"last_check_at": now.isoformat(), "next_check_at": next_at}}
+        {"id": sub["id"]}, {"$set": {"last_check_at": now.isoformat()}}
     )
     is_live = await _is_tiktok_user_live(sub["tiktok_username"])
     if not is_live:
+        # Offline — check again in 5 min
+        next_at = (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat()
+        await db.live_subscriptions.update_one(
+            {"id": sub["id"]}, {"$set": {"next_check_at": next_at}}
+        )
         return
-    # User is live — check balance and fire the order
+    # Live — but respect the 10-minute repeat gate so we don't spam
+    last_burst_iso = sub.get("last_burst_at")
+    if last_burst_iso:
+        try:
+            last_burst = datetime.fromisoformat(last_burst_iso.replace("Z", "+00:00"))
+            elapsed = (now - last_burst).total_seconds()
+        except Exception:
+            elapsed = TIKTOK_REPEAT_INTERVAL_SEC + 1
+        if elapsed < TIKTOK_REPEAT_INTERVAL_SEC:
+            # Still inside the 10-min window — recheck when the window would close
+            wait_left = TIKTOK_REPEAT_INTERVAL_SEC - int(elapsed)
+            next_at = (now + timedelta(seconds=max(wait_left, 60))).isoformat()
+            await db.live_subscriptions.update_one(
+                {"id": sub["id"]}, {"$set": {"next_check_at": next_at}}
+            )
+            logger.info("[livesub] sub %s live but only %ss since last burst — waiting", sub["id"], int(elapsed))
+            return
+    # Cleared the 10-min gate. Fire an order.
     balance = await _get_user_balance(sub["user_id"])
     charge = float(sub.get("charge_per_burst") or 0)
     if balance < charge:
@@ -1996,10 +2169,32 @@ async def _process_live_sub_burst(sub: dict):
     await db.live_subscriptions.update_one(
         {"id": sub["id"]},
         {
-            "$set": {"last_burst_at": now.isoformat()},
+            "$set": {
+                "last_burst_at": now.isoformat(),
+                # Next check aligns to the 10-min repeat window
+                "next_check_at": (now + timedelta(seconds=TIKTOK_REPEAT_INTERVAL_SEC)).isoformat(),
+            },
             "$inc": {"total_bursts": 1, "total_spent": charge},
         },
     )
+    # Announce to the public chat as a discreet system message (username masked,
+    # never reveals the buyer). The dashboard polls public-chat, so all users
+    # see a small live indicator on the sidebar — cheap social-proof signal.
+    try:
+        masked_buyer = _mask_username(sub.get("username") or "")
+        first_burst = int(sub.get("total_bursts") or 0) == 0
+        if first_burst:
+            await db.public_chat.insert_one({
+                "id": str(uuid.uuid4()),
+                "user_id": None,
+                "username": "BetterSocial",
+                "role": "system",
+                "text": f"🔴 A creator just went live — @{masked_buyer} boosted them automatically",
+                "kind": "live_notify",
+                "created_at": now.isoformat(),
+            })
+    except Exception:
+        pass
     logger.info("[livesub] burst OK sub=%s @%s qty=%s order=%s", sub["id"], sub["tiktok_username"], sub["quantity_per_burst"], resp.get("order"))
 
 
@@ -5151,6 +5346,29 @@ async def update_curated(service_id: int, payload: ServiceUpdate, x_admin_token:
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Service not found")
     return {"updated": True}
+
+
+@api_router.post("/admin/services/{service_id}/rename-id")
+async def rename_service_id(service_id: int, payload: dict, x_admin_token: Optional[str] = Header(None)):
+    """Change the numeric `service_id` of an existing service. Fails if the new id
+    is already used. Rewrites the id in-place in `curated_services` only — historical
+    orders keep their original service_id snapshot so past data stays consistent."""
+    check_admin(x_admin_token)
+    try:
+        new_id = int(payload.get("new_service_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="new_service_id must be an integer")
+    if new_id <= 0:
+        raise HTTPException(status_code=400, detail="new_service_id must be positive")
+    if new_id == service_id:
+        return {"updated": False, "reason": "same id"}
+    if await db.curated_services.find_one({"service_id": new_id}, {"_id": 0, "service_id": 1}):
+        raise HTTPException(status_code=409, detail=f"Service ID {new_id} is already in use")
+    r = await db.curated_services.update_one({"service_id": service_id}, {"$set": {"service_id": new_id}})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Service not found")
+    logger.info("[admin] service_id %s renamed to %s", service_id, new_id)
+    return {"updated": True, "old_service_id": service_id, "new_service_id": new_id}
 
 
 @api_router.post("/admin/services/bulk")
