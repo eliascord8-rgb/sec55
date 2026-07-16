@@ -1,0 +1,22 @@
+{
+  "summary": "Backend testing of case-insensitive username duplicate registration bug fix. All 5 tests passed (100%). Case-insensitive dup registration is rejected (new & pre-existing users), login is case-insensitive returning the SAME user.id across case variants, duplicate email still rejected, and existing testbugfix1/password1 regression login works.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_case_insensitive_auth.py",
+    "/app/test_reports/pytest/case_insensitive_auth.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Fix correctly checks both new `username_lower` field AND legacy `username` via case-insensitive regex — good backward compatibility.",
+    "Recommend future work: enforce lowercasing at DB layer with schema validation to prevent regressions."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "not tested (skipped as requested)"},
+  "test_credentials": "testbugfix1 / password1 (regression baseline) — verified working",
+  "seed_data_creation": "Tests create ephemeral users with uuid suffixes (bugcheckA*, BugChk*Xyz, emailtest*_*) — not cleaned up but isolated by uuid.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reusable pytest file at /app/backend/tests/test_case_insensitive_auth.py exercises captcha, register, login flows with helper functions solve_captcha/register/login. Use these helpers for any future auth tests.",
+  "rca of the issue": "N/A — fix verified. Bug was fixed by adding username_lower field + case-insensitive regex fallback in register/login, plus unique sparse index on username_lower."
+}

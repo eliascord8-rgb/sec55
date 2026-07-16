@@ -309,16 +309,28 @@ async def register(req: RegisterRequest, request: Request):
     if not verify_math_captcha(req.captcha_id, req.captcha_answer):
         raise HTTPException(status_code=400, detail="Wrong captcha answer — please try again")
 
-    email = req.email.lower()
-    if await db.users.find_one({"username": req.username}):
-        raise HTTPException(status_code=400, detail="Username already taken")
-    if await db.users.find_one({"email": email}):
+    email = req.email.lower().strip()
+    username = req.username.strip()
+    username_lower = username.lower()
+    # Case-insensitive uniqueness — prevents the "John vs john vs JOHN" duplicate-account bug.
+    # We match against username_lower (backfilled on load) and, for legacy rows, do a
+    # regex-anchored case-insensitive scan as a belt-and-braces safety net.
+    dup = await db.users.find_one({
+        "$or": [
+            {"username_lower": username_lower},
+            {"username": {"$regex": f"^{re.escape(username)}$", "$options": "i"}},
+        ]
+    }, {"_id": 0, "id": 1})
+    if dup:
+        raise HTTPException(status_code=400, detail="Username already taken (case-insensitive)")
+    if await db.users.find_one({"email": email}, {"_id": 0, "id": 1}):
         raise HTTPException(status_code=400, detail="Email already registered")
 
     user_id = str(uuid.uuid4())
     doc = {
         "id": user_id,
-        "username": req.username,
+        "username": username,
+        "username_lower": username_lower,
         "email": email,
         "password_hash": hash_password(req.password),
         "role": "user",
@@ -330,11 +342,11 @@ async def register(req: RegisterRequest, request: Request):
     # Best-effort welcome email (don't fail registration if SMTP misconfigured)
     try:
         from email_service import send_email, welcome_email_html
-        await send_email(db, email, "Welcome to Better Social 👋", welcome_email_html(req.username))
+        await send_email(db, email, "Welcome to Better Social 👋", welcome_email_html(username))
     except Exception:
         pass
 
-    token = create_token(user_id, req.username, "user")
+    token = create_token(user_id, username, "user")
     return {"token": token, "user": _user_public(doc)}
 
 
@@ -403,7 +415,17 @@ async def login(req: LoginRequest, request: Request):
     if not verify_math_captcha(req.captcha_id, req.captcha_answer):
         raise HTTPException(status_code=400, detail="Wrong captcha answer — please try again")
     ident = req.identifier.strip()
-    query = {"email": ident.lower()} if "@" in ident else {"username": ident}
+    # Login is case-insensitive on BOTH username and email so users can't
+    # accidentally register a "duplicate" by changing the casing.
+    if "@" in ident:
+        query = {"email": ident.lower()}
+    else:
+        query = {
+            "$or": [
+                {"username_lower": ident.lower()},
+                {"username": {"$regex": f"^{re.escape(ident)}$", "$options": "i"}},
+            ]
+        }
     doc = await db.users.find_one(query)
     if not doc or not verify_password(req.password, doc.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid credentials")
