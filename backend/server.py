@@ -1833,6 +1833,10 @@ class LiveSubCreate(BaseModel):
 async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(current_user_dep)):
     if body.duration_days not in LIVE_SUB_ALLOWED_DAYS:
         raise HTTPException(status_code=400, detail=f"Duration must be one of {LIVE_SUB_ALLOWED_DAYS}")
+    # Auto-live is gated per-account — an admin has to flip it on before use.
+    user_doc = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1})
+    if not (user_doc or {}).get("auto_live_enabled"):
+        raise HTTPException(status_code=403, detail="Auto-Live subscriptions are disabled for your account. Contact an admin to enable this feature.")
     svc = await db.curated_services.find_one({"service_id": body.service_id, "enabled": True}, {"_id": 0})
     if not svc:
         raise HTTPException(status_code=404, detail="Service not available")
@@ -1881,7 +1885,22 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
 @client_router.get("/live-sub/my")
 async def live_sub_my(user: CurrentUser = Depends(current_user_dep)):
     cur = db.live_subscriptions.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).limit(50)
-    return {"subscriptions": await cur.to_list(50)}
+    subs = await cur.to_list(50)
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1})
+    return {"subscriptions": subs, "auto_live_enabled": bool((u or {}).get("auto_live_enabled"))}
+
+
+class AutoLiveToggleReq(BaseModel):
+    enabled: bool
+
+
+@api_router.post("/admin/users/{uid}/auto-live")
+async def admin_toggle_auto_live(uid: str, body: AutoLiveToggleReq, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "users")
+    r = await db.users.update_one({"id": uid}, {"$set": {"auto_live_enabled": bool(body.enabled)}})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True, "auto_live_enabled": bool(body.enabled)}
 
 
 @client_router.post("/live-sub/{sid}/cancel")
@@ -2461,8 +2480,96 @@ class PublicChatMessage(BaseModel):
 @api_router.post("/public-chat/send")
 async def public_chat_send(payload: PublicChatMessage, user: CurrentUser = Depends(current_user_dep)):
     """Post a message to the public shoutbox. Rate-limited to 1 msg / 3 s per user.
-    Tip announcements (kind='tip') don't count toward the rate window — otherwise a user
-    would be locked out of normal chat for 3s right after tipping."""
+    Also supports admin/owner slash commands (/ban, /mute, /unmute, /unban, /clear)."""
+    text = payload.text.strip()[:500]
+
+    # ---- Mute enforcement (skip system messages / commands) ----
+    user_doc = await db.users.find_one({"id": user.id}, {"_id": 0, "muted_until": 1, "role": 1})
+    muted_until_raw = (user_doc or {}).get("muted_until")
+    if muted_until_raw:
+        try:
+            mu = datetime.fromisoformat(muted_until_raw)
+            if mu.tzinfo is None:
+                mu = mu.replace(tzinfo=timezone.utc)
+            if mu > datetime.now(timezone.utc):
+                remaining = int((mu - datetime.now(timezone.utc)).total_seconds())
+                raise HTTPException(status_code=403, detail=f"You're muted — {remaining}s remaining.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+    # ---- Slash commands (owner/admin only) ----
+    role = (user_doc or {}).get("role", user.role or "user")
+    if text.startswith("/") and role in ("owner", "admin"):
+        parts = text.split(maxsplit=3)
+        cmd = parts[0].lower()
+
+        async def _find_target(uname: str):
+            return await db.users.find_one(
+                {"$or": [
+                    {"username_lower": uname.lower()},
+                    {"username": {"$regex": f"^{re.escape(uname)}$", "$options": "i"}},
+                ]},
+                {"_id": 0, "id": 1, "username": 1, "role": 1},
+            )
+
+        if cmd == "/clear":
+            r = await db.public_chat.delete_many({})
+            await db.public_chat.insert_one({
+                "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+                "role": role, "text": f"🧹 Chat cleared by @{user.username} ({r.deleted_count} messages)",
+                "kind": "system", "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            return {"ok": True, "command": "clear", "deleted": r.deleted_count}
+
+        if cmd in ("/ban", "/unban", "/mute", "/unmute"):
+            if len(parts) < 2:
+                raise HTTPException(status_code=400, detail=f"Usage: {cmd} <username>")
+            uname = parts[1].lstrip("@")
+            target = await _find_target(uname)
+            if not target:
+                raise HTTPException(status_code=404, detail=f"User @{uname} not found")
+            if target.get("role") == "owner":
+                raise HTTPException(status_code=400, detail="Can't moderate the owner")
+            tid = target["id"]
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            if cmd == "/ban":
+                import time as _t
+                await db.users.update_one({"id": tid}, {"$set": {"banned": True, "banned_at": now_iso, "session_epoch": int(_t.time())}})
+                await db.public_chat.delete_many({"user_id": tid})
+                await db.live_commands.insert_one({"id": str(uuid.uuid4()), "user_id": tid, "cmd": "ban", "payload": {"reason": "perma ban"}, "created_at": now_iso, "consumed_at": None})
+                await db.public_chat.insert_one({"id": str(uuid.uuid4()), "user_id": user.id, "username": user.username, "role": role, "text": f"🔨 @{target['username']} — perma ban", "kind": "system", "created_at": now_iso})
+                return {"ok": True, "command": "ban", "target": target["username"]}
+            if cmd == "/unban":
+                await db.users.update_one({"id": tid}, {"$set": {"banned": False}, "$unset": {"banned_at": ""}})
+                await db.public_chat.insert_one({"id": str(uuid.uuid4()), "user_id": user.id, "username": user.username, "role": role, "text": f"✅ @{target['username']} un-banned", "kind": "system", "created_at": now_iso})
+                return {"ok": True, "command": "unban", "target": target["username"]}
+            if cmd == "/unmute":
+                await db.users.update_one({"id": tid}, {"$set": {"muted_until": None}})
+                await db.public_chat.insert_one({"id": str(uuid.uuid4()), "user_id": user.id, "username": user.username, "role": role, "text": f"🔊 @{target['username']} un-muted", "kind": "system", "created_at": now_iso})
+                return {"ok": True, "command": "unmute", "target": target["username"]}
+            # /mute <user> <duration> [reason]
+            if len(parts) < 3:
+                raise HTTPException(status_code=400, detail="Usage: /mute <username> <1min|1h|1d> [reason]")
+            dur = parts[2].lower().strip()
+            reason = parts[3] if len(parts) >= 4 else ""
+            secs_map = {"1min": 60, "5min": 300, "10min": 600, "30min": 1800, "1h": 3600, "6h": 21600, "12h": 43200, "1d": 86400, "7d": 604800}
+            if dur not in secs_map:
+                raise HTTPException(status_code=400, detail=f"Duration must be one of {list(secs_map)}")
+            secs = secs_map[dur]
+            until = datetime.now(timezone.utc) + timedelta(seconds=secs)
+            await db.users.update_one({"id": tid}, {"$set": {"muted_until": until.isoformat()}})
+            await db.public_chat.insert_one({
+                "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username, "role": role,
+                "text": f"🔇 @{target['username']} muted for {dur}" + (f" — {reason}" if reason else ""),
+                "kind": "system", "created_at": now_iso,
+            })
+            return {"ok": True, "command": "mute", "target": target["username"], "duration": dur, "expires": until.isoformat()}
+        # Unknown command starting with / — let it fall through and post as a normal msg
+
+    # ---- Normal rate-limit + insert ----
     last = await db.public_chat.find_one(
         {"user_id": user.id, "kind": {"$ne": "tip"}},
         sort=[("created_at", -1)],
@@ -2481,12 +2588,11 @@ async def public_chat_send(payload: PublicChatMessage, user: CurrentUser = Depen
         "id": str(uuid.uuid4()),
         "user_id": user.id,
         "username": user.username,
-        "role": user.role or "user",
-        "text": payload.text.strip()[:500],
+        "role": role,
+        "text": text,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.public_chat.insert_one(doc.copy())
-    # Keep only the last 500 messages to bound the collection
     if (await db.public_chat.estimated_document_count()) > 600:
         cutoff = await db.public_chat.find({}, {"_id": 0, "created_at": 1}).sort("created_at", -1).skip(500).limit(1).to_list(1)
         if cutoff:
@@ -2516,6 +2622,25 @@ async def public_chat_list(since: Optional[str] = None, limit: int = 50):
         m["rank_text_class"] = r["text_class"]
         m["rank_border_class"] = r["border_class"]
     return {"messages": msgs}
+
+
+@api_router.get("/orders/global")
+async def orders_global_feed(limit: int = 20):
+    """Public live-orders ticker — recent orders with the username masked.
+    No auth required — anyone can see activity."""
+    cursor = db.orders.find(
+        {},
+        {"_id": 0, "id": 1, "service_name": 1, "quantity": 1, "charge": 1, "username": 1, "created_at": 1, "status": 1},
+    ).sort("created_at", -1).limit(min(int(limit or 20), 50))
+    orders = await cursor.to_list(50)
+    for o in orders:
+        u = str(o.get("username", "") or "")
+        # Mask username: first 2 chars + ***
+        if u:
+            o["masked_username"] = (u[:2] + "***") if len(u) > 2 else "u***"
+        o.pop("username", None)
+    return {"orders": orders}
+
 
 
 # ============ Chat ranks (based on lifetime approved deposits) ============
