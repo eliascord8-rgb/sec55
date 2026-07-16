@@ -30,8 +30,8 @@ function App() {
             <Route path="/" element={<Landing />} />
             <Route path="/order/:serviceId" element={<OrderPage />} />
             <Route path="/status/:orderId" element={<StatusPage />} />
-            <Route path="/client" element={<ClientAuth />} />
-            <Route path="/client/login" element={<ClientAuth />} />
+            <Route path="/client" element={<ClientDashboard />} />
+            <Route path="/client/login" element={<ClientDashboard />} />
             <Route path="/reset" element={<ResetPassword />} />
             <Route path="/client/dashboard" element={<ClientDashboard />} />
             <Route path="/admin" element={<Admin />} />
