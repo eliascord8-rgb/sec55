@@ -45,6 +45,7 @@ import MessagesView from "./MessagesView";
 import GamesView from "./GamesView";
 import { InvoicesView, HelpCenterView } from "./InvoicesAndHelp";
 import { AviatorGame, SettingsView } from "./SettingsAndAviator";
+import GuestLanding from "./GuestLanding";
 import NewsModal from "@/components/NewsModal";
 import { toast } from "sonner";
 
@@ -368,12 +369,15 @@ export default function ClientDashboard() {
     }
   };
 
-  if (loading || !user) {
+  if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-6 h-6 animate-spin text-white/40" />
+      <div className="min-h-screen flex items-center justify-center bg-[#0a1a0a]">
+        <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
       </div>
     );
+  }
+  if (!user) {
+    return <GuestLanding />;
   }
 
   return (
