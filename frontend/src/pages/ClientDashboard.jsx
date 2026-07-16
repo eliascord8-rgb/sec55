@@ -2158,6 +2158,48 @@ function BuyView({ authedApi, balance, reloadBalance }) {
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkTargets, setBulkTargets] = useState("");
   const [bulkResult, setBulkResult] = useState(null);
+  const [subMode, setSubMode] = useState(false);
+  const [subUsername, setSubUsername] = useState("");
+  const [subDays, setSubDays] = useState(7);
+  const [subSubmitting, setSubSubmitting] = useState(false);
+  const [mySubs, setMySubs] = useState([]);
+
+  const loadMySubs = async () => {
+    try {
+      const r = await authedApi().get("/client/live-sub/my");
+      setMySubs(r.data.subscriptions || []);
+    } catch { /* ignore */ }
+  };
+  useEffect(() => { loadMySubs(); }, []);
+
+  const subscribe = async () => {
+    if (!selected) return;
+    if (!subUsername.trim()) { toast.error("Enter the TikTok @username"); return; }
+    if (qty < (selected.min || 1)) { toast.error(`Minimum quantity is ${selected.min}`); return; }
+    setSubSubmitting(true);
+    try {
+      const r = await authedApi().post("/client/live-sub/create", {
+        service_id: selected.service,
+        tiktok_username: subUsername.trim().replace(/^@/, ""),
+        quantity_per_burst: Number(qty),
+        duration_days: subDays,
+      });
+      toast.success(`✅ Auto-live activated for @${r.data.subscription.tiktok_username} (${subDays} days)`);
+      setSubUsername("");
+      loadMySubs();
+      reloadBalance();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Subscription failed");
+    } finally { setSubSubmitting(false); }
+  };
+
+  const cancelSub = async (sid) => {
+    try {
+      await authedApi().post(`/client/live-sub/${sid}/cancel`);
+      toast.success("Subscription cancelled.");
+      loadMySubs();
+    } catch (e) { toast.error(e.response?.data?.detail || "Cancel failed"); }
+  };
 
   const loadServices = async () => {
     setLoadingSvc(true);
@@ -2251,6 +2293,31 @@ function BuyView({ authedApi, balance, reloadBalance }) {
 
   return (
     <div className="space-y-6">
+      {mySubs.filter((s) => s.status === "active").length > 0 && (
+        <div className="bg-fuchsia-500/10 border border-fuchsia-500/40 rounded-md p-4" data-testid="live-subs-panel">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-2 h-2 rounded-full bg-fuchsia-400 animate-pulse" />
+            <div className="text-[10px] uppercase tracking-widest text-fuchsia-300 font-bold">
+              Auto-Live subscriptions ({mySubs.filter((s) => s.status === "active").length} active)
+            </div>
+          </div>
+          <div className="space-y-2">
+            {mySubs.filter((s) => s.status === "active").map((s) => (
+              <div key={s.id} className="flex flex-wrap items-center gap-3 bg-black/40 rounded-sm p-3 text-xs" data-testid={`live-sub-${s.id}`}>
+                <span className="font-mono text-fuchsia-200">@{s.tiktok_username}</span>
+                <span className="text-white/60">{s.service_name}</span>
+                <span className="text-white/50">{s.quantity_per_burst}/burst</span>
+                <span className="text-emerald-300 font-mono">${(s.total_spent || 0).toFixed(2)} spent · {s.total_bursts || 0} bursts</span>
+                <span className="text-white/40 ml-auto">expires {s.expires_at ? new Date(s.expires_at).toLocaleDateString() : "-"}</span>
+                <button onClick={() => cancelSub(s.id)} data-testid={`live-sub-cancel-${s.id}`}
+                  className="text-red-300 hover:text-red-200 text-[11px] font-bold uppercase tracking-wider">
+                  Cancel
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
           <h1 className="font-display text-2xl md:text-4xl font-black tracking-tight">Buy Services</h1>
@@ -2357,13 +2424,25 @@ function BuyView({ authedApi, balance, reloadBalance }) {
             <div className="flex items-center gap-3">
               <div className="text-xs uppercase tracking-wider text-white/50">Bulk order</div>
               <button
-                onClick={() => { setBulkMode((v) => !v); setBulkResult(null); }}
+                onClick={() => { setBulkMode((v) => !v); setBulkResult(null); if (!bulkMode) setSubMode(false); }}
                 data-testid="buy-bulk-toggle"
                 className={`relative w-11 h-6 rounded-full transition ${bulkMode ? "bg-emerald-500" : "bg-white/15"}`}
               >
                 <span className={`absolute top-0.5 ${bulkMode ? "left-6" : "left-0.5"} w-5 h-5 rounded-full bg-white shadow transition-all`} />
               </button>
               <span className="text-[11px] text-white/50">{bulkMode ? `${bulkTargetList.length} target(s)` : "single"}</span>
+              {isTiktokService && /live/i.test(selected?.name || selected?.category || "") && (
+                <>
+                  <div className="ml-4 text-xs uppercase tracking-wider text-fuchsia-300">Auto-Live</div>
+                  <button
+                    onClick={() => { setSubMode((v) => !v); if (!subMode) setBulkMode(false); }}
+                    data-testid="buy-sub-toggle"
+                    className={`relative w-11 h-6 rounded-full transition ${subMode ? "bg-fuchsia-500" : "bg-white/15"}`}
+                  >
+                    <span className={`absolute top-0.5 ${subMode ? "left-6" : "left-0.5"} w-5 h-5 rounded-full bg-white shadow transition-all`} />
+                  </button>
+                </>
+              )}
             </div>
             <div className="text-right">
               <div className="text-xs uppercase tracking-wider text-white/50">Total</div>
@@ -3280,6 +3359,55 @@ function WithdrawView({ authedApi, balance, withdrawable, reloadBalance }) {
       <div className="bg-[#0d0a14] border border-white/5 rounded-sm overflow-hidden">
         <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">
           <h3 className="font-display font-bold text-sm">Past withdrawals</h3>
+          <span className="text-[10px] uppercase tracking-wider text-white/40">{history.length}</span>
+        </div>
+        {history.length === 0 ? (
+          <div className="px-5 py-10 text-center text-white/30 text-xs">No withdrawals yet.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-[10px] uppercase tracking-wider text-white/40">
+                <tr>
+                  <th className="text-left px-5 py-2">Date</th>
+                  <th className="text-left px-5 py-2">Amount</th>
+                  <th className="text-left px-5 py-2">Currency</th>
+                  <th className="text-left px-5 py-2">Address</th>
+                  <th className="text-left px-5 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((w) => (
+                  <tr key={w.id} className="border-t border-white/5" data-testid={`withdraw-row-${w.id}`}>
+                    <td className="px-5 py-2 text-white/60 text-xs font-mono">
+                      {new Date(w.created_at).toLocaleString()}
+                    </td>
+                    <td className="px-5 py-2 font-mono text-emerald-400">
+                      ${Math.abs(Number(w.amount)).toFixed(2)}
+                    </td>
+                    <td className="px-5 py-2 text-xs text-white/70">{w.currency}</td>
+                    <td className="px-5 py-2 font-mono text-[10px] text-white/40 max-w-[180px] truncate" title={w.address}>
+                      {w.address}
+                    </td>
+                    <td className="px-5 py-2">
+                      <StatusPill status={w.status} />
+                      {w.tx_hash && (
+                        <div className="text-[10px] text-white/40 font-mono mt-1 truncate max-w-[160px]" title={w.tx_hash}>
+                          {w.tx_hash}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+">Past withdrawals</h3>
           <span className="text-[10px] uppercase tracking-wider text-white/40">{history.length}</span>
         </div>
         {history.length === 0 ? (
