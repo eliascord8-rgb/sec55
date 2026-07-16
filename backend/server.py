@@ -653,15 +653,133 @@ async def admin_login_secret(payload: AdminSecretLogin, request: Request):
 
 
 @api_router.post("/admin/session-from-user")
-async def admin_session_from_user(user: CurrentUser = Depends(current_user_dep)):
-    """Auto-elevate: any client-logged-in user whose DB role is 'owner' can call
-    this to receive an admin session token. Removes the need for a separate
-    admin login screen / URL secret when signed-in as the owner."""
-    if user.role != "owner":
-        raise HTTPException(status_code=403, detail="Owner only")
+async def admin_session_from_user(user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Auto-elevate any client-logged-in team member (owner / admin / moderator)
+    to an admin panel session. Owners get full access. Admins/mods get a
+    staff-style session gated by their per-user `admin_perms` (default: only
+    ai_inbox + tickets)."""
+    if user.role not in ("owner", "admin", "moderator"):
+        raise HTTPException(status_code=403, detail="Team access only")
+    u = await request.app.state.db.users.find_one({"id": user.id}, {"_id": 0})
+    perms = _team_perms_from_user(u or {})
     token = secrets.token_urlsafe(24)
-    ADMIN_SESSIONS.add(token)
-    return {"token": token, "role": "owner", "username": user.username}
+    if user.role == "owner":
+        ADMIN_SESSIONS.add(token)
+        return {"token": token, "role": "owner", "username": user.username, "perms": perms}
+    STAFF_SESSIONS[token] = {
+        "id": user.id,
+        "username": user.username,
+        "display_name": (u or {}).get("display_name") or user.username,
+        "perms": set(perms),
+    }
+    return {"token": token, "role": user.role, "username": user.username, "perms": perms}
+
+
+# ============ Admin login using regular DASHBOARD credentials ============
+# Owners get full admin. Admins/mods (role stored in the users collection)
+# come in as staff-style sessions whose perms are per-user configurable via
+# `admin_perms` in the users doc. Existing admin/mod accounts default to
+# ai_inbox + tickets only.
+DEFAULT_TEAM_PERMS = ["ai_inbox", "tickets"]
+
+
+def _team_perms_from_user(user_doc: dict) -> List[str]:
+    role = (user_doc or {}).get("role")
+    if role == "owner":
+        return list(STAFF_PERMS) + ["all"]
+    if role in ("admin", "moderator"):
+        raw = (user_doc or {}).get("admin_perms")
+        if isinstance(raw, list):
+            # Only respect known perms so a fat-fingered value can't sneak by
+            good = [p for p in raw if p in STAFF_PERMS]
+            return good or list(DEFAULT_TEAM_PERMS)
+        return list(DEFAULT_TEAM_PERMS)
+    return []
+
+
+class AdminAccountLogin(BaseModel):
+    identifier: str
+    password: str
+    captcha_id: Optional[str] = None
+    captcha_answer: Optional[str] = None
+
+
+@api_router.post("/admin/login-with-account")
+async def admin_login_with_account(payload: AdminAccountLogin, request: Request):
+    """Allow ANY user with role in {owner, admin, moderator} to sign into the
+    admin panel using their normal dashboard credentials. Returns:
+      • Owner → full ADMIN_SESSIONS token (behaves exactly like /admin/login).
+      • Admin/moderator → STAFF_SESSIONS token with per-user perms (default
+        limited to ai_inbox + tickets; owner can widen via /admin/users/{uid}/admin-perms).
+    """
+    _check_admin_login_rate(request)
+    # Reuse the dashboard login pipeline so captcha, hashing and lockouts stay
+    # in a single place — we just need the user record back.
+    from auth_and_chat import verify_login_credentials  # local import to avoid top-level circular
+    try:
+        u = await verify_login_credentials(payload.identifier, payload.password, payload.captcha_id, payload.captcha_answer, request)
+    except HTTPException as e:
+        _record_admin_login_fail(request)
+        raise e
+    role = (u or {}).get("role")
+    if role not in ("owner", "admin", "moderator"):
+        _record_admin_login_fail(request)
+        raise HTTPException(status_code=403, detail="Your account has no admin access")
+    _clear_admin_login_fails(request)
+    perms = _team_perms_from_user(u)
+    if role == "owner":
+        token = secrets.token_urlsafe(24)
+        ADMIN_SESSIONS.add(token)
+        return {"token": token, "role": "owner", "username": u["username"], "perms": perms}
+    # admin / moderator — issue a staff-style session so check_admin() honours perms
+    token = secrets.token_urlsafe(24)
+    STAFF_SESSIONS[token] = {
+        "id": u["id"],
+        "username": u["username"],
+        "display_name": u.get("display_name") or u["username"],
+        "perms": set(perms),
+    }
+    return {"token": token, "role": role, "username": u["username"], "perms": perms}
+
+
+class TeamPermsUpdate(BaseModel):
+    perms: List[str] = Field(default_factory=list)
+
+
+@api_router.patch("/admin/users/{uid}/admin-perms")
+async def admin_update_user_admin_perms(
+    uid: str,
+    payload: TeamPermsUpdate,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """Owner-only: set which admin-panel features a team member can access.
+    `perms` is validated against STAFF_PERMS."""
+    check_owner(x_admin_token)
+    clean = [p for p in payload.perms if p in STAFF_PERMS]
+    r = await db.users.update_one({"id": uid, "role": {"$in": ["admin", "moderator"]}}, {"$set": {"admin_perms": clean}})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Team member not found (must have role admin or moderator)")
+    # Live-refresh any active staff sessions for this user
+    for t, s in STAFF_SESSIONS.items():
+        if s.get("id") == uid:
+            s["perms"] = set(clean or DEFAULT_TEAM_PERMS)
+    return {"ok": True, "perms": clean}
+
+
+@api_router.get("/admin/users/team")
+async def admin_list_team(x_admin_token: Optional[str] = Header(None)):
+    """Owner-only: list all users whose role is admin or moderator, with their
+    per-user `admin_perms` so the UI can render a permissions grid."""
+    check_owner(x_admin_token)
+    cursor = db.users.find(
+        {"role": {"$in": ["admin", "moderator"]}},
+        {"_id": 0, "id": 1, "username": 1, "role": 1, "admin_perms": 1, "email": 1, "display_name": 1, "banned": 1},
+    ).sort("username", 1)
+    items = await cursor.to_list(200)
+    for it in items:
+        if "admin_perms" not in it:
+            it["admin_perms"] = list(DEFAULT_TEAM_PERMS)
+    return {"team": items, "available_perms": sorted(STAFF_PERMS)}
 
 
 # ============ STAFF ACCOUNTS ============
@@ -1754,13 +1872,13 @@ async def bulk_lists_delete(lid: str, user: CurrentUser = Depends(current_user_d
 
 
 # ============ Addons store — one-time-purchase feature unlocks ============
-ADDONS_CATALOG = [
+ADDONS_CATALOG_DEFAULTS = [
     {
         "id": "auto_live",
         "name": "Auto-Live TikTok Automation",
         "tagline": "Fire recurring SMM bursts every time your target goes live",
         "description": "Unlocks the Live-orders panel. Set a TikTok username, pick a service (likes / comments / views), and we automatically place an order the moment they go live — repeating every 10 minutes while the stream stays up. Runs for the duration you pick.",
-        "price": 4.99,
+        "price": 250.0,
         "features": [
             "Poll TikTok every 5 minutes for live status",
             "Automatic burst every 10 min while live",
@@ -1773,16 +1891,35 @@ ADDONS_CATALOG = [
 ]
 
 
+async def _load_addons_catalog() -> list:
+    """Merge defaults with any per-addon overrides stored in `app_settings.addon_overrides`.
+    Only `price` is editable today, but structured so `name`/`description` can be added later."""
+    cfg = await db.app_settings.find_one({"_id": "singleton"}, {"_id": 0, "addon_overrides": 1}) or {}
+    overrides = (cfg.get("addon_overrides") or {}) if isinstance(cfg.get("addon_overrides"), dict) else {}
+    out = []
+    for base in ADDONS_CATALOG_DEFAULTS:
+        merged = dict(base)
+        ov = overrides.get(base["id"]) or {}
+        if "price" in ov:
+            try:
+                merged["price"] = float(ov["price"])
+            except (TypeError, ValueError):
+                pass
+        out.append(merged)
+    return out
+
+
 @client_router.get("/addons/catalog")
 async def addons_catalog(user: CurrentUser = Depends(current_user_dep)):
     u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1, "addons": 1})
     owned_flags = {a: True for a in ((u or {}).get("addons") or []) if a}
     if (u or {}).get("auto_live_enabled"):
         owned_flags["auto_live"] = True
+    catalog = await _load_addons_catalog()
     return {
         "addons": [
             {**a, "owned": bool(owned_flags.get(a["id"]))}
-            for a in ADDONS_CATALOG
+            for a in catalog
         ],
     }
 
@@ -1793,7 +1930,8 @@ class AddonPurchase(BaseModel):
 
 @client_router.post("/addons/purchase")
 async def addons_purchase(body: AddonPurchase, user: CurrentUser = Depends(current_user_dep)):
-    addon = next((a for a in ADDONS_CATALOG if a["id"] == body.addon_id), None)
+    catalog = await _load_addons_catalog()
+    addon = next((a for a in catalog if a["id"] == body.addon_id), None)
     if not addon:
         raise HTTPException(status_code=404, detail="Addon not found")
     u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1, "addons": 1})
@@ -1829,6 +1967,35 @@ async def addons_mine(user: CurrentUser = Depends(current_user_dep)):
     if (u or {}).get("auto_live_enabled"):
         owned.add("auto_live")
     return {"owned": sorted(owned)}
+
+
+# ============ Admin — edit addon prices ============
+@api_router.get("/admin/addons")
+async def admin_list_addons(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    return {"addons": await _load_addons_catalog()}
+
+
+class AdminAddonUpdate(BaseModel):
+    price: Optional[float] = Field(None, ge=0, le=1_000_000)
+
+
+@api_router.patch("/admin/addons/{addon_id}")
+async def admin_update_addon(
+    addon_id: str,
+    payload: AdminAddonUpdate,
+    x_admin_token: Optional[str] = Header(None),
+):
+    check_admin(x_admin_token)
+    if not any(a["id"] == addon_id for a in ADDONS_CATALOG_DEFAULTS):
+        raise HTTPException(status_code=404, detail="Unknown addon")
+    ov_updates = {}
+    if payload.price is not None:
+        ov_updates[f"addon_overrides.{addon_id}.price"] = float(payload.price)
+    if not ov_updates:
+        return {"updated": False}
+    await db.app_settings.update_one({"_id": "singleton"}, {"$set": ov_updates}, upsert=True)
+    return {"updated": True, "addon": (await _load_addons_catalog())}
 
 
 @client_router.get("/transactions")

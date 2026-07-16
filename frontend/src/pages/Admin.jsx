@@ -958,6 +958,7 @@ function ServicesPanel({ token }) {
 
   return (
     <div className="space-y-4">
+      <AddonPricingCard token={token} />
       {/* Toolbar */}
       <div className="bg-[#1a1525] border border-white/5 rounded-sm p-4 flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[200px] flex items-center gap-2">
@@ -1996,6 +1997,84 @@ function SellyConfigPanel({ token }) {
     </form>
   );
 }
+
+function AddonPricingCard({ token }) {
+  const [addons, setAddons] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(null);
+  const [drafts, setDrafts] = useState({}); // addon_id -> string price
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await adminApi(token).get("/admin/addons");
+      setAddons(r.data.addons || []);
+      setDrafts(Object.fromEntries((r.data.addons || []).map((a) => [a.id, String(a.price)])));
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to load addons"); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const save = async (id) => {
+    const raw = drafts[id];
+    const price = Number(raw);
+    if (!Number.isFinite(price) || price < 0) { toast.error("Enter a valid non-negative price"); return; }
+    setSaving(id);
+    try {
+      await adminApi(token).patch(`/admin/addons/${id}`, { price });
+      toast.success(`Saved — ${id} is now $${price.toFixed(2)}`);
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
+    finally { setSaving(null); }
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-fuchsia-500/30 rounded-sm p-4" data-testid="admin-addon-pricing">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div>
+          <div className="font-display font-black text-sm">Add-on store — pricing</div>
+          <div className="text-[10px] text-white/40 mt-0.5">Prices are charged from user balance on purchase. Change any time.</div>
+        </div>
+        <div className="text-[10px] uppercase tracking-widest text-fuchsia-300">Owner + Admin</div>
+      </div>
+      {loading ? (
+        <div className="text-xs text-white/40">Loading…</div>
+      ) : addons.length === 0 ? (
+        <div className="text-xs text-white/40">No add-ons configured.</div>
+      ) : (
+        <div className="grid gap-2">
+          {addons.map((a) => (
+            <div key={a.id} className="bg-black/30 rounded-sm p-3 flex items-center gap-3 flex-wrap" data-testid={`admin-addon-row-${a.id}`}>
+              <div className="flex-1 min-w-0">
+                <div className="font-bold text-sm truncate">{a.name}</div>
+                <div className="text-[10px] text-white/40 font-mono">id: {a.id}</div>
+              </div>
+              <div className="text-[10px] text-white/40 uppercase tracking-widest">Price $</div>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={drafts[a.id] ?? ""}
+                onChange={(e) => setDrafts((d) => ({ ...d, [a.id]: e.target.value }))}
+                data-testid={`admin-addon-price-${a.id}`}
+                className="w-32 bg-[#0d0a14] border-white/10 h-9 text-sm font-mono"
+              />
+              <button
+                onClick={() => save(a.id)}
+                disabled={saving === a.id || String(drafts[a.id] ?? "") === String(a.price)}
+                data-testid={`admin-addon-save-${a.id}`}
+                className="px-3 py-2 rounded-sm text-[10px] font-black uppercase tracking-wider bg-fuchsia-500 hover:bg-fuchsia-400 text-white transition disabled:opacity-40"
+              >
+                {saving === a.id ? "…" : "Save"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function ManualServiceQuickAdd({ token, onAdded }) {
   const [open, setOpen] = useState(false);
@@ -3718,13 +3797,23 @@ function UsersPanel({ token }) {
           <h3 className="font-display font-bold text-sm">All Registered Users</h3>
           <div className="text-[11px] text-white/40 mt-0.5">{users.length} total</div>
         </div>
-        <Input
-          data-testid="users-search"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search username or email…"
-          className="bg-[#0d0a14] border-white/10 max-w-xs text-sm"
-        />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { setDmTarget({ broadcast: true, username: "everyone" }); setDmText(""); }}
+            data-testid="dm-all-btn"
+            title="Send a DM from @BetterSocial to every registered user"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-[11px] font-black uppercase tracking-wider text-black bg-fuchsia-400 hover:bg-fuchsia-300 transition shadow-md shadow-fuchsia-500/40"
+          >
+            📢 DM ALL
+          </button>
+          <Input
+            data-testid="users-search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search username or email…"
+            className="bg-[#0d0a14] border-white/10 max-w-xs text-sm"
+          />
+        </div>
       </div>
 
       <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden">

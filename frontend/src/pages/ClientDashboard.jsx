@@ -73,6 +73,7 @@ export default function ClientDashboard() {
   const [useNewLayout, setUseNewLayout] = useState(false);
   const [addonsOwned, setAddonsOwned] = useState([]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const chatEndRef = useRef(null);
 
   // Smooth-preloader when switching tabs (short delay for perceived polish, no full-page reload)
@@ -366,13 +367,19 @@ export default function ClientDashboard() {
   };
 
   const ownsAutoLive = addonsOwned.includes("auto_live");
-  const navTabs = [
+  // Primary tabs — always visible on the top bar for PC users. Kept intentionally
+  // short so Purchase stays visible even on a 1280-wide laptop.
+  const primaryTabs = [
     { id: "home", label: t("nav_home"), testId: "nav-home" },
     { id: "buy", label: t("nav_buy"), testId: "nav-buy" },
     ...(ownsAutoLive ? [{ id: "live", label: t("nav_live"), testId: "nav-live", isNew: true }] : []),
     { id: "addons", label: t("nav_addons"), testId: "nav-addons" },
     { id: "numbers", label: t("nav_numbers"), testId: "nav-numbers" },
     { id: "games", label: t("nav_games"), testId: "nav-games" },
+  ];
+  // Secondary tabs — collapsed under a "More ▾" dropdown on PC. Full list appears
+  // in the mobile drawer.
+  const secondaryTabs = [
     { id: "invoices", label: t("nav_invoices"), testId: "nav-invoices", badge: unpaidInvoices },
     { id: "help", label: t("nav_help"), testId: "nav-help" },
     { id: "messages", label: t("nav_messages"), testId: "nav-messages", badge: unreadDms },
@@ -381,6 +388,8 @@ export default function ClientDashboard() {
     { id: "redeem", label: t("nav_redeem"), testId: "nav-redeem" },
     { id: "withdraw", label: t("nav_withdraw"), testId: "nav-withdraw" },
   ];
+  const navTabs = [...primaryTabs, ...secondaryTabs];
+  const secondaryBadgeCount = secondaryTabs.reduce((n, tab) => n + (tab.badge || 0), 0);
 
   const send = async (e) => {
     e?.preventDefault();
@@ -430,13 +439,13 @@ export default function ClientDashboard() {
               </div>
               <span className="hidden md:inline-block font-display font-black text-base text-white">BS<span className="text-emerald-300">.</span>GG</span>
             </div>
-            <nav className="hidden md:flex flex-1 items-center justify-center gap-1 md:gap-2 overflow-x-auto no-scrollbar" data-testid="top-nav">
-              {navTabs.map((t) => (
+            <nav className="hidden md:flex flex-1 items-center justify-center gap-0.5 md:gap-1 min-w-0" data-testid="top-nav">
+              {primaryTabs.map((t) => (
                 <button
                   key={t.id}
                   onClick={() => changeView(t.id)}
                   data-testid={t.testId}
-                  className={`relative px-3 md:px-4 py-2 rounded-md text-xs md:text-sm font-bold uppercase tracking-wider whitespace-nowrap transition ${view === t.id ? "text-emerald-300" : "text-white/60 hover:text-white"}`}
+                  className={`relative px-2.5 md:px-3 py-2 rounded-md text-[11px] md:text-xs font-bold uppercase tracking-wider whitespace-nowrap transition ${view === t.id ? "text-emerald-300" : "text-white/60 hover:text-white"}`}
                 >
                   {t.label}
                   {t.isNew && (
@@ -452,6 +461,46 @@ export default function ClientDashboard() {
                   )}
                 </button>
               ))}
+              {/* More ▾ dropdown for the secondary tabs so Purchase stays visible on PC */}
+              <div className="relative">
+                <button
+                  onClick={() => setMoreOpen((v) => !v)}
+                  data-testid="nav-more-btn"
+                  className={`relative px-2.5 md:px-3 py-2 rounded-md text-[11px] md:text-xs font-bold uppercase tracking-wider whitespace-nowrap transition inline-flex items-center gap-1 ${secondaryTabs.some((tab) => tab.id === view) ? "text-emerald-300" : "text-white/60 hover:text-white"}`}
+                >
+                  More <span className="text-[9px] opacity-70">▾</span>
+                  {secondaryBadgeCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none">
+                      {secondaryBadgeCount}
+                    </span>
+                  )}
+                  {secondaryTabs.some((tab) => tab.id === view) && (
+                    <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-0.5 bg-emerald-400 rounded-full" />
+                  )}
+                </button>
+                {moreOpen && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setMoreOpen(false)} />
+                    <div className="absolute right-0 top-full mt-1 w-52 bg-[#0d2b12] border border-emerald-500/30 rounded-md shadow-2xl z-40 py-1" data-testid="nav-more-menu">
+                      {secondaryTabs.map((tab) => (
+                        <button
+                          key={tab.id}
+                          onClick={() => { changeView(tab.id); setMoreOpen(false); }}
+                          data-testid={`more-${tab.testId}`}
+                          className={`w-full flex items-center justify-between px-3 py-2 text-sm transition ${view === tab.id ? "bg-emerald-500/15 text-emerald-200" : "text-white hover:bg-emerald-500/10"}`}
+                        >
+                          <span className="font-medium">{tab.label}</span>
+                          {tab.badge > 0 && (
+                            <span className="min-w-[18px] h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none">
+                              {tab.badge}
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             </nav>
             {/* Mobile: current view label in the middle */}
             <div className="md:hidden flex-1 text-center text-xs font-bold uppercase tracking-widest text-emerald-200 truncate">

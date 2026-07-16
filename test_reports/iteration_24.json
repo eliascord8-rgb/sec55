@@ -1,0 +1,22 @@
+{
+  "summary": "Iteration 24 backend + frontend testing complete. Backend 14/14 passed (100%): admin addon list/patch (default 250, PATCH updates client catalog, revert works, 404 unknown, 422 negative), admin/login-with-account (owner OK returns role=owner+perms containing 'all', regular user 403), admin/session-from-user (owner elevates, regular user 403), team perms (list has team+available_perms with admin_perms field, PATCH non-team user 404), DM-all bulk broadcast (sent>=1 and persisted in messages/threads), AI /request-handover (with sid + empty body both OK), favicon.svg 200. Frontend: top nav testids ALL visible at BOTH 1440px and 1280px viewports including nav-buy (Purchase) — the primary user-reported bug is fixed. More menu opens showing all 7 secondary tab testids and switches views on click. addon-card-auto_live renders PRICE $250.00. Admin panel /admin?haha123: admin-addon-pricing card present at top of Services tab with admin-addon-price-auto_live input value=250 and admin-addon-save-auto_live button. Users tab dm-all-btn opens admin-dm-modal with 'Broadcast to everyone' heading. Language switcher persists bs_lang='bs' across reload. Community chat shows real @testbugfix1 tags.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter24_batch_features.py",
+    "/app/test_reports/pytest/iter24_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ClientDashboard.jsx is 1400+ lines — consider splitting nav/tabs and dashboard sections into smaller components for maintainability.",
+    "server.py > 5600 lines — long overdue to split by domain (addons, admin, messaging already partially separated)."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter24_batch_features.py"],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (all tested testids present and behaviors verified)"},
+  "test_credentials": "testbugfix1/password1 and Balkin/Dennis123.@@ both work; admin secret /admin?haha123 works.",
+  "seed_data_creation": "TEST_iter24_broadcast_* messages inserted into direct_messages for all non-system users during bulk-broadcast test (not cleaned up — persists as system-bot DMs).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reusable pytest at /app/backend/tests/test_iter24_batch_features.py. Frontend login for playwright: POST /api/auth/login with solved captcha, then localStorage.setItem('bs_user_token', token) (NOT 'token'). Admin panel testids: admin-addon-pricing, admin-addon-price-<id>, admin-addon-save-<id>, dm-all-btn, admin-dm-modal. Nav testids: nav-home, nav-buy, nav-addons, nav-numbers, nav-games, nav-more-btn; secondary: more-nav-{invoices,help,messages,tickets,funds,redeem,withdraw}. AI handover CTA testid: ai-connect-team-btn (only appears when /ai/chat call fails — endpoint POST /api/ai/request-handover is verified working directly).",
+  "rca of the issue": "N/A — this was verification of new features; no regressions found. The Purchase-tab visibility fix works at both 1440px and 1280px viewports."
+}
