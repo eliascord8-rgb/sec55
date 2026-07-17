@@ -48,6 +48,7 @@ import { AviatorGame, SettingsView } from "./SettingsAndAviator";
 import SportsView from "./SportsView";
 import GuestLanding from "./GuestLanding";
 import GoalNotifier from "@/components/GoalNotifier";
+import LiveChatFAB from "@/components/LiveChatFAB";
 import NewsModal from "@/components/NewsModal";
 import { LanguagePicker, useLang } from "@/context/LanguageContext";
 import { toast } from "sonner";
@@ -737,7 +738,7 @@ export default function ClientDashboard() {
       </header>
       )}
 
-      <div className={`flex ${useNewLayout ? "px-4 md:px-6 pt-4" : ""}`}>
+      <div className={useNewLayout ? "px-4 md:px-6 pt-4" : "flex"}>
         {/* SIDEBAR — only for classic layout */}
         {!useNewLayout && (
         <aside
@@ -811,7 +812,7 @@ export default function ClientDashboard() {
         )}
 
         {/* MAIN CONTENT */}
-        <main className={`flex-1 ${useNewLayout ? "theme-green px-0 py-4 md:py-6" : "px-4 md:px-8 lg:px-10 py-6 md:py-10 pb-24 lg:pb-10"}`}>
+        <main className={useNewLayout ? "theme-green px-0 py-4 md:py-6" : "flex-1 px-4 md:px-8 lg:px-10 py-6 md:py-10 pb-24 lg:pb-10"}>
           {viewLoading ? (
             <div className="flex items-center justify-center py-24" data-testid="view-preloader">
               <div className="flex flex-col items-center gap-3">
@@ -876,6 +877,7 @@ export default function ClientDashboard() {
       {/* Better Social AI floating widget */}
       <AIWidget open={aiOpen} onOpenChange={setAiOpen} />
       <GoalNotifier />
+      <LiveChatFAB />
       <NewsModal />
       {!aiOpen && !(typeof window !== "undefined" && localStorage.getItem("bs_chat_banned") === "1") && (
         <button

@@ -84,6 +84,40 @@ export default function AIWidget({ open, onOpenChange }) {
     }
   }, [user, identified]);
 
+  // Auto-connect signed-in users to a live human on OPEN — the AI is only a
+  // fallback when no team member is around. We fire an immediate handover
+  // request and preload their previous conversations.
+  const openedRef = useRef(false);
+  useEffect(() => {
+    if (!open) { openedRef.current = false; return; }
+    if (openedRef.current) return;
+    openedRef.current = true;
+    if (user) {
+      // 1. Preload past sessions so the "Previous" tab is instant
+      loadPastSessions();
+      // 2. Request human handover right away — don't wait for the user to hit an error
+      if (!humanTakeover && handoverState === "none") {
+        (async () => {
+          try {
+            await api.post("/ai/request-handover", {
+              session_id: sessionIdRef.current,
+              reason: "user_opened_widget",
+            });
+            setHandoverState("waiting");
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                text: "👋 Hey! I'm paging a live agent for you now — please stay on this chat and we'll be right with you. Meanwhile you can still ask me anything and I'll try to help.",
+              },
+            ]);
+          } catch { /* silent — user can still type */ }
+        })();
+      }
+    }
+    // eslint-disable-next-line
+  }, [open, user]);
+
   // Ensure a session_id exists before any upload
   const ensureSession = () => {
     if (!sessionIdRef.current) {
