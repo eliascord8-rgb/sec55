@@ -45,6 +45,7 @@ import MessagesView from "./MessagesView";
 import GamesView from "./GamesView";
 import { InvoicesView, HelpCenterView } from "./InvoicesAndHelp";
 import { AviatorGame, SettingsView } from "./SettingsAndAviator";
+import SportsView from "./SportsView";
 import GuestLanding from "./GuestLanding";
 import NewsModal from "@/components/NewsModal";
 import { LanguagePicker, useLang } from "@/context/LanguageContext";
@@ -74,6 +75,8 @@ export default function ClientDashboard() {
   const [addonsOwned, setAddonsOwned] = useState([]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [freeBet, setFreeBet] = useState({ can_claim: false, amount: 0.8 });
+  const [claimingFreeBet, setClaimingFreeBet] = useState(false);
   const chatEndRef = useRef(null);
 
   // Smooth-preloader when switching tabs (short delay for perceived polish, no full-page reload)
@@ -103,6 +106,25 @@ export default function ClientDashboard() {
       const r = await authedApi().get("/client/addons/mine");
       setAddonsOwned(r.data.owned || []);
     } catch {}
+  };
+
+  const loadFreeBet = async () => {
+    try {
+      const r = await authedApi().get("/free-bet/status");
+      setFreeBet(r.data);
+    } catch {}
+  };
+
+  const claimFreeBet = async () => {
+    setClaimingFreeBet(true);
+    try {
+      const r = await authedApi().post("/free-bet/claim");
+      toast.success(`🎁 +$${r.data.amount.toFixed(2)} added to your balance!`);
+      loadFreeBet();
+      loadBalance();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Claim failed");
+    } finally { setClaimingFreeBet(false); }
   };
 
   const loadUnreadTickets = async () => {
@@ -273,6 +295,7 @@ export default function ClientDashboard() {
     loadMessages();
     loadBalance();
     loadAddons();
+    loadFreeBet();
     const statInt = setInterval(loadStats, 12000);
     const msgInt = setInterval(loadMessages, POLL_MS);
     const balInt = setInterval(loadBalance, 15000);
@@ -374,6 +397,7 @@ export default function ClientDashboard() {
     { id: "buy", label: t("nav_buy"), testId: "nav-buy" },
     ...(ownsAutoLive ? [{ id: "live", label: t("nav_live"), testId: "nav-live", isNew: true }] : []),
     { id: "addons", label: t("nav_addons"), testId: "nav-addons" },
+    { id: "sports", label: t("nav_sports") || "Sports", testId: "nav-sports", isNew: true },
     { id: "numbers", label: t("nav_numbers"), testId: "nav-numbers" },
     { id: "games", label: t("nav_games"), testId: "nav-games" },
   ];
@@ -520,6 +544,18 @@ export default function ClientDashboard() {
                   Buy
                 </button>
               </div>
+              {/* Daily free-bet claim — only visible when eligible */}
+              {freeBet.can_claim && (
+                <button
+                  onClick={claimFreeBet}
+                  disabled={claimingFreeBet}
+                  data-testid="topbar-freebet-btn"
+                  title="Claim your daily free bet — from our pocket, no strings attached"
+                  className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-fuchsia-500 hover:bg-fuchsia-400 text-white text-[10px] md:text-[11px] font-black uppercase tracking-wider transition shadow-md shadow-fuchsia-500/40 disabled:opacity-40 animate-pulse"
+                >
+                  {claimingFreeBet ? "…" : <>🎁 Free ${freeBet.amount?.toFixed?.(2) || "0.80"}</>}
+                </button>
+              )}
               <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-white/10 relative" data-testid="profile-menu-wrap">
                 <button onClick={() => setProfileOpen((v) => !v)}
                   data-testid="profile-menu-btn"
@@ -801,6 +837,7 @@ export default function ClientDashboard() {
               {view === "addons" && (
                 <AddonsView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} reloadAddons={loadAddons} onGoBuy={() => changeView("buy")} onGoLive={() => changeView("live")} />
               )}
+              {view === "sports" && <SportsView />}
               {view === "numbers" && (
                 <NumbersView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
               )}

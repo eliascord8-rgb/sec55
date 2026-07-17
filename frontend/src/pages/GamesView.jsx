@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Bomb, RotateCcw, Play, Music, Volume2 } from "lucide-react";
-import { AviatorGame } from "./SettingsAndAviator";
+import { AviatorGame as _RemovedAviator } from "./SettingsAndAviator"; // eslint-disable-line no-unused-vars
 
 // -----------------------------------------------------------------------------
-// GamesView — top-level wrapper. Two tabs: Slots (Wild-Hot-style) & Stairs.
+// GamesView — Stairs only. Aviator was removed per request. Wheel & Sports live
+// in their own dashboard views.
 // -----------------------------------------------------------------------------
 
 const SYMBOL_ART = {
@@ -21,27 +22,15 @@ const SYMBOL_ART = {
 const SYMBOL_KEYS = Object.keys(SYMBOL_ART);
 
 export default function GamesView({ authedApi, balance, reloadBalance }) {
-  const [tab, setTab] = useState("stairs");
   return (
     <div className="mx-auto w-full max-w-5xl space-y-4" data-testid="games-view">
       <div className="flex items-end justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl md:text-3xl font-black tracking-tight text-white">Games</h1>
-          <p className="text-white/50 text-xs md:text-sm mt-1">Instant-play casino. All wins go to your withdrawable balance.</p>
+          <p className="text-white/50 text-xs md:text-sm mt-1">Instant-play stairs. All wins go to your withdrawable balance.</p>
         </div>
-      <div className="flex gap-2">
-        <button data-testid="games-tab-stairs" onClick={() => setTab("stairs")}
-          className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider transition ${tab === "stairs" ? "bg-emerald-500 text-black" : "bg-[#0d0a14] text-white/70 hover:text-white border border-white/10"}`}>
-          🪜 Stairs
-        </button>
-        <button data-testid="games-tab-aviator" onClick={() => setTab("aviator")}
-          className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider transition ${tab === "aviator" ? "bg-emerald-500 text-black" : "bg-[#0d0a14] text-white/70 hover:text-white border border-white/10"}`}>
-          ✈️ Aviator
-        </button>
       </div>
-    </div>
-      {tab === "stairs" && <StairsGame authedApi={authedApi} reloadBalance={reloadBalance} />}
-      {tab === "aviator" && <AviatorGame authedApi={authedApi} balance={balance} reloadBalance={reloadBalance} />}
+      <StairsGame authedApi={authedApi} reloadBalance={reloadBalance} />
     </div>
   );
 }
