@@ -1,5 +1,12 @@
 # Better Social — PRD
 
+## Recent Updates (Jul 17, 2026 — Iterations 29+)
+- ✅ **Rollbit-style support widget** — Redesigned AIWidget header: BS brand square + stacked circular avatars of on-shift team members + large "Hi there 👋 How can we help?" heading. On-shift status pulled from new `GET /api/team/online` (public) endpoint. Team members flip themselves on/off shift via new `POST /api/admin/shift/toggle` — the "🟢 On shift" toggle now lives at the top of the Admin panel next to Logout.
+- ✅ **Auto-human on widget open** — Signed-in users now trigger `/ai/request-handover` immediately when they open the chat (no need to wait for the AI to fail). Past sessions preload into the Previous tab.
+- ✅ **Team-member DMs via widget** — Existing handover pipeline already lets any staff (owner/admin/moderator) reply as themselves via the AI-inbox admin tab. Their avatar shows on the client widget.
+- ✅ **Mobile live-chat FAB** — Emerald round button above the AI FAB opens the public shoutbox as a bottom-sheet drawer.
+- ✅ **Design bug fixed** — Footer no longer renders as a sibling column on desktop.
+
 ## Recent Updates (Jul 17, 2026 — Iterations 27-28)
 - ✅ **Design bug fixed** — Dashboard footer had escaped the `<main>` flex wrapper and was rendering as a sibling column on 1280+ screens (screenshot user posted). Split the wrapper so `useNewLayout` uses block layout and only the classic sidebar layout stays flex.
 - ✅ **AI chat auto-connects to human** — When a signed-in user OPENS the widget, we immediately fire `/api/ai/request-handover` and show "Paging a live agent for you now — please stay on this chat" + auto-preload their previous conversations. No more waiting for the AI to fail first.

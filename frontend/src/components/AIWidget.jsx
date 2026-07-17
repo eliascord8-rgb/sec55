@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Bot, Send, Loader2, X, Minus, CheckCircle2, XCircle, MessageCircle, Paperclip, Image as ImageIcon, FileText, User } from "lucide-react";
+import TeamAvatarStack from "@/components/TeamAvatarStack";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_FILES = 4;
@@ -569,52 +570,64 @@ export default function AIWidget({ open, onOpenChange }) {
         data-testid="ai-widget"
         className="fixed z-[70] bottom-0 right-0 left-0 md:left-auto md:bottom-6 md:right-6 w-full md:w-[380px] h-[80vh] md:h-[580px] md:max-h-[calc(100vh-48px)] bg-[#0d0a14] md:rounded-sm border-t md:border border-white/10 shadow-2xl flex flex-col overflow-hidden animate-ai-slide-in"
       >
-        {/* Header */}
-        <div className="px-4 py-3 border-b border-white/10 bg-[#050505] flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 rounded-full gradient-pp flex items-center justify-center shrink-0 relative">
-              <Bot className="w-4 h-4" />
-              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00E5FF] border-2 border-[#050505]" />
-            </div>
+        {/* Rollbit-style hero header — friendly greeting + on-shift team avatars */}
+        <div className="px-4 pt-4 pb-3 border-b border-white/10 bg-gradient-to-b from-[#0d2b12] to-[#050505]" data-testid="ai-widget-hero">
+          <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="font-bold text-sm truncate">
-                {humanTakeover ? `Better Social · ${staffName}` : "Better Social AI"}
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-md bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0">
+                  <span className="text-emerald-300 font-black text-xs">BS</span>
+                </div>
+                <TeamAvatarStack size={32} max={4} className="ml-1" />
               </div>
-              <div className="text-[10px] text-white/50">
-                {humanTakeover
-                  ? "A human is replying live"
-                  : handoverState === "waiting"
-                  ? "Connecting to staff…"
-                  : "Typically replies in seconds"}
-              </div>
+              <h3 className="font-display font-black text-xl md:text-2xl text-white mt-3 leading-tight">
+                Hi there <span className="inline-block">👋</span>
+              </h3>
+              <p className="font-display font-bold text-base md:text-lg text-white/70 leading-tight mt-0.5">
+                How can we help?
+              </p>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => onOpenChange(false)}
+                aria-label="Minimize"
+                data-testid="ai-widget-minimize"
+                className="p-1.5 rounded-sm text-white/60 hover:text-white hover:bg-white/5"
+              >
+                <Minus className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => onOpenChange(false)}
+                aria-label="Close"
+                data-testid="ai-widget-close"
+                className="p-1.5 rounded-sm text-white/60 hover:text-white hover:bg-white/5"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           </div>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={reset}
-              title="Start a fresh conversation"
-              data-testid="ai-widget-new-chat"
-              className="text-[10px] uppercase tracking-wider text-white/60 hover:text-white px-2 py-1 rounded-sm hover:bg-white/5 whitespace-nowrap"
-            >
-              + New chat
-            </button>
-            <button
-              onClick={() => onOpenChange(false)}
-              aria-label="Minimize"
-              data-testid="ai-widget-minimize"
-              className="p-1.5 rounded-sm text-white/60 hover:text-white hover:bg-white/5"
-            >
-              <Minus className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => onOpenChange(false)}
-              aria-label="Close"
-              data-testid="ai-widget-close"
-              className="p-1.5 rounded-sm text-white/60 hover:text-white hover:bg-white/5"
-            >
-              <X className="w-4 h-4" />
-            </button>
+        </div>
+
+        {/* Legacy header row — condensed sub-heading strip */}
+        <div className="px-4 py-2 bg-[#050505] flex items-center justify-between gap-3 text-[10px] uppercase tracking-widest text-white/50 border-b border-white/5">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="truncate">
+              {humanTakeover
+                ? `Chat with ${staffName}`
+                : handoverState === "waiting"
+                ? "Connecting to staff…"
+                : "Typically replies in seconds"}
+            </span>
           </div>
+          <button
+            onClick={reset}
+            title="Start a fresh conversation"
+            data-testid="ai-widget-new-chat"
+            className="text-emerald-300 hover:text-emerald-200 px-2 py-0.5 rounded-sm hover:bg-emerald-500/10 whitespace-nowrap font-bold"
+          >
+            + New chat
+          </button>
         </div>
 
         {/* Tab bar — signed-in users get access to their past conversations */}

@@ -256,6 +256,7 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
                 Posting as <span className="font-bold text-white">{displayName || username || "—"}</span>
               </span>
             </button>
+            <ShiftToggle token={token} />
             <a href="/client/dashboard" data-testid="admin-return-shop"
                className="inline-flex items-center gap-1 px-3 py-2 border border-white/10 rounded-sm text-[11px] uppercase tracking-wider hover:bg-white/5 transition"
                title="Go back to the client view">
@@ -1997,6 +1998,43 @@ function SellyConfigPanel({ token }) {
     </form>
   );
 }
+
+function ShiftToggle({ token }) {
+  const [on, setOn] = useState(false);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (!token) return;
+    (async () => {
+      try {
+        const r = await adminApi(token).get("/admin/shift/mine");
+        setOn(!!r.data.on_shift);
+      } catch { /* ignore */ }
+    })();
+  }, [token]);
+  const flip = async () => {
+    const next = !on;
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/shift/toggle", { on_shift: next });
+      setOn(next);
+      toast.success(next ? "🟢 You are ON shift — clients now see your avatar" : "⚪ You are OFF shift");
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+    finally { setSaving(false); }
+  };
+  return (
+    <button
+      onClick={flip}
+      disabled={saving}
+      data-testid="admin-shift-toggle"
+      title={on ? "Click to go off-shift (hide from support widget)" : "Click to go on-shift (appear on support widget)"}
+      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-sm text-[11px] uppercase tracking-wider font-bold transition ${on ? "bg-emerald-500 text-black hover:bg-emerald-400" : "border border-white/10 text-white/70 hover:bg-white/5"}`}
+    >
+      <span className={`w-2 h-2 rounded-full ${on ? "bg-black" : "bg-white/40"} ${on ? "animate-pulse" : ""}`} />
+      {on ? "On shift" : "Off shift"}
+    </button>
+  );
+}
+
 
 function AddonPricingCard({ token }) {
   const [addons, setAddons] = useState([]);
