@@ -768,8 +768,6 @@ async def admin_update_user_admin_perms(
 
 @api_router.get("/admin/users/team")
 async def admin_list_team(x_admin_token: Optional[str] = Header(None)):
-    """Owner-only: list all users whose role is admin or moderator, with their
-    per-user `admin_perms` so the UI can render a permissions grid."""
     check_owner(x_admin_token)
     cursor = db.users.find(
         {"role": {"$in": ["admin", "moderator"]}},
@@ -780,6 +778,58 @@ async def admin_list_team(x_admin_token: Optional[str] = Header(None)):
         if "admin_perms" not in it:
             it["admin_perms"] = list(DEFAULT_TEAM_PERMS)
     return {"team": items, "available_perms": sorted(STAFF_PERMS)}
+
+
+# ============ Support shifts + online team roster ============
+@api_router.get("/team/online")
+async def team_online_public():
+    """PUBLIC — returns team members currently on-shift so the AI/support
+    widget can render an avatar stack ("Hi there — how can we help?")."""
+    cursor = db.users.find(
+        {"on_shift": True, "role": {"$in": ["owner", "admin", "moderator"]}, "banned": {"$ne": True}},
+        {"_id": 0, "id": 1, "username": 1, "role": 1, "display_name": 1, "avatar_color": 1},
+    ).limit(10)
+    team = await cursor.to_list(10)
+    if not team:
+        # Always advertise at least the brand so the widget never looks empty
+        team = [{"username": "BetterSocial", "role": "system", "display_name": "Better Social", "avatar_color": "emerald"}]
+    return {"team": team}
+
+
+class ShiftToggleReq(BaseModel):
+    on_shift: bool
+
+
+@api_router.post("/admin/shift/toggle")
+async def admin_shift_toggle(payload: ShiftToggleReq, x_admin_token: Optional[str] = Header(None)):
+    """Any team member (owner/admin/mod) flips their own on-shift status."""
+    if x_admin_token not in ADMIN_SESSIONS and x_admin_token not in STAFF_SESSIONS:
+        raise HTTPException(status_code=401, detail="Not authorized")
+    now = datetime.now(timezone.utc).isoformat()
+    sess = STAFF_SESSIONS.get(x_admin_token)
+    if sess and sess.get("id"):
+        await db.users.update_one(
+            {"id": sess["id"]},
+            {"$set": {"on_shift": bool(payload.on_shift), "last_shift_change": now}},
+        )
+        return {"ok": True, "on_shift": bool(payload.on_shift), "username": sess.get("username")}
+    owner_username = os.environ.get("OWNER_USERNAME", "Balkin")
+    await db.users.update_one(
+        {"username": owner_username},
+        {"$set": {"on_shift": bool(payload.on_shift), "last_shift_change": now}},
+    )
+    return {"ok": True, "on_shift": bool(payload.on_shift), "username": owner_username}
+
+
+@api_router.get("/admin/shift/mine")
+async def admin_shift_mine(x_admin_token: Optional[str] = Header(None)):
+    """Return the caller's current on-shift flag so the toggle can hydrate."""
+    if x_admin_token not in ADMIN_SESSIONS and x_admin_token not in STAFF_SESSIONS:
+        raise HTTPException(status_code=401, detail="Not authorized")
+    sess = STAFF_SESSIONS.get(x_admin_token)
+    username = (sess or {}).get("username") if sess else os.environ.get("OWNER_USERNAME", "Balkin")
+    u = await db.users.find_one({"username": username}, {"_id": 0, "on_shift": 1, "role": 1, "username": 1})
+    return {"on_shift": bool((u or {}).get("on_shift")), "username": username, "role": (u or {}).get("role")}
 
 
 # ============ STAFF ACCOUNTS ============
