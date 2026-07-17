@@ -2425,6 +2425,8 @@ async def _process_live_sub_burst(sub: dict):
 async def _start_live_sub_worker():
     # Fire-and-forget; the loop catches its own errors and reschedules.
     asyncio.create_task(_live_sub_worker_loop())
+    # Sports goal watcher — polls the RapidAPI livescore feed and emits events.
+    asyncio.create_task(_sports_watcher_loop())
 
 
 # ============ Realtime user commands ============
@@ -3503,7 +3505,13 @@ async def sports_livescores():
         logger.warning("[sports] livescores failed: %s", e)
         return {"matches": [], "error": "sports_source_unavailable"}
     resp = data.get("response") if isinstance(data, dict) else None
-    matches = (resp or {}).get("matches") if isinstance(resp, dict) else (resp or [])
+    # The RapidAPI endpoint wraps live matches under `response.live`, not `.matches`
+    matches = (
+        (resp or {}).get("live")
+        or (resp or {}).get("matches")
+        if isinstance(resp, dict)
+        else (resp or [])
+    )
     return {"matches": matches or []}
 
 
@@ -3530,6 +3538,157 @@ async def sports_leagues():
         logger.warning("[sports] leagues failed: %s", e)
         return {"leagues": [], "error": "sports_source_unavailable"}
     return {"leagues": (data.get("response") or data.get("leagues") or data) or []}
+
+
+# ============ Sports goal watcher — polls the livescore feed and emits events ============
+# The free-tier RapidAPI feed doesn't ship per-event data (offside review,
+# penalty awarded, etc.), so we derive events from successive livescore
+# snapshots. A score delta becomes a `goal` event. Half-time / full-time
+# and match cancellation are detected from the status object.
+SPORTS_WATCH_INTERVAL_SEC = 20  # how often the watcher polls the feed
+
+
+@api_router.get("/sports/events")
+async def sports_events(since: Optional[str] = None, limit: int = 50):
+    """Recently-emitted sports events. Frontend polls this to draw goal
+    notifications and play a sound."""
+    q = {}
+    if since:
+        q = {"created_at": {"$gt": since}}
+    cursor = db.sports_events.find(q, {"_id": 0}).sort("created_at", -1).limit(min(int(limit or 50), 100))
+    events = await cursor.to_list(limit)
+    return {"events": list(reversed(events))}
+
+
+async def _sports_watcher_loop():
+    """Background task: polls livescores every 20s, diffs scores + status
+    against the last snapshot, writes any changes to `sports_events`."""
+    logger.info("[sports] goal watcher started (interval=%ss)", SPORTS_WATCH_INTERVAL_SEC)
+    while True:
+        try:
+            data = await _rapid_get("/football-current-live")
+            resp = data.get("response") if isinstance(data, dict) else None
+            matches = (resp or {}).get("live") or (resp or {}).get("matches") or []
+        except Exception as e:
+            logger.warning("[sports] watcher poll failed: %s", e)
+            await asyncio.sleep(SPORTS_WATCH_INTERVAL_SEC)
+            continue
+
+        now = datetime.now(timezone.utc).isoformat()
+        for m in matches:
+            try:
+                mid = m.get("id")
+                if mid is None:
+                    continue
+                home = m.get("home") or {}
+                away = m.get("away") or {}
+                home_score = int(home.get("score") or 0)
+                away_score = int(away.get("score") or 0)
+                status = m.get("status") or {}
+                minute = ((status.get("liveTime") or {}).get("short") or "").strip()
+                league_id = m.get("leagueId")
+
+                prev = await db.sports_match_state.find_one({"match_id": mid}, {"_id": 0})
+                new_state = {
+                    "match_id": mid,
+                    "home_id": home.get("id"),
+                    "away_id": away.get("id"),
+                    "home_name": home.get("name") or home.get("longName") or "Home",
+                    "away_name": away.get("name") or away.get("longName") or "Away",
+                    "home_score": home_score,
+                    "away_score": away_score,
+                    "status_id": m.get("statusId"),
+                    "minute": minute,
+                    "league_id": league_id,
+                    "updated_at": now,
+                }
+                # First time seeing this match — just record state, no event.
+                if not prev:
+                    new_state["created_at"] = now
+                    await db.sports_match_state.insert_one(new_state)
+                    continue
+
+                events_to_emit = []
+                # Goal detection: any score increase
+                if home_score > int(prev.get("home_score") or 0):
+                    events_to_emit.append({
+                        "type": "goal",
+                        "team": new_state["home_name"],
+                        "opponent": new_state["away_name"],
+                        "score": f"{home_score} - {away_score}",
+                        "minute": minute or "—",
+                        "match_id": mid,
+                        "league_id": league_id,
+                    })
+                if away_score > int(prev.get("away_score") or 0):
+                    events_to_emit.append({
+                        "type": "goal",
+                        "team": new_state["away_name"],
+                        "opponent": new_state["home_name"],
+                        "score": f"{home_score} - {away_score}",
+                        "minute": minute or "—",
+                        "match_id": mid,
+                        "league_id": league_id,
+                    })
+                # Goal reversal (VAR / offside): any score decrease
+                if home_score < int(prev.get("home_score") or 0):
+                    events_to_emit.append({
+                        "type": "goal_disallowed",
+                        "team": new_state["home_name"],
+                        "opponent": new_state["away_name"],
+                        "score": f"{home_score} - {away_score}",
+                        "minute": minute or "—",
+                        "match_id": mid,
+                        "reason": "VAR / offside",
+                    })
+                if away_score < int(prev.get("away_score") or 0):
+                    events_to_emit.append({
+                        "type": "goal_disallowed",
+                        "team": new_state["away_name"],
+                        "opponent": new_state["home_name"],
+                        "score": f"{home_score} - {away_score}",
+                        "minute": minute or "—",
+                        "match_id": mid,
+                        "reason": "VAR / offside",
+                    })
+                # Kickoff, halftime, fulltime derived from statusId
+                new_status_id = m.get("statusId")
+                if new_status_id != prev.get("status_id"):
+                    label = None
+                    if new_status_id == 2:  # started (some feeds)
+                        label = "kickoff"
+                    elif new_status_id == 3:  # halftime
+                        label = "halftime"
+                    elif new_status_id in (100, 6, 7):  # finished
+                        label = "fulltime"
+                    if label:
+                        events_to_emit.append({
+                            "type": label,
+                            "team": new_state["home_name"],
+                            "opponent": new_state["away_name"],
+                            "score": f"{home_score} - {away_score}",
+                            "minute": minute or "—",
+                            "match_id": mid,
+                        })
+
+                # Write events + update snapshot
+                for ev in events_to_emit:
+                    ev["id"] = str(uuid.uuid4())
+                    ev["created_at"] = now
+                    await db.sports_events.insert_one(ev.copy())
+                    logger.info("[sports] %s — %s @ %s (%s)", ev["type"], ev["team"], ev.get("minute"), ev.get("score"))
+                await db.sports_match_state.update_one({"match_id": mid}, {"$set": new_state})
+            except Exception as e:  # never break the loop over a single match
+                logger.exception("[sports] failed to process match: %s", e)
+
+        # Trim old state (matches that haven't ticked in >12h) so memory doesn't grow
+        try:
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
+            await db.sports_match_state.delete_many({"updated_at": {"$lt": cutoff}})
+        except Exception:
+            pass
+
+        await asyncio.sleep(SPORTS_WATCH_INTERVAL_SEC)
 
 
 
