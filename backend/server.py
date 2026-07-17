@@ -3532,6 +3532,21 @@ async def free_bet_claim(user: CurrentUser = Depends(current_user_dep)):
 # non-fatal timeout returns an empty payload so the UI can degrade gracefully.
 SPORTS_RAPID_KEY = os.environ.get("SPORTS_RAPID_KEY", "31215e25a5msh485e5613d28cd76p15b417jsna5b7f50de8ee")
 SPORTS_RAPID_HOST = "free-api-live-football-data.p.rapidapi.com"
+# TheSportsDB free tier uses public "123" test key for extra coverage of
+# upcoming fixtures across major leagues.
+TSDB_KEY = os.environ.get("TSDB_KEY", "123")
+TSDB_LEAGUES = [
+    ("4328", "English Premier League"),
+    ("4335", "Spanish La Liga"),
+    ("4331", "German Bundesliga"),
+    ("4332", "Italian Serie A"),
+    ("4334", "French Ligue 1"),
+    ("4480", "UEFA Champions League"),
+    ("4481", "UEFA Europa League"),
+    ("4346", "MLS"),
+    ("4344", "Portuguese Primeira Liga"),
+    ("4337", "Dutch Eredivisie"),
+]
 
 
 async def _rapid_get(path: str, params: dict = None):
@@ -3565,18 +3580,68 @@ async def sports_livescores():
     return {"matches": matches or []}
 
 
+async def _tsdb_upcoming_for_league(league_id: str, league_name: str) -> list:
+    """Fetch next few fixtures for a league from TheSportsDB. Returns items
+    in a shape compatible with the frontend normaliser."""
+    try:
+        async with httpx.AsyncClient(timeout=8) as c:
+            r = await c.get(f"https://www.thesportsdb.com/api/v1/json/{TSDB_KEY}/eventsnextleague.php", params={"id": league_id})
+            r.raise_for_status()
+            data = r.json()
+    except Exception:
+        return []
+    out = []
+    for ev in (data.get("events") or [])[:15]:
+        out.append({
+            "id": f"tsdb-{ev.get('idEvent')}",
+            "home": {"name": ev.get("strHomeTeam") or ev.get("strEvent", "").split(" vs ")[0] or "Home"},
+            "away": {"name": ev.get("strAwayTeam") or (ev.get("strEvent", "").split(" vs ")[1] if " vs " in (ev.get("strEvent") or "") else "Away")},
+            "startTime": ev.get("strTimestamp"),
+            "league": {"name": league_name},
+            "source": "tsdb",
+        })
+    return out
+
+
 @api_router.get("/sports/upcoming")
 async def sports_upcoming():
-    """Football matches scheduled for tomorrow (upcoming fixtures)."""
+    """Football matches scheduled for tomorrow (upcoming fixtures). Merges the
+    RapidAPI feed with TheSportsDB's per-league next-fixtures for extra
+    coverage across major European leagues + MLS."""
     tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y%m%d")
+    matches: list = []
     try:
         data = await _rapid_get("/football-get-matches-by-date", {"date": tomorrow})
+        resp = data.get("response") if isinstance(data, dict) else None
+        m1 = (resp or {}).get("matches") if isinstance(resp, dict) else (resp or [])
+        matches.extend(m1 or [])
     except Exception as e:
-        logger.warning("[sports] upcoming failed: %s", e)
-        return {"matches": [], "error": "sports_source_unavailable"}
-    resp = data.get("response") if isinstance(data, dict) else None
-    matches = (resp or {}).get("matches") if isinstance(resp, dict) else (resp or [])
-    return {"matches": matches or []}
+        logger.warning("[sports] upcoming rapid failed: %s", e)
+    # TheSportsDB fallback + merge — run all league requests concurrently
+    try:
+        tsdb_results = await asyncio.gather(
+            *[_tsdb_upcoming_for_league(lid, lname) for lid, lname in TSDB_LEAGUES],
+            return_exceptions=True,
+        )
+        for res in tsdb_results:
+            if isinstance(res, list):
+                matches.extend(res)
+    except Exception as e:
+        logger.warning("[sports] tsdb upcoming failed: %s", e)
+    # De-dupe by (home, away, date) to avoid showing the same fixture from both
+    # sources. RapidAPI wins over TSDB when both are present.
+    seen = set()
+    deduped = []
+    for m in matches:
+        home = ((m.get("home") or {}).get("name") or m.get("homeTeam") or "").strip().lower()
+        away = ((m.get("away") or {}).get("name") or m.get("awayTeam") or "").strip().lower()
+        day = (str(m.get("time") or m.get("startTime") or ""))[:10]
+        k = (home, away, day)
+        if not home or not away or k in seen:
+            continue
+        seen.add(k)
+        deduped.append(m)
+    return {"matches": deduped, "error": None if deduped else "sports_source_unavailable"}
 
 
 @api_router.get("/sports/leagues")

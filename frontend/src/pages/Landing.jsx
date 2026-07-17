@@ -292,25 +292,31 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* FOOTER */}
-      <footer className="border-t border-white/5 py-12">
-        <div className="max-w-7xl mx-auto px-6 md:px-10 flex flex-col md:flex-row items-center justify-between gap-6 text-sm text-white/40">
+      {/* FOOTER — matches the dashboard/guest footer for visual consistency */}
+      <footer className="border-t border-emerald-500/20 bg-[#0d2b12] py-6 md:py-8" data-testid="landing-footer">
+        <div className="max-w-7xl mx-auto px-6 md:px-10 flex flex-col md:flex-row items-center justify-between gap-4 text-sm">
           <div className="font-display font-black text-base text-white">
-            Better<span className="text-[#FF007F]">Social</span>
+            Better<span className="text-emerald-300">Social</span>
           </div>
-          <div className="flex flex-col md:flex-row items-center gap-3 md:gap-6 text-center">
-            <div className="text-xs uppercase tracking-[0.2em]">
-              © {new Date().getFullYear()} · Better Social
-            </div>
+          <div className="flex flex-wrap items-center justify-center gap-2 md:gap-4 text-[10px] uppercase tracking-widest text-white/60">
+            <span className="inline-flex items-center gap-2 font-bold">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              © {new Date().getFullYear()} BetterSocial
+            </span>
+            <span className="text-emerald-500/40">·</span>
+            <span>
+              Development by <span className="text-emerald-300 font-bold">BK</span> &amp; CEO <span className="text-emerald-300 font-bold">Sinester</span>
+            </span>
+            <span className="text-emerald-500/40">·</span>
             <a
               href="mailto:balkinstr@web.de"
               data-testid="footer-contact"
-              className="text-xs uppercase tracking-[0.2em] text-[#FF007F] hover:text-white transition"
+              className="text-emerald-300 hover:text-white transition"
             >
-              Contact 24/7 · balkinstr@web.de
+              balkinstr@web.de
             </a>
           </div>
-          <a href="/admin" className="text-xs uppercase tracking-[0.2em] hover:text-white" data-testid="admin-link">
+          <a href="/admin" className="text-[10px] uppercase tracking-widest font-bold text-white/60 hover:text-emerald-300 transition" data-testid="admin-link">
             Admin →
           </a>
         </div>

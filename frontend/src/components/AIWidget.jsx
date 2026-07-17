@@ -70,7 +70,8 @@ export default function AIWidget({ open, onOpenChange }) {
   const [muted, setMuted] = useState(false);
   const [banned, setBanned] = useState(false);
   // Tab state — 'chat' vs 'history' (signed-in users only)
-  const [activeTab, setActiveTab] = useState("chat");
+  // View mode: 'home' (Rollbit-style welcome card), 'chat' (active conversation), 'history' (past sessions)
+  const [activeTab, setActiveTab] = useState("home");
   const [pastSessions, setPastSessions] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const fileInputRef = useRef(null);
@@ -96,36 +97,27 @@ export default function AIWidget({ open, onOpenChange }) {
     if (user) {
       // 1. Preload past sessions so the "Previous" tab is instant
       loadPastSessions();
-      // 2. Request human handover right away — don't wait for the user to hit an error
-      if (!humanTakeover && handoverState === "none") {
-        (async () => {
-          try {
-            await api.post("/ai/request-handover", {
-              session_id: sessionIdRef.current,
-              reason: "user_opened_widget",
-            });
-            setHandoverState("waiting");
-            setMessages((prev) => [
-              ...prev,
-              {
-                role: "assistant",
-                text: "👋 Hey! I'm paging a live agent for you now — please stay on this chat and we'll be right with you. Meanwhile you can still ask me anything and I'll try to help.",
-              },
-            ]);
-          } catch { /* silent — user can still type */ }
-        })();
-      }
+      // Home is the default view for signed-in users — they can browse quick
+      // help / past sessions before jumping into a chat.
     }
     // eslint-disable-next-line
   }, [open, user]);
 
-  // Ensure a session_id exists before any upload
+  // Ensure a session_id exists before any upload.
+  // Signed-in users ALWAYS use the same session (`ai-user-<username>`), so
+  // their conversation is a single continuous thread — never split, never
+  // reset by the browser closing.
   const ensureSession = () => {
+    if (user && (!sessionIdRef.current || !sessionIdRef.current.startsWith("ai-user-"))) {
+      sessionIdRef.current = `ai-user-${user.username.toLowerCase()}`;
+    }
     if (!sessionIdRef.current) {
       sessionIdRef.current = `ai-guest-${Math.random().toString(36).slice(2, 10)}`;
     }
     return sessionIdRef.current;
   };
+  // Warm the pinned session as soon as the user is known
+  useEffect(() => { if (user) ensureSession(); /* eslint-disable-next-line */ }, [user]);
 
   const openFilePicker = () => {
     if (uploading || sending) return;
@@ -630,9 +622,17 @@ export default function AIWidget({ open, onOpenChange }) {
           </button>
         </div>
 
-        {/* Tab bar — signed-in users get access to their past conversations */}
-        {user && (
+        {/* Tab bar — hidden until user is inside an active chat/history view.
+            The Home view is Crisp-style clean: only the "Send us a message" card. */}
+        {activeTab !== "home" && (
           <div className="flex items-center gap-1 px-2 pt-2 bg-[#050505] border-b border-white/5" data-testid="ai-widget-tabs">
+            <button
+              onClick={() => setActiveTab("home")}
+              data-testid="ai-tab-home"
+              className={`px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-t-sm transition text-white/40 hover:text-white/70`}
+            >
+              ← Back
+            </button>
             <button
               onClick={() => setActiveTab("chat")}
               data-testid="ai-tab-chat"
@@ -640,27 +640,81 @@ export default function AIWidget({ open, onOpenChange }) {
             >
               Chat
             </button>
-            <button
-              onClick={() => { setActiveTab("history"); loadPastSessions(); }}
-              data-testid="ai-tab-history"
-              className={`px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-t-sm transition ${activeTab === "history" ? "text-white bg-[#1a1525] border-t border-x border-white/10" : "text-white/40 hover:text-white/70"}`}
-            >
-              Previous
-            </button>
+            {user && (
+              <button
+                onClick={() => { setActiveTab("history"); loadPastSessions(); }}
+                data-testid="ai-tab-history"
+                className={`px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-t-sm transition ${activeTab === "history" ? "text-white bg-[#1a1525] border-t border-x border-white/10" : "text-white/40 hover:text-white/70"}`}
+              >
+                Previous
+              </button>
+            )}
             <div className="ml-auto pr-2 pb-0.5">
               <button
                 onClick={reset}
                 data-testid="ai-widget-start-new"
                 className="text-[9px] uppercase tracking-widest font-black text-emerald-300 hover:text-emerald-200 px-2 py-1 rounded-sm hover:bg-emerald-500/10 whitespace-nowrap"
               >
-                + Start new conversation
+                + Start new
               </button>
             </div>
           </div>
         )}
 
         {/* Messages */}
-        {activeTab === "history" && user ? (
+        {activeTab === "home" ? (
+          <div className="flex-1 overflow-y-auto bg-gradient-to-b from-[#0d2b12] to-[#050505] p-4 flex flex-col" data-testid="ai-widget-home-view">
+            {/* Big "Send us a message" card — the only marquee CTA, Crisp-style */}
+            <button
+              onClick={async () => {
+                setActiveTab("chat");
+                if (user) {
+                  const sid = ensureSession();
+                  try {
+                    const r = await authedApi().get(`/ai/session/${encodeURIComponent(sid)}/messages`);
+                    const items = (r.data.messages || []).map((m) => ({
+                      role: m.role === "user" ? "user" : m.role === "admin" ? "admin" : "assistant",
+                      text: m.text,
+                    }));
+                    if (items.length) setMessages(items);
+                  } catch { /* new session — no history yet */ }
+                  setMessages((prev) => [
+                    ...prev,
+                    { role: "system", text: "🔄 You've been transferred to a live operator. Any staff on-shift will jump in shortly." },
+                  ]);
+                  if (handoverState === "none" && !humanTakeover) {
+                    try {
+                      await api.post("/ai/request-handover", {
+                        session_id: sid,
+                        reason: "clicked_send_us_a_message",
+                      });
+                      setHandoverState("waiting");
+                    } catch { /* silent */ }
+                  }
+                }
+              }}
+              data-testid="ai-home-send-message"
+              className="w-full bg-white/95 hover:bg-white text-black rounded-xl px-4 py-4 flex items-center justify-between gap-3 shadow-lg transition group"
+            >
+              <div className="text-left flex-1">
+                <div className="font-black text-base leading-tight">Send us a message</div>
+                <div className="text-xs text-black/60 mt-0.5">We typically reply in a few minutes</div>
+              </div>
+              <Send className="w-4 h-4 text-black/60 group-hover:text-black transition shrink-0" />
+            </button>
+
+            {/* Signed-in users get an unobtrusive link to previous conversations */}
+            {user && (
+              <button
+                onClick={() => { setActiveTab("history"); loadPastSessions(); }}
+                data-testid="ai-home-open-history"
+                className="mt-4 text-[10px] uppercase tracking-widest text-emerald-300/70 hover:text-emerald-200 font-bold self-start"
+              >
+                See previous conversations →
+              </button>
+            )}
+          </div>
+        ) : activeTab === "history" && user ? (
           <div className="flex-1 overflow-y-auto px-3 py-4 space-y-2 bg-gradient-to-b from-[#0d0a14] to-[#080510]" data-testid="ai-history-panel">
             <div className="text-[10px] uppercase tracking-widest text-white/50 mb-2 px-1">Previous conversations</div>
             {loadingHistory ? (
@@ -901,7 +955,8 @@ export default function AIWidget({ open, onOpenChange }) {
           </div>
         )}
 
-        {/* Input */}
+        {/* Input — hidden when the "Home" welcome view is showing */}
+        {activeTab !== "home" && (
         <form
           onSubmit={send}
           className="border-t border-white/10 p-2.5 flex items-center gap-2 bg-[#050505]"
@@ -964,6 +1019,7 @@ export default function AIWidget({ open, onOpenChange }) {
             {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
           </button>
         </form>
+        )}
         {/* Signature */}
         <div className="bg-[#050505] border-t border-white/5 px-3 py-1.5 text-center" data-testid="ai-widget-credit">
           <span className="text-[9px] uppercase tracking-widest text-white/30 font-bold">
