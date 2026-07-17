@@ -49,8 +49,10 @@ import SportsView from "./SportsView";
 import GuestLanding from "./GuestLanding";
 import GoalNotifier from "@/components/GoalNotifier";
 import LiveChatFAB from "@/components/LiveChatFAB";
+import BrandLoader from "@/components/BrandLoader";
 import NewsModal from "@/components/NewsModal";
 import { LanguagePicker, useLang } from "@/context/LanguageContext";
+import { CurrencyPicker, useCurrency } from "@/context/CurrencyContext";
 import { toast } from "sonner";
 
 const POLL_MS = 3000;
@@ -58,6 +60,7 @@ const POLL_MS = 3000;
 export default function ClientDashboard() {
   const { user, loading, logout, authedApi } = useAuth();
   const { t } = useLang();
+  const { format: fmtMoney } = useCurrency();
   const nav = useNavigate();
   const [stats, setStats] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -435,8 +438,8 @@ export default function ClientDashboard() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#0a1a0a]">
-        <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+      <div className="min-h-screen flex items-center justify-center bg-[#0a1a0a]" data-testid="dashboard-loading">
+        <BrandLoader label="Loading dashboard" />
       </div>
     );
   }
@@ -445,7 +448,7 @@ export default function ClientDashboard() {
   }
 
   return (
-    <div className={`min-h-screen text-white ${useNewLayout ? "bg-[#0a1a0a]" : "bg-[#0a0a14]"}`}>
+    <div className={`min-h-screen flex flex-col text-white ${useNewLayout ? "bg-[#0a1a0a]" : "bg-[#0a0a14]"}`}>
       {useNewLayout ? (
         /* GREEN TOP-NAV shell — no sidebar */
         <header className="bg-[#0d2b12] sticky top-0 z-20 shadow-lg shadow-emerald-900/40 border-b border-emerald-500/20">
@@ -536,7 +539,7 @@ export default function ClientDashboard() {
               {/* Balance + inline Buy button — visible on all sizes */}
               <div className="flex items-center gap-1.5 px-2 md:px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/30" data-testid="topbar-balance">
                 <CreditCard className="w-3.5 h-3.5 text-emerald-300 hidden sm:inline-block" />
-                <span className="text-xs md:text-sm font-bold text-emerald-300 whitespace-nowrap">${balance.toFixed(2)}</span>
+                <span className="text-xs md:text-sm font-bold text-emerald-300 whitespace-nowrap">{fmtMoney(balance)}</span>
                 <button
                   onClick={() => changeView("buy")}
                   data-testid="topbar-buy-btn"
@@ -601,6 +604,7 @@ export default function ClientDashboard() {
                 Classic
               </button>
               <div className="hidden md:block"><LanguagePicker compact /></div>
+              <div className="hidden md:block"><CurrencyPicker compact /></div>
               {user.role === "owner" && (
                 <a href="/admin" data-testid="nav-admin-green" title="Open admin panel"
                    className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition shadow-sm shadow-emerald-500/40">
@@ -738,7 +742,7 @@ export default function ClientDashboard() {
       </header>
       )}
 
-      <div className={useNewLayout ? "px-4 md:px-6 pt-4" : "flex"}>
+      <div className={useNewLayout ? "flex-1 px-4 md:px-6 pt-4" : "flex flex-1"}>
         {/* SIDEBAR — only for classic layout */}
         {!useNewLayout && (
         <aside
@@ -815,10 +819,7 @@ export default function ClientDashboard() {
         <main className={useNewLayout ? "theme-green px-0 py-4 md:py-6" : "flex-1 px-4 md:px-8 lg:px-10 py-6 md:py-10 pb-24 lg:pb-10"}>
           {viewLoading ? (
             <div className="flex items-center justify-center py-24" data-testid="view-preloader">
-              <div className="flex flex-col items-center gap-3">
-                <div className="w-10 h-10 border-2 border-white/10 border-t-[#3b82f6] rounded-full animate-spin" />
-                <div className="text-xs text-white/40 uppercase tracking-widest">Loading</div>
-              </div>
+              <BrandLoader label="Loading" size={72} />
             </div>
           ) : (
             <div className={`animate-in fade-in duration-200 ${useNewLayout && view !== "home" ? "px-4 md:px-6" : ""}`}>
@@ -867,9 +868,16 @@ export default function ClientDashboard() {
           )}
         </main>
         {/* Dashboard footer — global copyright / credits */}
-        <footer className="border-t border-white/5 bg-black/40 py-3 px-4 md:px-8 text-center" data-testid="dashboard-footer">
-          <div className="text-[10px] uppercase tracking-widest text-white/40">
-            © {new Date().getFullYear()} BetterSocial · Development by <span className="text-emerald-300 font-bold">BK</span> &amp; CEO <span className="text-emerald-300 font-bold">Sinester</span>
+        <footer className="border-t border-emerald-500/20 bg-[#0d2b12] py-4 px-4 md:px-8 text-center" data-testid="dashboard-footer">
+          <div className="max-w-7xl mx-auto flex items-center justify-center gap-3 flex-wrap text-[10px] uppercase tracking-widest text-white/60">
+            <span className="inline-flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="font-bold">© {new Date().getFullYear()} BetterSocial</span>
+            </span>
+            <span className="text-emerald-500/40">·</span>
+            <span>
+              Development by <span className="text-emerald-300 font-bold">BK</span> &amp; CEO <span className="text-emerald-300 font-bold">Sinester</span>
+            </span>
           </div>
         </footer>
       </div>

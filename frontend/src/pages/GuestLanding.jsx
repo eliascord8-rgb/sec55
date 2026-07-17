@@ -4,6 +4,7 @@ import { Sparkles, Loader2, X, MessageCircle, ShoppingBag } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { useLang, LanguagePicker } from "@/context/LanguageContext";
+import { CurrencyPicker } from "@/context/CurrencyContext";
 import GoalNotifier from "@/components/GoalNotifier";
 import LiveChatFAB from "@/components/LiveChatFAB";
 
@@ -17,7 +18,7 @@ export default function GuestLanding() {
   const { t } = useLang();
 
   return (
-    <div className="min-h-screen text-white bg-[#0a1a0a] theme-green" data-testid="guest-landing">
+    <div className="min-h-screen flex flex-col text-white bg-[#0a1a0a] theme-green" data-testid="guest-landing">
       {/* Header */}
       <header className="bg-[#0d2b12] sticky top-0 z-20 shadow-lg shadow-emerald-900/40 border-b border-emerald-500/20">
         <div className="flex items-center h-16 px-4 md:px-8 gap-4">
@@ -32,6 +33,7 @@ export default function GuestLanding() {
           <div className="flex-1" />
           <div className="flex items-center gap-2">
             <LanguagePicker />
+            <CurrencyPicker />
             <button
               onClick={() => setAuthOpen("login")}
               data-testid="guest-signin-btn"
@@ -51,16 +53,23 @@ export default function GuestLanding() {
       </header>
 
       {/* Main preview */}
-      <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[280px_1fr_320px] gap-4 p-4 md:p-6">
+      <main className="flex-1 w-full max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[280px_1fr_320px] gap-4 p-4 md:p-6">
         <GuestOrdersFeed />
         <GuestWelcome onSignIn={() => setAuthOpen("login")} onSignUp={() => setAuthOpen("signup")} />
         <GuestPublicChat />
       </main>
 
-      {/* Guest footer — kept in sync with the signed-in dashboard footer */}
-      <footer className="border-t border-emerald-500/10 bg-black/30 py-3 px-4 md:px-8 text-center" data-testid="guest-footer">
-        <div className="text-[10px] uppercase tracking-widest text-white/40">
-          © {new Date().getFullYear()} BetterSocial · Development by <span className="text-emerald-300 font-bold">BK</span> &amp; CEO <span className="text-emerald-300 font-bold">Sinester</span>
+      {/* Guest footer — matches the signed-in dashboard footer 1:1 */}
+      <footer className="border-t border-emerald-500/20 bg-[#0d2b12] py-4 px-4 md:px-8 text-center" data-testid="guest-footer">
+        <div className="max-w-7xl mx-auto flex items-center justify-center gap-3 flex-wrap text-[10px] uppercase tracking-widest text-white/60">
+          <span className="inline-flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="font-bold">© {new Date().getFullYear()} BetterSocial</span>
+          </span>
+          <span className="text-emerald-500/40">·</span>
+          <span>
+            Development by <span className="text-emerald-300 font-bold">BK</span> &amp; CEO <span className="text-emerald-300 font-bold">Sinester</span>
+          </span>
         </div>
       </footer>
 
