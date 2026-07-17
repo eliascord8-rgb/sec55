@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 25 backend + frontend verified end-to-end. Backend 11/11 pytest passed (100%): (1) POST /client/live-sub/create rejects repeat_every_minutes=7 with 400, (2) rejects duration_days=5 with 400, (3) returns 403 when user lacks auto_live_enabled, (4) full happy path — after seeding manual TikTok Live service + PATCH custom_rate=1.0 + admin/users/{uid}/auto-live enabled + adjust-balance +$50 — /live-sub/create returns 200 with subscription.repeat_every_minutes=5, duration_days=7, status='active', first_order_id may be None (fine), (5) /live-sub/my lists the new sub with repeat_every_minutes:5, (6) cancel → 200 and status becomes 'cancelled', (7) second cancel → 404, (8) /admin/addons still has auto_live @ $250, (9) /ai/my-sessions returns {sessions:[]}, (10) /ai/session/nonexistent/messages → 404, (11) /ai/request-handover with session_id='iter25-test' returns matching session_id. Frontend all testids verified: guest-footer and dashboard-footer both contain 'BK' and 'Sinester'; dashboard-ai-fab opens the widget exposing ai-widget-tabs, ai-tab-chat, ai-tab-history, ai-widget-start-new, ai-widget-credit; clicking ai-tab-history renders ai-history-panel ('No past conversations yet'); on Purchase view selecting the TikTok Live Stream Views service reveals buy-sub-toggle → activating it exposes buy-sub-panel with buy-sub-username, buy-sub-repeat (options [2,5,10,60]), buy-sub-days (7/14/30/60/90/365) and buy-sub-confirm whose label reads 'Activate Auto-Live · 7 days · every 5min'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Purchase → Auto-Live setup", "issues": ["React hydration warning: <span> child of <option> in the buy-sub-repeat/buy-sub-days selects (\"In HTML, %s cannot be a child of <%s>\"). Non-blocking but should remove the styled <span> inside <option> elements at ClientDashboard.jsx around lines 3064-3080."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter25_live_sub.py",
+    "/app/test_reports/pytest/iter25_results.xml"
+  ],
+  "action_items": [
+    "Optional: remove <span> children inside <option> elements to silence the React hydration warning on the Buy → Auto-Live panel."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~5674 lines — still growing; overdue to split live-sub, addons, admin sub-routers into their own modules.",
+    "ClientDashboard.jsx > 4000 lines — BuyView, LiveOrdersView etc. should be extracted.",
+    "/api/client/live-sub/create fires the FIRST provider order inside the request path (place_smm_order) with only try/except swallow — HTTP 200 returns even when provider fails. Consider surfacing first_order_id=null + a warning field so the UI can show a status hint."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter25_live_sub.py"],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100% (all requested testids present, options + confirm text correct)"},
+  "test_credentials": "testbugfix1/password1 works. Admin secret /admin?haha123 works. Owner Balkin/Dennis123.@@ works.",
+  "seed_data_creation": "Created a manual TikTok Live service (name='TikTok Live Views TEST', category='TikTok Live', custom_rate patched to 1.0) via /admin/services/manual + PATCH — cleaned up in fixture teardown. auto_live_enabled left ON for testbugfix1 after test. Balance topped +$50 to testbugfix1 via admin adjust-balance (not reverted).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reusable pytest at /app/backend/tests/test_iter25_live_sub.py. Manual TikTok Live service creation pattern: POST /api/admin/services/manual (creates with custom_rate=0), then PATCH /api/admin/services/{sid} with {custom_rate: 1.0}. Manual services default min=1, max=1 (ManualServiceCreate schema doesn't expose them) so quantity_per_burst MUST be 1 for manual TikTok Live subs in tests. To grant auto_live to a user: POST /api/admin/users/{uid}/auto-live {enabled:true} — this also makes /api/client/addons/mine return 'auto_live' in owned array (that's what drives frontend ownsAutoLive). Frontend Buy → Auto-Live panel only appears when service name/category contains 'live' AND ownsAutoLive is true. Service card testids are `buy-svc-<service_id>`, e.g. buy-svc-7242.",
+  "rca of the issue": "N/A — feature verification, everything green."
+}

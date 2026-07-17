@@ -1085,6 +1085,85 @@ async def ai_poll(request: Request, session_id: str, since: Optional[str] = None
     }
 
 
+# ---------------- Signed-in user: past AI sessions ----------------
+
+@ai_router.get("/my-sessions")
+async def ai_my_sessions(user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """List AI chat sessions belonging to the current signed-in user, newest first.
+    Powers the 'Previous conversations' tab in the AI widget."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    # `identified_as` stores the username/email that was used to identify the
+    # session — for signed-in users we set it to their username.
+    q = {"$or": [
+        {"user_id": user.id},
+        {"identified_user_id": user.id},
+        {"identified_as": {"$regex": f"^{re.escape(user.username)}$", "$options": "i"}},
+    ]}
+    cursor = db.ai_sessions.find(
+        q,
+        {"_id": 0, "session_id": 1, "created_at": 1, "last_activity_at": 1, "identified_as": 1, "status": 1, "needs_handover": 1},
+    ).sort("last_activity_at", -1).limit(30)
+    sessions = await cursor.to_list(30)
+    if not sessions:
+        # Fallback: some legacy sessions were only tagged by client_id from browser storage
+        return {"sessions": []}
+    # Add message count + preview for each
+    out = []
+    for s in sessions:
+        sid = s.get("session_id")
+        if not sid:
+            continue
+        count = await db.ai_chat_messages.count_documents({"session_id": sid})
+        first = await db.ai_chat_messages.find_one(
+            {"session_id": sid, "role": "user"},
+            {"_id": 0, "text": 1, "created_at": 1},
+            sort=[("created_at", 1)],
+        )
+        last = await db.ai_chat_messages.find_one(
+            {"session_id": sid},
+            {"_id": 0, "text": 1, "created_at": 1},
+            sort=[("created_at", -1)],
+        )
+        out.append({
+            "session_id": sid,
+            "created_at": s.get("created_at") or (first or {}).get("created_at"),
+            "last_activity_at": s.get("last_activity_at") or (last or {}).get("created_at"),
+            "message_count": count,
+            "preview": ((first or {}).get("text") or "")[:120],
+            "status": s.get("status") or "active",
+            "needs_handover": bool(s.get("needs_handover")),
+        })
+    return {"sessions": out}
+
+
+@ai_router.get("/session/{session_id}/messages")
+async def ai_session_messages(
+    session_id: str,
+    user: CurrentUser = Depends(current_user_dep),
+    request: Request = None,
+):
+    """Full transcript of a past session — only returned if it belongs to the current user."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    sess = await db.ai_sessions.find_one(
+        {"session_id": session_id},
+        {"_id": 0, "user_id": 1, "identified_as": 1, "identified_user_id": 1},
+    )
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    is_mine = (
+        sess.get("user_id") == user.id
+        or sess.get("identified_user_id") == user.id
+        or (sess.get("identified_as") or "").lower() == user.username.lower()
+    )
+    if not is_mine:
+        raise HTTPException(status_code=403, detail="Not your conversation")
+    items = await db.ai_chat_messages.find(
+        {"session_id": session_id},
+        {"_id": 0, "id": 1, "role": 1, "text": 1, "created_at": 1, "kind": 1},
+    ).sort("created_at", 1).to_list(1000)
+    return {"messages": items, "session_id": session_id}
+
+
 # ---------------- Public: offline contact form ----------------
 
 class OfflineContactRequest(BaseModel):

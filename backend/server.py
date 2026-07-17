@@ -2102,8 +2102,10 @@ async def get_theme_pref(user: CurrentUser = Depends(current_user_dep)):
 # it places an order using the buyer's balance. When offline / balance depleted,
 # it skips silently.
 
-TIKTOK_CHECK_INTERVAL_SEC = 300         # 5 minutes — how often we PING TikTok
-TIKTOK_REPEAT_INTERVAL_SEC = 600        # 10 minutes — minimum gap between order bursts
+# Fixed poll cadence — we check TikTok every 60s so a re-broadcast is picked
+# up quickly. The user picks how often to actually place an order.
+TIKTOK_CHECK_INTERVAL_SEC = 60          # 1 minute — how often we PING TikTok live-status
+TIKTOK_ALLOWED_REPEAT_MINUTES = [2, 5, 10, 60]
 LIVE_SUB_ALLOWED_DAYS = [7, 14, 30, 60, 90, 365]
 
 
@@ -2142,12 +2144,15 @@ class LiveSubCreate(BaseModel):
     tiktok_username: str = Field(..., min_length=1, max_length=80)
     quantity_per_burst: int = Field(..., ge=1, le=1_000_000)
     duration_days: int
+    repeat_every_minutes: int = Field(default=5, description="How often to place a new order while the target is live (2, 5, 10 or 60 minutes)")
 
 
 @client_router.post("/live-sub/create")
 async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(current_user_dep)):
     if body.duration_days not in LIVE_SUB_ALLOWED_DAYS:
         raise HTTPException(status_code=400, detail=f"Duration must be one of {LIVE_SUB_ALLOWED_DAYS}")
+    if body.repeat_every_minutes not in TIKTOK_ALLOWED_REPEAT_MINUTES:
+        raise HTTPException(status_code=400, detail=f"Repeat interval must be one of {TIKTOK_ALLOWED_REPEAT_MINUTES} minutes")
     # Auto-live is gated per-account — an admin has to flip it on before use.
     user_doc = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1})
     if not (user_doc or {}).get("auto_live_enabled"):
@@ -2165,27 +2170,27 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
     if rate <= 0:
         raise HTTPException(status_code=400, detail="Service price not set")
     charge_per_burst = round((rate * body.quantity_per_burst) / 1000.0, 4)
-    # We reserve the first burst's charge as an availability guarantee. The
-    # worker deducts from balance on each subsequent burst — no upfront lockup.
     balance = await _get_user_balance(user.id)
     if balance < charge_per_burst:
         raise HTTPException(status_code=402, detail=f"Need at least ${charge_per_burst:.2f} in balance to start.")
     now = datetime.now(timezone.utc)
+    handle = body.tiktok_username.strip().lstrip("@")
     doc = {
         "id": str(uuid.uuid4()),
         "user_id": user.id,
         "username": user.username,
-        "tiktok_username": body.tiktok_username.strip().lstrip("@"),
+        "tiktok_username": handle,
         "service_id": body.service_id,
         "service_name": svc.get("custom_name") or svc.get("name") or "",
         "provider_id": svc.get("provider_id"),
         "quantity_per_burst": body.quantity_per_burst,
         "charge_per_burst": charge_per_burst,
         "duration_days": body.duration_days,
+        "repeat_every_minutes": body.repeat_every_minutes,
         "starts_at": now.isoformat(),
         "expires_at": (now + timedelta(days=body.duration_days)).isoformat(),
-        "next_check_at": now.isoformat(),  # eligible immediately
-        "last_check_at": None,
+        "next_check_at": (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat(),
+        "last_check_at": now.isoformat(),
         "last_burst_at": None,
         "status": "active",
         "total_bursts": 0,
@@ -2193,8 +2198,53 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
         "created_at": now.isoformat(),
     }
     await db.live_subscriptions.insert_one(doc.copy())
+
+    # Fire the FIRST order immediately (regardless of live status) so the user
+    # gets a concrete confirmation the subscription is working. The recurring
+    # gate kicks in after this initial burst.
+    try:
+        resp = await place_smm_order(
+            body.service_id,
+            f"https://www.tiktok.com/@{handle}/live",
+            body.quantity_per_burst,
+            provider_id=svc.get("provider_id"),
+        )
+        smm_order_id = resp.get("order")
+        await db.orders.insert_one({
+            "id": str(uuid.uuid4()),
+            "smm_order_id": smm_order_id,
+            "service_id": body.service_id,
+            "service_name": svc.get("custom_name") or svc.get("name") or "",
+            "link": f"https://www.tiktok.com/@{handle}/live",
+            "quantity": body.quantity_per_burst,
+            "charge": charge_per_burst,
+            "customer_email": "",
+            "user_id": user.id,
+            "username": user.username,
+            "payment_method": "balance",
+            "source": "auto_live",
+            "status": "Pending",
+            "created_at": now.isoformat(),
+            "provider_id": svc.get("provider_id"),
+            "subscription_id": doc["id"],
+        })
+        await db.live_subscriptions.update_one(
+            {"id": doc["id"]},
+            {
+                "$set": {"last_burst_at": now.isoformat()},
+                "$inc": {"total_bursts": 1, "total_spent": charge_per_burst},
+            },
+        )
+        doc["last_burst_at"] = now.isoformat()
+        doc["total_bursts"] = 1
+        doc["total_spent"] = charge_per_burst
+        first_order_id = smm_order_id
+    except Exception as e:
+        logger.warning("[livesub] initial burst failed for sub=%s: %s", doc["id"], e)
+        first_order_id = None
+
     doc.pop("_id", None)
-    return {"ok": True, "subscription": doc}
+    return {"ok": True, "subscription": doc, "first_order_id": first_order_id}
 
 
 @client_router.get("/live-sub/my")
@@ -2253,44 +2303,43 @@ async def _live_sub_worker_loop():
                     logger.exception("[livesub] burst failed for sub=%s: %s", sub.get("id"), e)
         except Exception as e:
             logger.exception("[livesub] worker loop error: %s", e)
-        await asyncio.sleep(60)  # loop wakes every minute; per-sub gate is `next_check_at`
+        await asyncio.sleep(30)  # loop wakes every 30s; per-sub gate is `next_check_at` (default 60s)
 
 
 async def _process_live_sub_burst(sub: dict):
-    """Called when the sub's `next_check_at` is due. Ping TikTok, and if live
-    AND at least 10 min since last burst, fire one order. Otherwise reschedule
-    the next check without ordering."""
+    """Called every 60s while the sub is active. Ping TikTok; if the target
+    is currently live AND at least `repeat_every_minutes` have passed since the
+    last burst, fire one order. Otherwise reschedule the next check for
+    another 60 seconds."""
     now = datetime.now(timezone.utc)
-    # Always record this check
+    # Always record this check + schedule the NEXT poll 60s from now. The
+    # scheduling happens up-front so no matter what path we take below, the
+    # sub always advances forward.
+    default_next = (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat()
     await db.live_subscriptions.update_one(
-        {"id": sub["id"]}, {"$set": {"last_check_at": now.isoformat()}}
+        {"id": sub["id"]},
+        {"$set": {"last_check_at": now.isoformat(), "next_check_at": default_next}},
     )
+    repeat_every_sec = int(sub.get("repeat_every_minutes") or 5) * 60
     is_live = await _is_tiktok_user_live(sub["tiktok_username"])
     if not is_live:
-        # Offline — check again in 5 min
-        next_at = (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat()
-        await db.live_subscriptions.update_one(
-            {"id": sub["id"]}, {"$set": {"next_check_at": next_at}}
-        )
+        # Offline — nothing to do. Next tick in 60s. If they restart, we pick up automatically.
         return
-    # Live — but respect the 10-minute repeat gate so we don't spam
+    # Live — respect the user-selected repeat gate so we don't spam
     last_burst_iso = sub.get("last_burst_at")
     if last_burst_iso:
         try:
             last_burst = datetime.fromisoformat(last_burst_iso.replace("Z", "+00:00"))
             elapsed = (now - last_burst).total_seconds()
         except Exception:
-            elapsed = TIKTOK_REPEAT_INTERVAL_SEC + 1
-        if elapsed < TIKTOK_REPEAT_INTERVAL_SEC:
-            # Still inside the 10-min window — recheck when the window would close
-            wait_left = TIKTOK_REPEAT_INTERVAL_SEC - int(elapsed)
-            next_at = (now + timedelta(seconds=max(wait_left, 60))).isoformat()
-            await db.live_subscriptions.update_one(
-                {"id": sub["id"]}, {"$set": {"next_check_at": next_at}}
+            elapsed = repeat_every_sec + 1
+        if elapsed < repeat_every_sec:
+            logger.info(
+                "[livesub] sub %s live, %ss/%ss since last burst — waiting",
+                sub["id"], int(elapsed), repeat_every_sec,
             )
-            logger.info("[livesub] sub %s live but only %ss since last burst — waiting", sub["id"], int(elapsed))
             return
-    # Cleared the 10-min gate. Fire an order.
+    # Cleared the repeat gate. Fire an order.
     balance = await _get_user_balance(sub["user_id"])
     charge = float(sub.get("charge_per_burst") or 0)
     if balance < charge:
@@ -2338,8 +2387,9 @@ async def _process_live_sub_burst(sub: dict):
         {
             "$set": {
                 "last_burst_at": now.isoformat(),
-                # Next check aligns to the 10-min repeat window
-                "next_check_at": (now + timedelta(seconds=TIKTOK_REPEAT_INTERVAL_SEC)).isoformat(),
+                # Next poll happens in 60 seconds regardless — the per-sub
+                # repeat gate above guards the actual ordering cadence.
+                "next_check_at": (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat(),
             },
             "$inc": {"total_bursts": 1, "total_spent": charge},
         },
@@ -2347,10 +2397,15 @@ async def _process_live_sub_burst(sub: dict):
     # Announce to the public chat as a discreet system message (username masked,
     # never reveals the buyer). The dashboard polls public-chat, so all users
     # see a small live indicator on the sidebar — cheap social-proof signal.
+    # We announce on the FIRST worker-triggered burst per sub (i.e. the first
+    # time the target has been detected live after the sub was created).
     try:
         masked_buyer = _mask_username(sub.get("username") or "")
-        first_burst = int(sub.get("total_bursts") or 0) == 0
-        if first_burst:
+        # `sub` was fetched BEFORE this burst's increment. total_bursts == 1
+        # means the create-time initial burst has already happened but this
+        # is the first live-detected refill.
+        already_announced = bool(sub.get("live_notified"))
+        if not already_announced:
             await db.public_chat.insert_one({
                 "id": str(uuid.uuid4()),
                 "user_id": None,
@@ -2360,6 +2415,7 @@ async def _process_live_sub_burst(sub: dict):
                 "kind": "live_notify",
                 "created_at": now.isoformat(),
             })
+            await db.live_subscriptions.update_one({"id": sub["id"]}, {"$set": {"live_notified": True}})
     except Exception:
         pass
     logger.info("[livesub] burst OK sub=%s @%s qty=%s order=%s", sub["id"], sub["tiktok_username"], sub["quantity_per_burst"], resp.get("order"))
