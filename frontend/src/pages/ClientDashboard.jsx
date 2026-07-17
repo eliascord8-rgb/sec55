@@ -827,6 +827,12 @@ export default function ClientDashboard() {
             </div>
           )}
         </main>
+        {/* Dashboard footer — global copyright / credits */}
+        <footer className="border-t border-white/5 bg-black/40 py-3 px-4 md:px-8 text-center" data-testid="dashboard-footer">
+          <div className="text-[10px] uppercase tracking-widest text-white/40">
+            © {new Date().getFullYear()} BetterSocial · Development by <span className="text-emerald-300 font-bold">BK</span> &amp; CEO <span className="text-emerald-300 font-bold">Sinester</span>
+          </div>
+        </footer>
       </div>
 
       {/* Better Social AI floating widget */}
@@ -2331,7 +2337,7 @@ function LiveOrdersView({ authedApi, ownsAutoLive, onGoAddons, onGoBuy }) {
           <h1 className="font-display text-3xl md:text-4xl font-black tracking-tight flex items-center gap-2">
             <Zap className="w-7 h-7 text-fuchsia-400" /> Live orders
           </h1>
-          <p className="text-white/50 text-sm mt-2">Every 5 min we check TikTok. When live, a fresh order is placed — repeated every 10 minutes.</p>
+          <p className="text-white/50 text-sm mt-2">TikTok checked every 60s. Orders re-fire on your chosen interval — only while live.</p>
         </div>
         <button
           onClick={onGoBuy}
@@ -2375,7 +2381,7 @@ function LiveOrdersView({ authedApi, ownsAutoLive, onGoAddons, onGoBuy }) {
                       <span className="w-2 h-2 rounded-full bg-fuchsia-400 animate-pulse" />
                       <a href={`https://www.tiktok.com/@${s.tiktok_username}/live`} target="_blank" rel="noopener noreferrer" className="font-bold text-fuchsia-200 hover:underline">@{s.tiktok_username}</a>
                     </div>
-                    <div className="text-xs text-white/60 mt-1">{s.service_name} — <span className="font-mono">{s.quantity_per_burst}</span> per burst · ${(s.charge_per_burst || 0).toFixed(3)} each</div>
+                    <div className="text-xs text-white/60 mt-1">{s.service_name} — <span className="font-mono">{s.quantity_per_burst}</span> per burst · every <span className="text-fuchsia-300 font-bold">{s.repeat_every_minutes || 5}min</span> · ${(s.charge_per_burst || 0).toFixed(3)} each</div>
                   </div>
                   <button
                     onClick={() => cancel(s.id)}
@@ -2589,6 +2595,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
   const [subMode, setSubMode] = useState(false);
   const [subUsername, setSubUsername] = useState("");
   const [subDays, setSubDays] = useState(7);
+  const [subRepeatMins, setSubRepeatMins] = useState(5);
   const [subSubmitting, setSubSubmitting] = useState(false);
   const [mySubs, setMySubs] = useState([]);
   // Saved bulk-target lists
@@ -2665,8 +2672,10 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
         tiktok_username: subUsername.trim().replace(/^@/, ""),
         quantity_per_burst: Number(qty),
         duration_days: subDays,
+        repeat_every_minutes: subRepeatMins,
       });
-      toast.success(`✅ Auto-live activated for @${r.data.subscription.tiktok_username} (${subDays} days)`);
+      const firstNote = r.data.first_order_id ? ` — first order #${r.data.first_order_id} placed now.` : "";
+      toast.success(`✅ Auto-live activated for @${r.data.subscription.tiktok_username} (${subDays} days, every ${subRepeatMins} min)${firstNote}`);
       setSubUsername("");
       loadMySubs();
       reloadBalance();
@@ -3031,9 +3040,9 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                 <div className="text-[11px] uppercase tracking-widest text-fuchsia-300 font-bold">Auto-Live setup</div>
               </div>
               <p className="text-xs text-white/60">
-                We&apos;ll check the TikTok profile every 5 minutes. Each time they&apos;re live, we place a fresh order for <span className="text-fuchsia-200 font-bold">{qty || 0}</span> {selected?.name || "unit(s)"}, repeating every 10 minutes while the stream stays up. Balance is charged only per burst.
+                We check TikTok every <span className="text-fuchsia-200 font-bold">60 seconds</span>. Your first order fires the moment you activate. After that, we automatically place a new order for <span className="text-fuchsia-200 font-bold">{qty || 0}</span> {selected?.name || "unit(s)"} every <span className="text-fuchsia-200 font-bold">{subRepeatMins} minutes</span> — but only while your target is actually live. If they end the stream and go live again, the loop resumes automatically. Cancel anytime.
               </p>
-              <div className="grid sm:grid-cols-2 gap-3">
+              <div className="grid sm:grid-cols-3 gap-3">
                 <div>
                   <Label className="text-[11px] uppercase tracking-wider text-white/60">TikTok @username</Label>
                   <Input
@@ -3043,6 +3052,20 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                     placeholder="creatorhandle"
                     className="bg-[#1a1525] border-fuchsia-500/30 mt-1"
                   />
+                </div>
+                <div>
+                  <Label className="text-[11px] uppercase tracking-wider text-white/60">Repeat every</Label>
+                  <select
+                    data-testid="buy-sub-repeat"
+                    value={subRepeatMins}
+                    onChange={(e) => setSubRepeatMins(Number(e.target.value))}
+                    className="mt-1 w-full bg-[#1a1525] border border-fuchsia-500/30 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-fuchsia-400"
+                  >
+                    <option value={2} className="bg-[#0a1a0a]">Every 2 minutes</option>
+                    <option value={5} className="bg-[#0a1a0a]">Every 5 minutes</option>
+                    <option value={10} className="bg-[#0a1a0a]">Every 10 minutes</option>
+                    <option value={60} className="bg-[#0a1a0a]">Every 1 hour</option>
+                  </select>
                 </div>
                 <div>
                   <Label className="text-[11px] uppercase tracking-wider text-white/60">Duration</Label>
@@ -3059,8 +3082,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                 </div>
               </div>
               <div className="text-[11px] text-fuchsia-200/70 bg-black/30 rounded-md px-3 py-2">
-                Charged <span className="text-fuchsia-300 font-bold font-mono">${(Number(selected?.rate || 0) * Number(qty || 0) / 1000).toFixed(4)}</span> per burst.
-                We need at least this much in your balance to start.
+                Charged <span className="text-fuchsia-300 font-bold font-mono">${(Number(selected?.rate || 0) * Number(qty || 0) / 1000).toFixed(4)}</span> per burst · Expected max bursts: <span className="text-fuchsia-300 font-bold font-mono">{Math.max(1, Math.floor((subDays * 24 * 60) / subRepeatMins))}</span> if live 24/7. Balance is only debited while live.
               </div>
               <button
                 onClick={subscribe}
@@ -3069,7 +3091,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                 className="w-full py-3 rounded-md bg-fuchsia-500 hover:bg-fuchsia-400 text-white font-black text-sm uppercase tracking-wider transition disabled:opacity-40 inline-flex items-center justify-center gap-2"
               >
                 {subSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-                Activate Auto-Live for {subDays} days
+                Activate Auto-Live · {subDays} days · every {subRepeatMins}min
               </button>
               <button
                 onClick={onGoLive}

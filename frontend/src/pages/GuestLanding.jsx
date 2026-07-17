@@ -55,6 +55,13 @@ export default function GuestLanding() {
         <GuestPublicChat />
       </main>
 
+      {/* Guest footer — kept in sync with the signed-in dashboard footer */}
+      <footer className="border-t border-emerald-500/10 bg-black/30 py-3 px-4 md:px-8 text-center" data-testid="guest-footer">
+        <div className="text-[10px] uppercase tracking-widest text-white/40">
+          © {new Date().getFullYear()} BetterSocial · Development by <span className="text-emerald-300 font-bold">BK</span> &amp; CEO <span className="text-emerald-300 font-bold">Sinester</span>
+        </div>
+      </footer>
+
       {authOpen && <AuthModal mode={authOpen} onClose={() => setAuthOpen(null)} switchMode={setAuthOpen} />}
     </div>
   );

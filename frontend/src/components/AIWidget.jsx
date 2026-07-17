@@ -68,6 +68,10 @@ export default function AIWidget({ open, onOpenChange }) {
   const [staffTyping, setStaffTyping] = useState(false);
   const [muted, setMuted] = useState(false);
   const [banned, setBanned] = useState(false);
+  // Tab state — 'chat' vs 'history' (signed-in users only)
+  const [activeTab, setActiveTab] = useState("chat");
+  const [pastSessions, setPastSessions] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const fileInputRef = useRef(null);
   const endRef = useRef(null);
   const sessionIdRef = useRef(null);
@@ -478,6 +482,41 @@ export default function AIWidget({ open, onOpenChange }) {
     }
     sessionIdRef.current = null;
     lastPollAtRef.current = null;
+    setActiveTab("chat");
+  };
+
+  // Load the current user's past AI conversations (signed-in only)
+  const loadPastSessions = async () => {
+    if (!user || !authedApi) return;
+    setLoadingHistory(true);
+    try {
+      const r = await authedApi().get("/ai/my-sessions");
+      setPastSessions(r.data.sessions || []);
+    } catch {
+      setPastSessions([]);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  // Restore a past session into the chat window
+  const openPastSession = async (sid) => {
+    if (!user || !authedApi) return;
+    setLoadingHistory(true);
+    try {
+      const r = await authedApi().get(`/ai/session/${encodeURIComponent(sid)}/messages`);
+      const items = (r.data.messages || []).map((m) => ({
+        role: m.role === "user" ? "user" : m.role === "admin" ? "admin" : "assistant",
+        text: m.text,
+      }));
+      setMessages(items.length ? items : [GREETING]);
+      sessionIdRef.current = sid;
+      setActiveTab("chat");
+    } catch {
+      // ignore — fall back to current chat
+    } finally {
+      setLoadingHistory(false);
+    }
   };
 
   if (!open) return null;
@@ -519,11 +558,11 @@ export default function AIWidget({ open, onOpenChange }) {
           <div className="flex items-center gap-1">
             <button
               onClick={reset}
-              title="New chat"
-              data-testid="ai-widget-reset"
-              className="text-[10px] uppercase tracking-wider text-white/50 hover:text-white px-2 py-1 rounded-sm hover:bg-white/5"
+              title="Start a fresh conversation"
+              data-testid="ai-widget-new-chat"
+              className="text-[10px] uppercase tracking-wider text-white/60 hover:text-white px-2 py-1 rounded-sm hover:bg-white/5 whitespace-nowrap"
             >
-              Reset
+              + New chat
             </button>
             <button
               onClick={() => onOpenChange(false)}
@@ -544,11 +583,71 @@ export default function AIWidget({ open, onOpenChange }) {
           </div>
         </div>
 
+        {/* Tab bar — signed-in users get access to their past conversations */}
+        {user && (
+          <div className="flex items-center gap-1 px-2 pt-2 bg-[#050505] border-b border-white/5" data-testid="ai-widget-tabs">
+            <button
+              onClick={() => setActiveTab("chat")}
+              data-testid="ai-tab-chat"
+              className={`px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-t-sm transition ${activeTab === "chat" ? "text-white bg-[#1a1525] border-t border-x border-white/10" : "text-white/40 hover:text-white/70"}`}
+            >
+              Chat
+            </button>
+            <button
+              onClick={() => { setActiveTab("history"); loadPastSessions(); }}
+              data-testid="ai-tab-history"
+              className={`px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-t-sm transition ${activeTab === "history" ? "text-white bg-[#1a1525] border-t border-x border-white/10" : "text-white/40 hover:text-white/70"}`}
+            >
+              Previous
+            </button>
+            <div className="ml-auto pr-2 pb-0.5">
+              <button
+                onClick={reset}
+                data-testid="ai-widget-start-new"
+                className="text-[9px] uppercase tracking-widest font-black text-emerald-300 hover:text-emerald-200 px-2 py-1 rounded-sm hover:bg-emerald-500/10 whitespace-nowrap"
+              >
+                + Start new conversation
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Messages */}
-        <div
-          className="flex-1 overflow-y-auto px-3 py-4 space-y-3 bg-gradient-to-b from-[#0d0a14] to-[#080510]"
-          data-testid="ai-widget-messages"
-        >
+        {activeTab === "history" && user ? (
+          <div className="flex-1 overflow-y-auto px-3 py-4 space-y-2 bg-gradient-to-b from-[#0d0a14] to-[#080510]" data-testid="ai-history-panel">
+            <div className="text-[10px] uppercase tracking-widest text-white/50 mb-2 px-1">Previous conversations</div>
+            {loadingHistory ? (
+              <div className="flex items-center justify-center py-8"><Loader2 className="w-4 h-4 animate-spin text-white/50" /></div>
+            ) : pastSessions.length === 0 ? (
+              <div className="text-center text-xs text-white/40 py-8">
+                No past conversations yet. Start chatting — they&apos;ll show up here.
+              </div>
+            ) : (
+              pastSessions.map((s) => (
+                <button
+                  key={s.session_id}
+                  onClick={() => openPastSession(s.session_id)}
+                  data-testid={`ai-history-item-${s.session_id}`}
+                  className="w-full text-left bg-[#1a1525] hover:bg-[#251d33] border border-white/5 hover:border-white/15 rounded-sm px-3 py-2 transition group"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[10px] uppercase tracking-widest text-emerald-300/70 font-bold">
+                      {s.last_activity_at ? new Date(s.last_activity_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+                    </div>
+                    <div className="text-[9px] text-white/40 font-mono">{s.message_count} msg</div>
+                  </div>
+                  <div className="text-xs text-white/70 line-clamp-2 mt-0.5 group-hover:text-white">
+                    {s.preview || "(no user message yet)"}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        ) : (
+          <div
+            className="flex-1 overflow-y-auto px-3 py-4 space-y-3 bg-gradient-to-b from-[#0d0a14] to-[#080510]"
+            data-testid="ai-widget-messages"
+          >
           {messages.map((m, i) => (
             <div key={i}>
               <Bubble m={m} />
@@ -578,6 +677,7 @@ export default function AIWidget({ open, onOpenChange }) {
           )}
           <div ref={endRef} />
         </div>
+        )}
 
         {/* Success/Failure result */}
         {result && (
@@ -817,6 +917,12 @@ export default function AIWidget({ open, onOpenChange }) {
             {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
           </button>
         </form>
+        {/* Signature */}
+        <div className="bg-[#050505] border-t border-white/5 px-3 py-1.5 text-center" data-testid="ai-widget-credit">
+          <span className="text-[9px] uppercase tracking-widest text-white/30 font-bold">
+            Developed by <span className="text-white/60">BK</span> and <span className="text-white/60">Sinester</span>
+          </span>
+        </div>
       </div>
 
       <style>{`
