@@ -3315,26 +3315,28 @@ async def admin_send_dm_bulk(
 
 
 
-# ============ Weekly Spin Wheel ============
+# ============ Bi-weekly Spin Wheel ============
 
-SPIN_MIN_DEPOSIT = 50.0  # user must have at least $50 lifetime deposits to spin
+SPIN_MIN_DEPOSIT = 100.0  # user must have at least $100 lifetime deposits to spin
+SPIN_COOLDOWN_DAYS = 14
 # Weighted prizes: (amount, weight). Higher weight = more likely.
-# Odds engineered so the expected payout is ~$1.70 per spin (well below cost floor).
+# Odds engineered so the expected payout is very low — well below cost floor.
+# Jackpots are rare and small so users cannot farm winnings.
 SPIN_PRIZES = [
-    (1,  450),   # 45.00%
-    (2,  250),   # 25.00%
-    (3,  150),   # 15.00%
-    (4,   80),   #  8.00%
-    (5,   40),   #  4.00%
-    (6,   25),   #  2.50%
-    (40,   5),   #  0.50% JACKPOT (1 in 200)
+    (0.10, 500),   # 50.00%
+    (0.25, 250),   # 25.00%
+    (0.50, 150),   # 15.00%
+    (1.00,  70),   #  7.00%
+    (2.00,  25),   #  2.50%
+    (3.00,   4),   #  0.40%
+    (5.00,   1),   #  0.10% jackpot (1 in 1000)
 ]
 
 
 @api_router.get("/spin/status")
 async def spin_status(user: CurrentUser = Depends(current_user_dep)):
     """Returns eligibility + when the user last spun.
-    Eligible = lifetime approved deposits >= $50 AND hasn't spun in the last 7 days."""
+    Eligible = lifetime approved deposits >= $100 AND hasn't spun in the last 14 days."""
     total = await _user_deposits_total(user.id)
     eligible = total >= SPIN_MIN_DEPOSIT
     last = await db.spin_wheel.find_one({"user_id": user.id}, sort=[("created_at", -1)], projection={"_id": 0})
@@ -3343,9 +3345,9 @@ async def spin_status(user: CurrentUser = Depends(current_user_dep)):
     if last and last.get("created_at"):
         try:
             gap = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
-            if gap < 7 * 24 * 3600:
+            if gap < SPIN_COOLDOWN_DAYS * 24 * 3600:
                 can_spin = False
-                days_left = max(0, 7 - int(gap / 86400))
+                days_left = max(0, SPIN_COOLDOWN_DAYS - int(gap / 86400))
         except Exception:
             pass
     return {
@@ -3355,6 +3357,7 @@ async def spin_status(user: CurrentUser = Depends(current_user_dep)):
         "last_spin": last,
         "prizes": [p[0] for p in SPIN_PRIZES],
         "min_deposit": SPIN_MIN_DEPOSIT,
+        "cooldown_days": SPIN_COOLDOWN_DAYS,
         "total_deposits": round(total, 2),
         "amount_needed": max(0, round(SPIN_MIN_DEPOSIT - total, 2)),
     }
@@ -3362,8 +3365,9 @@ async def spin_status(user: CurrentUser = Depends(current_user_dep)):
 
 @api_router.post("/spin/spin")
 async def spin_wheel(user: CurrentUser = Depends(current_user_dep)):
-    """One free spin per week. Weighted RNG toward low prizes + rare $40 jackpot.
-    Only users with lifetime deposits >= $50 can spin."""
+    """One free spin every 14 days. Weighted RNG toward tiny prizes.
+    Only users with lifetime deposits >= $100 can spin — this cannot be a way
+    for users to farm money for free."""
     total = await _user_deposits_total(user.id)
     if total < SPIN_MIN_DEPOSIT:
         raise HTTPException(status_code=403, detail=f"You need at least ${SPIN_MIN_DEPOSIT:.0f} lifetime deposits to spin. You have ${total:.2f}.")
@@ -3371,8 +3375,8 @@ async def spin_wheel(user: CurrentUser = Depends(current_user_dep)):
     if last and last.get("created_at"):
         try:
             gap = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
-            if gap < 7 * 24 * 3600:
-                days_left = max(1, 7 - int(gap / 86400))
+            if gap < SPIN_COOLDOWN_DAYS * 24 * 3600:
+                days_left = max(1, SPIN_COOLDOWN_DAYS - int(gap / 86400))
                 raise HTTPException(status_code=429, detail=f"Come back in {days_left} day(s) for your next spin.")
         except HTTPException:
             raise
@@ -3409,11 +3413,123 @@ async def spin_wheel(user: CurrentUser = Depends(current_user_dep)):
         await db.public_chat.insert_one({
             "id": str(uuid.uuid4()),
             "user_id": user.id, "username": user.username, "role": user.role or "user",
-            "text": f"🎰 JACKPOT — just won ${prize} on the weekly spin!",
+            "text": f"🎰 JACKPOT — just won ${prize:.2f} on the spin wheel!",
             "kind": "jackpot",
             "created_at": now,
         })
-    return {"ok": True, "prize": prize, "jackpot": is_jackpot, "spin_id": spin_id, "next_spin_days": 7}
+    return {"ok": True, "prize": prize, "jackpot": is_jackpot, "spin_id": spin_id, "next_spin_days": SPIN_COOLDOWN_DAYS}
+
+
+# ============ Daily free bet — $0.80 from house, once per 24h ============
+DAILY_FREE_BET_AMOUNT = 0.80
+
+
+@api_router.get("/free-bet/status")
+async def free_bet_status(user: CurrentUser = Depends(current_user_dep)):
+    """Whether the user can claim today's free $0.80 bet credit."""
+    last = await db.free_bets.find_one({"user_id": user.id}, sort=[("created_at", -1)], projection={"_id": 0})
+    can_claim = True
+    hours_left = 0
+    if last and last.get("created_at"):
+        try:
+            gap = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
+            if gap < 24 * 3600:
+                can_claim = False
+                hours_left = max(1, 24 - int(gap / 3600))
+        except Exception:
+            pass
+    return {"can_claim": can_claim, "hours_left": hours_left, "amount": DAILY_FREE_BET_AMOUNT, "last_claim": last}
+
+
+@api_router.post("/free-bet/claim")
+async def free_bet_claim(user: CurrentUser = Depends(current_user_dep)):
+    """Credit the user with $0.80 free-bet balance, once per 24h. This is house
+    money — recorded separately so we can audit spending. It goes into normal
+    balance so users can immediately bet/order with it."""
+    last = await db.free_bets.find_one({"user_id": user.id}, sort=[("created_at", -1)])
+    if last and last.get("created_at"):
+        try:
+            gap = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
+            if gap < 24 * 3600:
+                hours_left = max(1, 24 - int(gap / 3600))
+                raise HTTPException(status_code=429, detail=f"Come back in {hours_left}h for your next free bet.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    now = datetime.now(timezone.utc).isoformat()
+    claim_id = str(uuid.uuid4())
+    await db.free_bets.insert_one({
+        "id": claim_id, "user_id": user.id, "username": user.username,
+        "amount": DAILY_FREE_BET_AMOUNT, "created_at": now,
+    })
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user.id, "username": user.username,
+        "amount": DAILY_FREE_BET_AMOUNT, "method": "house",
+        "status": "approved", "type": "free_bet",
+        "note": "Daily free bet — house-funded",
+        "created_at": now, "approved_at": now,
+    })
+    new_balance = await _get_user_balance(user.id)
+    return {"ok": True, "amount": DAILY_FREE_BET_AMOUNT, "balance": new_balance, "claim_id": claim_id}
+
+
+# ============ Sports (RapidAPI live football data) ============
+# Uses the user-provided RapidAPI key for free-api-live-football-data.  A
+# non-fatal timeout returns an empty payload so the UI can degrade gracefully.
+SPORTS_RAPID_KEY = os.environ.get("SPORTS_RAPID_KEY", "31215e25a5msh485e5613d28cd76p15b417jsna5b7f50de8ee")
+SPORTS_RAPID_HOST = "free-api-live-football-data.p.rapidapi.com"
+
+
+async def _rapid_get(path: str, params: dict = None):
+    url = f"https://{SPORTS_RAPID_HOST}{path}"
+    headers = {
+        "x-rapidapi-key": SPORTS_RAPID_KEY,
+        "x-rapidapi-host": SPORTS_RAPID_HOST,
+    }
+    async with httpx.AsyncClient(timeout=10) as c:
+        r = await c.get(url, headers=headers, params=params or {})
+        r.raise_for_status()
+        return r.json()
+
+
+@api_router.get("/sports/livescores")
+async def sports_livescores():
+    """Currently-live football matches."""
+    try:
+        data = await _rapid_get("/football-current-live")
+    except Exception as e:
+        logger.warning("[sports] livescores failed: %s", e)
+        return {"matches": [], "error": "sports_source_unavailable"}
+    resp = data.get("response") if isinstance(data, dict) else None
+    matches = (resp or {}).get("matches") if isinstance(resp, dict) else (resp or [])
+    return {"matches": matches or []}
+
+
+@api_router.get("/sports/upcoming")
+async def sports_upcoming():
+    """Football matches scheduled for tomorrow (upcoming fixtures)."""
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y%m%d")
+    try:
+        data = await _rapid_get("/football-get-matches-by-date", {"date": tomorrow})
+    except Exception as e:
+        logger.warning("[sports] upcoming failed: %s", e)
+        return {"matches": [], "error": "sports_source_unavailable"}
+    resp = data.get("response") if isinstance(data, dict) else None
+    matches = (resp or {}).get("matches") if isinstance(resp, dict) else (resp or [])
+    return {"matches": matches or []}
+
+
+@api_router.get("/sports/leagues")
+async def sports_leagues():
+    """Popular football leagues (for browsing)."""
+    try:
+        data = await _rapid_get("/football-popular-leagues")
+    except Exception as e:
+        logger.warning("[sports] leagues failed: %s", e)
+        return {"leagues": [], "error": "sports_source_unavailable"}
+    return {"leagues": (data.get("response") or data.get("leagues") or data) or []}
 
 
 
