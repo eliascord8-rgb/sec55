@@ -1,5 +1,10 @@
 # Better Social — PRD
 
+## Recent Updates (Jul 17, 2026 — Iterations 27-28)
+- ✅ **Design bug fixed** — Dashboard footer had escaped the `<main>` flex wrapper and was rendering as a sibling column on 1280+ screens (screenshot user posted). Split the wrapper so `useNewLayout` uses block layout and only the classic sidebar layout stays flex.
+- ✅ **AI chat auto-connects to human** — When a signed-in user OPENS the widget, we immediately fire `/api/ai/request-handover` and show "Paging a live agent for you now — please stay on this chat" + auto-preload their previous conversations. No more waiting for the AI to fail first.
+- ✅ **Mobile live-chat FAB** — New emerald floating button (`live-chat-fab`) on phone screens, sits directly above where the AI robot FAB would live. Tap → full-height bottom-sheet with the public shoutbox (@username + role badges + timestamps). Unread-since-last-open counter badge. Present on both dashboard + guest landing.
+
 ## Recent Updates (Jul 17, 2026 — Iterations 23-26)
 - ✅ **Auto-Live TikTok rewrite (P0 fixed)** — Fresh worker: check every **60s**, place first order immediately on subscription create, then repeat every user-chosen 2/5/10/60 min while target is actually live. Per-sub `repeat_every_minutes` gate. Sub auto-expires at `expires_at`, cancel via `POST /api/client/live-sub/{sid}/cancel`. If user goes offline, worker idles (no spam); if they go live again, loop resumes.
 - ✅ **Repeat previous order** — `POST /api/client/orders/{oid}/repeat` re-runs same params from balance; UI button under "Last order placed".
