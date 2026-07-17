@@ -1,5 +1,31 @@
 # Better Social — PRD
 
+## Recent Updates (Jul 17, 2026 — Iterations 23-26)
+- ✅ **Auto-Live TikTok rewrite (P0 fixed)** — Fresh worker: check every **60s**, place first order immediately on subscription create, then repeat every user-chosen 2/5/10/60 min while target is actually live. Per-sub `repeat_every_minutes` gate. Sub auto-expires at `expires_at`, cancel via `POST /api/client/live-sub/{sid}/cancel`. If user goes offline, worker idles (no spam); if they go live again, loop resumes.
+- ✅ **Repeat previous order** — `POST /api/client/orders/{oid}/repeat` re-runs same params from balance; UI button under "Last order placed".
+- ✅ **Saved bulk-target lists** — `GET/POST/DELETE /api/client/bulk-lists`; save/load/delete named lists in the Purchase bulk mode.
+- ✅ **Add-ons store** — `GET /api/client/addons/catalog` + `POST /api/client/addons/purchase`. Auto-Live is a $250 one-time unlock (editable via `PATCH /api/admin/addons/{id}`). Purchase pays from balance, unlocks the Live-orders tab.
+- ✅ **Live orders tab** — Only visible when Auto-Live is owned. Lists active subs with stats + per-row Cancel.
+- ✅ **Sports · Football** — RapidAPI-backed `/api/sports/livescores`, `/api/sports/upcoming`, `/api/sports/leagues`, `/api/sports/events`. Background watcher polls every 20s, diffs score deltas → emits **goal / goal_disallowed / kickoff / halftime / fulltime** events. Frontend `GoalNotifier` polls every 15s and fires a big toast + 3-note goal chime (mutable 🔔/🔕 bottom-left).
+- ✅ **Daily $0.80 free bet** — `POST /api/free-bet/claim` credits $0.80 from house every 24h. Pulsing pink pill next to balance when eligible.
+- ✅ **Spin wheel security hardening** — 7d→**14d** cooldown, $50→**$100** min deposits, prize ladder capped at **$5.00**.
+- ✅ **Aviator removed** from GamesView.
+- ✅ **AI chat handover UX** — Retry-once on transient failure. On persistent failure, inline **"Connect with our team"** button calls `/api/ai/request-handover`.
+- ✅ **Previous conversations tab** in the AI widget + "+ Start new conversation" button.
+- ✅ **AI widget credit** — "Developed by BK and Sinester" footer.
+- ✅ **Dashboard/Guest footer** — "© 2026 BetterSocial · Development by BK & CEO Sinester".
+- ✅ **Top-nav overhaul (P0 fixed)** — Primary tabs + "More ▾" dropdown; Purchase always visible on 1280+ PC screens; mobile hamburger drawer.
+- ✅ **Buy button next to balance**.
+- ✅ **Language switcher (EN/BS/ES/PT/DE)** persisted in localStorage.
+- ✅ **Favicon + title** — Custom SVG favicon; updated page title.
+- ✅ **Admin drill shows order links + comments + source**.
+- ✅ **Admin services** — Inline rename service_id (pencil), per-row delete, existing bulk delete-all.
+- ✅ **Admin DM ALL** — Broadcast to every user from @BetterSocial.
+- ✅ **Admin login with dashboard credentials** — `POST /api/admin/login-with-account` + `session-from-user`. Per-user `admin_perms` (default `[ai_inbox, tickets]`).
+- ✅ **Guest landing community chat fixed** — real usernames + role badges + timestamps (was showing `@user` placeholder for all).
+- ✅ **User-went-live notification** — masked chat message posts on first live-detected burst.
+- ✅ **Admin addon pricing card** — Editable `admin-addon-price-auto_live` at top of Services tab.
+
 ## Original Problem Statement
 "Make a normal SMM landing page but better. When someone wants to buy, press checkout button → redirects to the purchase box. No login — peoples buy directly. They can pay using a generated gift card from us (use coupon to pay) or pay by CoinPayments. List all offers from smmcost.com API (key 47b5c3b01e4b5ecd1e53b39baef31a6e). When the user presses order, take the money via the API. If pay using CoinPayments, after complete status show a sweet alert success message and send the API request immediately. Site title and on-site name: 'Better Social'. Make a separate page with admin panel access (username: DEMO, password: DEMO). On admin panel: only order logs (with IP of buyers) and generated coupons with custom amount."
 

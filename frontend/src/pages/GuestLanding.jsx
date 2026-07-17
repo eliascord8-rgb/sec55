@@ -4,6 +4,7 @@ import { Sparkles, Loader2, X, MessageCircle, ShoppingBag } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { useLang, LanguagePicker } from "@/context/LanguageContext";
+import GoalNotifier from "@/components/GoalNotifier";
 
 // Green-themed guest landing shown on /client/dashboard when the user is NOT
 // signed in.  Renders a compact green header with Sign-in / Sign-up buttons
@@ -63,6 +64,7 @@ export default function GuestLanding() {
       </footer>
 
       {authOpen && <AuthModal mode={authOpen} onClose={() => setAuthOpen(null)} switchMode={setAuthOpen} />}
+      <GoalNotifier />
     </div>
   );
 }
