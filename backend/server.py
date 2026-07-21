@@ -2160,33 +2160,79 @@ LIVE_SUB_ALLOWED_DAYS = [7, 14, 30, 60, 90, 365]
 
 
 async def _is_tiktok_user_live(tt_username: str) -> bool:
-    """Best-effort HTTP check — GET the user's /live page and detect the
-    "isLive" JSON marker embedded by TikTok's SSR. Returns False on any error
-    (network, blocked, ratelimit). No external service required."""
+    """Robust best-effort check whether a TikTok user is currently live.
+    Uses TWO signals so a single scraping-shape change doesn't take the worker
+    down:
+      1. `webcast.tiktok.com/webcast/room/info_by_scene/` — the mobile-app
+         endpoint used to open a LIVE room, keyed on unique_id (username).
+         Returns `{"data":{"user":{"status":2}}}` (status 2 == broadcasting)
+         when the user is live. This works without cookies.
+      2. Fallback: the SSR HTML on /@handle/live — look for ANY of several
+         markers TikTok has shipped over the last 12 months so a copy tweak
+         doesn't break detection.
+    Returns False on any error so a network hiccup never spam-orders."""
     handle = tt_username.strip().lstrip("@")
     if not handle:
         return False
-    url = f"https://www.tiktok.com/@{handle}/live"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
     }
+    # ---- Signal 1: webcast API ----
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as c:
+            wc = await c.get(
+                "https://webcast.tiktok.com/webcast/room/info_by_scene/",
+                params={"aid": "1988", "unique_id": handle, "scene": "9999"},
+                headers=headers,
+            )
+            if wc.status_code == 200:
+                data = wc.json() if wc.headers.get("content-type", "").startswith("application/json") else None
+                if isinstance(data, dict):
+                    # Multiple shapes seen in the wild — check them all.
+                    user = ((data.get("data") or {}).get("user")) or {}
+                    if int(user.get("status") or 0) == 2:
+                        return True
+                    room = ((data.get("data") or {}).get("room")) or {}
+                    if int(room.get("status") or 0) == 2:
+                        return True
+                    live_room = (data.get("data") or {}).get("liveRoomInfo") or {}
+                    if isinstance(live_room, dict) and live_room.get("liveRoomId"):
+                        return True
+    except Exception as e:
+        logger.debug("[livesub] webcast probe failed for %s: %s", handle, e)
+
+    # ---- Signal 2: /@handle/live HTML scrape (multi-marker) ----
+    url = f"https://www.tiktok.com/@{handle}/live"
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as c:
             r = await c.get(url, headers=headers)
     except Exception as e:
-        logger.debug("[livesub] tiktok check network error for %s: %s", handle, e)
+        logger.debug("[livesub] tiktok html check network error for %s: %s", handle, e)
         return False
     if r.status_code >= 400:
         return False
-    html = r.text[:200_000]  # cap to guard against very-large responses
-    # SSR JSON payload contains liveRoomUserInfo → status: 2 means broadcasting
-    if '"status":2' in html and '"liveRoom' in html:
-        return True
-    # Fallback: presence of an active roomId + isLive-ish signals
-    if '"roomId":"' in html and '"userNotLive"' not in html:
+    html = r.text[:400_000]
+    lower = html.lower()
+    # Any of these substrings appearing together with a live-room indicator = live
+    live_markers = ('"status":2', '"is_live":true', 'liveroominfo', 'roomid":', '"liveintro')
+    off_markers = ('usernotlive', '"userstatus":1', '"islive":false')
+    if any(m in lower for m in off_markers):
+        return False
+    hits = sum(1 for m in live_markers if m in lower)
+    if hits >= 2:
         return True
     return False
+
+
+@api_router.get("/debug/tiktok-live/{handle}")
+async def debug_tiktok_live(handle: str, user: CurrentUser = Depends(current_user_dep)):
+    """Debug probe — signed-in users can hit this to check whether the LIVE
+    detector currently reports a given TikTok handle as broadcasting. Useful
+    when validating Auto-Live subscription behaviour."""
+    is_live = await _is_tiktok_user_live(handle)
+    return {"handle": handle.lstrip("@"), "is_live": is_live}
 
 
 class LiveSubCreate(BaseModel):
