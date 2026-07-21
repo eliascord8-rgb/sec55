@@ -147,7 +147,7 @@ const FAQ = [
   { q: "How do I contact support?", a: "Open the Support tab in the dashboard to open a ticket, or DM the owner directly from the Friends tab. Response time is under 4 hours during business hours." },
 ];
 
-export function HelpCenterView() {
+export function HelpCenterView({ onOpenAI }) {
   const [open, setOpen] = useState(0);
   return (
     <div className="max-w-4xl space-y-6" data-testid="help-view">
@@ -157,6 +157,27 @@ export function HelpCenterView() {
         </h1>
         <p className="text-white/50 text-sm mt-2">Quick answers to the questions we get most. Still stuck? Message us — we&apos;re usually online.</p>
       </div>
+
+      {/* Big Live-Chat CTA — this is now the ONLY entry point to the AI/support widget */}
+      {onOpenAI && (
+        <button
+          onClick={onOpenAI}
+          data-testid="help-open-chat"
+          className="w-full flex items-center gap-4 p-5 rounded-md bg-gradient-to-br from-emerald-500/20 via-emerald-500/10 to-transparent border border-emerald-500/40 hover:border-emerald-400 transition-all group"
+        >
+          <div className="w-12 h-12 rounded-full bg-emerald-500/30 border border-emerald-400/60 flex items-center justify-center shrink-0 shadow-[0_0_20px_rgba(52,211,153,0.4)] group-hover:scale-110 transition-transform">
+            <MessageCircle className="w-6 h-6 text-emerald-100" strokeWidth={2.2} />
+          </div>
+          <div className="text-left flex-1 min-w-0">
+            <div className="font-display font-black text-lg text-white">Need help? Customer support</div>
+            <div className="text-xs text-emerald-200/70 mt-0.5">Live chat with our team · typically replies in minutes</div>
+          </div>
+          <div className="hidden sm:flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300 shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            Online
+          </div>
+        </button>
+      )}
 
       <div className="grid sm:grid-cols-3 gap-3">
         <Shortcut icon={ShoppingBag} label="How to buy" onClick={() => setOpen(1)} />

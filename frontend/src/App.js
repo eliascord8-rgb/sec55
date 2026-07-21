@@ -9,6 +9,7 @@ import ClientAuth from "@/pages/ClientAuth";
 import ResetPassword from "@/pages/ResetPassword";
 import ClientDashboard from "@/pages/ClientDashboard";
 import Splash from "@/components/Splash";
+import MaintenanceGate from "@/components/MaintenanceGate";
 import { AuthProvider } from "@/context/AuthContext";
 import { LanguageProvider } from "@/context/LanguageContext";
 import { CurrencyProvider } from "@/context/CurrencyContext";
@@ -30,16 +31,18 @@ function App() {
         <CurrencyProvider>
           <AuthProvider>
             <BrowserRouter>
-              <Routes>
-                <Route path="/" element={<Landing />} />
-                <Route path="/order/:serviceId" element={<OrderPage />} />
-                <Route path="/status/:orderId" element={<StatusPage />} />
-                <Route path="/client" element={<ClientDashboard />} />
-                <Route path="/client/login" element={<ClientDashboard />} />
-                <Route path="/reset" element={<ResetPassword />} />
-                <Route path="/client/dashboard" element={<ClientDashboard />} />
-                <Route path="/admin" element={<Admin />} />
-              </Routes>
+              <MaintenanceGate>
+                <Routes>
+                  <Route path="/" element={<Landing />} />
+                  <Route path="/order/:serviceId" element={<OrderPage />} />
+                  <Route path="/status/:orderId" element={<StatusPage />} />
+                  <Route path="/client" element={<ClientDashboard />} />
+                  <Route path="/client/login" element={<ClientDashboard />} />
+                  <Route path="/reset" element={<ResetPassword />} />
+                  <Route path="/client/dashboard" element={<ClientDashboard />} />
+                  <Route path="/admin" element={<Admin />} />
+                </Routes>
+              </MaintenanceGate>
             </BrowserRouter>
           </AuthProvider>
         </CurrencyProvider>

@@ -827,7 +827,8 @@ def _read_bearer_user(request: Request) -> Optional[dict]:
 
 
 async def _auto_identify_from_token(db: AsyncIOMotorDatabase, request: Request, session_id: str):
-    """If the request carries a valid auth token, mark the session as identified by that user."""
+    """If the request carries a valid auth token, mark the session as identified by that user.
+    Also captures user-agent + geolocation so the admin inbox has full context."""
     u = _read_bearer_user(request)
     if not u or not u.get("username"):
         return None
@@ -836,6 +837,21 @@ async def _auto_identify_from_token(db: AsyncIOMotorDatabase, request: Request, 
     if not doc:
         return None
     now = datetime.now(timezone.utc).isoformat()
+    ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or
+          (request.client.host if request.client else ""))
+    ua = request.headers.get("user-agent", "")[:400]
+
+    # Prefer the canonical `ai-user-<username>` session so admin sees one thread per user
+    canonical_sid = f"ai-user-{doc['username'].lower()}"
+    if session_id != canonical_sid:
+        # Move any messages posted under the current session over to canonical
+        await db.ai_chat_messages.update_many(
+            {"session_id": session_id},
+            {"$set": {"session_id": canonical_sid}},
+        )
+        await db.ai_sessions.delete_one({"session_id": session_id})
+        session_id = canonical_sid
+
     update = {
         "identified": True,
         "identified_as": doc["username"],
@@ -843,8 +859,25 @@ async def _auto_identify_from_token(db: AsyncIOMotorDatabase, request: Request, 
         "identified_email": doc.get("email"),
         "identified_user_id": u["id"],
         "identified_at": now,
+        "last_activity": now,
+        "user_agent": ua,
     }
-    await db.ai_sessions.update_one({"session_id": session_id}, {"$set": update}, upsert=True)
+    # Geolocation — only when we don't have it cached
+    existing = await db.ai_sessions.find_one({"session_id": session_id}, {"_id": 0, "country": 1, "ip": 1})
+    if not existing or existing.get("ip") != ip or not existing.get("country"):
+        geo = await _geo_lookup(ip)
+        if geo:
+            update.update(geo)
+
+    await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {
+            "$setOnInsert": {"session_id": session_id, "status": "ai", "created_at": now, "ip": ip},
+            "$set": update,
+        },
+        upsert=True,
+    )
+    update["session_id"] = session_id
     return update
 
 
@@ -886,6 +919,7 @@ async def ai_identify(body: AIIdentifyRequest, request: Request):
     now = datetime.now(timezone.utc).isoformat()
     ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or
           (request.client.host if request.client else ""))
+    ua = request.headers.get("user-agent", "")[:400]
     # Check ban list (by identifier OR ip)
     or_q = [{"identifier": ident}]
     if ip:
@@ -893,6 +927,34 @@ async def ai_identify(body: AIIdentifyRequest, request: Request):
     ban = await db.chat_bans.find_one({"$or": or_q}, {"_id": 0, "identifier": 1})
     if ban:
         raise HTTPException(status_code=403, detail="You are banned from the chat. Contact support if this is a mistake.")
+
+    # Resolve the identifier to a real user (if it matches an account) — this
+    # lets us collapse guest chats + signed-in chats into ONE canonical session.
+    matched_user = None
+    if kind == "email":
+        matched_user = await db.users.find_one({"email": ident}, {"_id": 0, "id": 1, "username": 1, "email": 1})
+    else:
+        matched_user = await db.users.find_one(
+            {"$or": [
+                {"username_lower": ident.lower()},
+                {"username": {"$regex": f"^{re.escape(ident)}$", "$options": "i"}},
+            ]},
+            {"_id": 0, "id": 1, "username": 1, "email": 1},
+        )
+
+    # If we recognized the account, migrate to canonical session `ai-user-<username>`
+    old_session_id = session_id
+    if matched_user:
+        canonical_sid = f"ai-user-{matched_user['username'].lower()}"
+        if old_session_id != canonical_sid:
+            # Move any messages posted under the guest session_id over to the canonical one
+            await db.ai_chat_messages.update_many(
+                {"session_id": old_session_id},
+                {"$set": {"session_id": canonical_sid}},
+            )
+            # Delete the now-empty guest session doc (avoid dupes in admin inbox)
+            await db.ai_sessions.delete_one({"session_id": old_session_id})
+        session_id = canonical_sid
 
     # Geolocation — only if we don't already have it cached for this session
     existing = await db.ai_sessions.find_one({"session_id": session_id}, {"_id": 0, "country": 1, "ip": 1})
@@ -906,7 +968,11 @@ async def ai_identify(body: AIIdentifyRequest, request: Request):
         "identified_kind": kind,
         "identified_at": now,
         "last_activity": now,
+        "user_agent": ua,
     }
+    if matched_user:
+        set_doc["identified_user_id"] = matched_user["id"]
+        set_doc["identified_email"] = matched_user.get("email")
     if geo:
         set_doc.update(geo)
 
@@ -933,7 +999,10 @@ async def ai_chat(req: AIChatRequest, request: Request):
     session_id = req.session_id or f"ai-guest-{uuid.uuid4().hex[:8]}"
 
     # Try auto-identify from Authorization header (logged-in dashboard users)
-    await _auto_identify_from_token(db, request, session_id)
+    # This may MIGRATE session_id to the canonical `ai-user-<username>` — respect it.
+    auto = await _auto_identify_from_token(db, request, session_id)
+    if auto and auto.get("session_id"):
+        session_id = auto["session_id"]
 
     last_user = None
     for m in req.messages:
@@ -1534,14 +1603,105 @@ async def admin_mark_offline_read(msg_id: str, request: Request):
 async def admin_ai_sessions(request: Request):
     _admin_check(request)
     db: AsyncIOMotorDatabase = request.app.state.db
-    cursor = db.ai_sessions.find({}, {"_id": 0}).sort("last_activity", -1).limit(100)
-    items = await cursor.to_list(100)
-    # Count handover-waiting sessions
+    cursor = db.ai_sessions.find({}, {"_id": 0}).sort("last_activity", -1).limit(500)
+    raw = await cursor.to_list(500)
+
+    # ---- Deduplicate: one card per user (by identified_user_id or identified_as) ----
+    # Guest sessions with no identity stay as-is. Identified sessions get merged:
+    # we pick the MOST RECENT session as canonical and roll the message count + status.
+    canonical: dict = {}
+    for s in raw:
+        key = s.get("identified_user_id") or (s.get("identified_as") and f"ident:{s['identified_as'].lower()}") or f"sid:{s.get('session_id')}"
+        if key in canonical:
+            # Merge — keep newest as canonical, but sum message hints
+            existing = canonical[key]
+            newer = s if (s.get("last_activity") or s.get("created_at") or "") > (existing.get("last_activity") or existing.get("created_at") or "") else existing
+            older = existing if newer is s else s
+            newer = dict(newer)
+            newer["_merged_session_ids"] = list(set(
+                (existing.get("_merged_session_ids") or [existing.get("session_id")]) +
+                [s.get("session_id")]
+            ))
+            newer["_merged_count"] = (existing.get("_merged_count") or 1) + 1
+            canonical[key] = newer
+        else:
+            canonical[key] = {**s, "_merged_session_ids": [s.get("session_id")], "_merged_count": 1}
+
+    items = list(canonical.values())
+    items.sort(key=lambda x: (x.get("last_activity") or x.get("created_at") or ""), reverse=True)
+
+    # ---- Enrich each with device (parsed from UA), country flag, order stats ----
+    for s in items[:100]:  # only enrich the first 100 for perf
+        # Device parsing
+        ua = s.get("user_agent") or ""
+        s["device"] = _parse_ua_device(ua)
+        # Order stats — only if we know the user id
+        uid = s.get("identified_user_id")
+        if uid:
+            try:
+                orders_cur = db.orders.aggregate([
+                    {"$match": {"user_id": uid}},
+                    {"$group": {"_id": None, "count": {"$sum": 1}, "total": {"$sum": "$charge"}}}
+                ])
+                agg = await orders_cur.to_list(1)
+                s["orders_count"] = int(agg[0]["count"]) if agg else 0
+                s["orders_total"] = round(float(agg[0].get("total", 0)), 2) if agg else 0.0
+                # Recent 5 orders
+                recent = await db.orders.find(
+                    {"user_id": uid},
+                    {"_id": 0, "id": 1, "service_name": 1, "quantity": 1, "charge": 1, "status": 1, "created_at": 1},
+                ).sort("created_at", -1).limit(5).to_list(5)
+                s["recent_orders"] = recent
+            except Exception:
+                s["orders_count"] = 0
+                s["orders_total"] = 0.0
+
     waiting = sum(
         1 for s in items
         if s.get("needs_handover") and s.get("status") != "human"
     )
-    return {"sessions": items, "handover_waiting": waiting}
+    return {"sessions": items[:100], "handover_waiting": waiting}
+
+
+def _parse_ua_device(ua: str) -> dict:
+    """Very lightweight User-Agent → device info parser. No external deps."""
+    if not ua:
+        return {"raw": "", "os": "Unknown", "browser": "Unknown", "type": "Unknown"}
+    lower = ua.lower()
+    # OS
+    if "windows" in lower:
+        os_ = "Windows"
+    elif "iphone" in lower or "ipad" in lower or "ipod" in lower:
+        os_ = "iOS"
+    elif "android" in lower:
+        os_ = "Android"
+    elif "mac os" in lower or "macintosh" in lower:
+        os_ = "macOS"
+    elif "linux" in lower:
+        os_ = "Linux"
+    else:
+        os_ = "Other"
+    # Browser (order matters — edge/chrome contain 'safari' too)
+    if "edg/" in lower or "edge/" in lower:
+        br = "Edge"
+    elif "opr/" in lower or " opera/" in lower:
+        br = "Opera"
+    elif "firefox/" in lower:
+        br = "Firefox"
+    elif "chrome/" in lower and "safari/" in lower:
+        br = "Chrome"
+    elif "safari/" in lower:
+        br = "Safari"
+    else:
+        br = "Other"
+    # Type
+    if any(k in lower for k in ("mobile", "iphone", "android")):
+        t = "Mobile"
+    elif "ipad" in lower or "tablet" in lower:
+        t = "Tablet"
+    else:
+        t = "Desktop"
+    return {"os": os_, "browser": br, "type": t, "raw": ua[:200]}
 
 
 @ai_router.get("/admin/sessions/{session_id}/messages")

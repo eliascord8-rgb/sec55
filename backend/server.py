@@ -157,7 +157,8 @@ def check_owner(token: Optional[str]) -> None:
 
 async def get_actor_display_name(token: Optional[str]) -> str:
     """Return the display nickname for whoever is making the request (owner or staff).
-    Used to attribute replies in tickets / AI chat to the right person."""
+    - Owner keeps a customisable nickname (via /admin/me/nickname).
+    - Staff ALWAYS shows their login username to clients — no custom display name."""
     if not token:
         return "Support"
     if token in ADMIN_SESSIONS:
@@ -166,7 +167,8 @@ async def get_actor_display_name(token: Optional[str]) -> str:
         return (cfg or {}).get("owner_display_name") or OWNER_DISPLAY_NAME or "Owner"
     s = STAFF_SESSIONS.get(token)
     if s:
-        return s.get("display_name") or s.get("username") or "Staff"
+        # Staff → always their login username (per product decision — no display_name)
+        return s.get("username") or "Staff"
     return "Support"
 
 
@@ -962,10 +964,11 @@ async def admin_me(x_admin_token: Optional[str] = Header(None)):
         }
     s = STAFF_SESSIONS.get(x_admin_token)
     if s:
+        # Staff: display_name is locked to their login username — no custom nickname.
         return {
             "role": "staff",
             "username": s["username"],
-            "display_name": s.get("display_name") or s["username"],
+            "display_name": s["username"],
             "perms": list(s["perms"]),
         }
     raise HTTPException(status_code=401, detail="Unauthorized")
@@ -977,7 +980,8 @@ class NicknameUpdate(BaseModel):
 
 @api_router.post("/admin/me/nickname")
 async def update_my_nickname(payload: NicknameUpdate, x_admin_token: Optional[str] = Header(None)):
-    """Owner or staff updates their own display nickname (shown to clients in chats/tickets)."""
+    """Owner nickname setter. Staff members CANNOT customise a display name —
+    they always show their login username to clients."""
     if not x_admin_token:
         raise HTTPException(status_code=401, detail="Unauthorized")
     new_name = payload.display_name.strip()[:40]
@@ -993,9 +997,8 @@ async def update_my_nickname(payload: NicknameUpdate, x_admin_token: Optional[st
     s = STAFF_SESSIONS.get(x_admin_token)
     if not s:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    await db.staff_users.update_one({"id": s["id"]}, {"$set": {"display_name": new_name}})
-    s["display_name"] = new_name
-    return {"display_name": new_name, "role": "staff"}
+    # Staff can't change their display name — return their username unchanged.
+    raise HTTPException(status_code=403, detail="Staff cannot change display name — you always show your login username to clients.")
 
 
 # ============ MAINTENANCE MODE ============
@@ -5296,6 +5299,7 @@ class EmailConfig(BaseModel):
     from_name: Optional[str] = "Better Social"
     use_tls: bool = True
     mailersend_api_key: Optional[str] = ""
+    elastic_api_key: Optional[str] = ""
 
 
 @api_router.get("/admin/email-config")
@@ -5304,9 +5308,11 @@ async def admin_get_email_config(x_admin_token: Optional[str] = Header(None)):
     cfg = await db.email_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
     pw = cfg.get("smtp_password", "")
     ms_key = cfg.get("mailersend_api_key", "")
+    ee_key = cfg.get("elastic_api_key", "")
+    provider = "elastic_email" if ee_key else ("mailersend" if ms_key else ("smtp" if cfg.get("smtp_host") else ""))
     return {
-        "configured": bool(ms_key or (cfg.get("smtp_host") and cfg.get("smtp_user"))),
-        "provider": "mailersend" if ms_key else ("smtp" if cfg.get("smtp_host") else ""),
+        "configured": bool(ee_key or ms_key or (cfg.get("smtp_host") and cfg.get("smtp_user"))),
+        "provider": provider,
         "smtp_host": cfg.get("smtp_host", ""),
         "smtp_port": cfg.get("smtp_port", 587),
         "smtp_user": cfg.get("smtp_user", ""),
@@ -5316,6 +5322,8 @@ async def admin_get_email_config(x_admin_token: Optional[str] = Header(None)):
         "use_tls": cfg.get("use_tls", True),
         "mailersend_set": bool(ms_key),
         "mailersend_api_key_masked": ("*" * 8 + ms_key[-4:]) if ms_key else "",
+        "elastic_set": bool(ee_key),
+        "elastic_api_key_masked": ("*" * 8 + ee_key[-4:]) if ee_key else "",
     }
 
 
@@ -5336,6 +5344,8 @@ async def admin_set_email_config(payload: EmailConfig, x_admin_token: Optional[s
         upd["smtp_password"] = payload.smtp_password
     if payload.mailersend_api_key:
         upd["mailersend_api_key"] = payload.mailersend_api_key.strip()
+    if payload.elastic_api_key:
+        upd["elastic_api_key"] = payload.elastic_api_key.strip()
     await db.email_config.update_one(
         {"_id": "singleton"},
         {"$set": upd},
