@@ -1,0 +1,35 @@
+{
+  "summary": "Tested the TikTok Auto-Live detector rewrite (_is_tiktok_user_live), the new /api/debug/tiktok-live/{handle} endpoint, and regression on live-sub create/my/cancel. 11/12 pytest checks pass. CRITICAL finding: signal-2 (HTML scrape) triggers a FALSE POSITIVE for essentially every handle — the substrings 'liveroominfo' and 'roomid\":' appear in the /@handle/live SSR HTML for ALL users (live OR offline OR nonexistent) because those are JSON schema KEY NAMES, not runtime values. As a result the detector currently reports is_live=True for a nonsense handle '_this_is_definitely_not_a_real_handle_xyz123_' and for offline accounts like 'tiktok'/'nba'/'zachking'/'charlidamelio'. This flips the original bug on its head: instead of never firing orders, the worker will now fire orders for EVERY subscription on EVERY repeat_every_minutes tick — even for handles that are offline or don't exist — draining user balance.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "internal: _is_tiktok_user_live() @ /app/backend/server.py:2206-2226", "issue": "HTML signal-2 marker set contains substrings that appear in TikTok /@handle/live SSR HTML for ALL users regardless of live status. Confirmed via direct httpx probe against tiktok/nba/zachking/charlidamelio and the nonsense handle — every one has 'liveroominfo' + 'roomid\":' present (schema keys, not values), which is >=2 markers => detector returns True. Off-markers ('usernotlive','\"userstatus\":1','\"islive\":false') do NOT appear in any of these responses either, so the guard doesn't rescue it. Net effect: detector returns True universally → worker will burst-order for every subscription regardless of actual live state, draining users' wallets. This is a REGRESSION worse than the original bug.", "priority": "CRITICAL"},
+      {"endpoint": "internal: webcast.tiktok.com/webcast/room/info_by_scene/", "issue": "For non-live handles the endpoint returns HTTP 200 with body {data:{}} (no user/room/liveRoomInfo keys). Current code correctly falls through to signal 2 here, but that means signal-1 provides no coverage — the entire detection currently relies on the broken signal 2.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "/api/debug/tiktok-live/{handle}", "issue": "Endpoint returns 200 with correct shape {handle, is_live: bool}. Auth-gated correctly (401 without token). Works for @-prefixed input. However the returned is_live is wrong for all tested handles — see critical entry."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter27_live_sub_bugfix.py",
+    "/app/test_reports/pytest/iter27_results.xml"
+  ],
+  "action_items": [
+    "CRITICAL: Redesign _is_tiktok_user_live() signal 2. The markers 'liveroominfo' and 'roomid\":' are schema keys always present in TikTok's SSR HTML and MUST NOT be treated as positive live indicators. Suggested approach: (a) rely primarily on the webcast info_by_scene API — treat empty data:{} as NOT live and only True when data.user.status==2 OR data.liveRoomInfo.liveRoomId truthy AND data.liveRoomInfo.status==2; (b) for HTML fallback use value-based patterns like '\"liveRoomInfo\":{\"liveRoomId\":\"' followed by digits (regex \\\"liveRoomId\\\":\\\"\\d+\\\") together with '\"status\":2' or 'is_live\":true'; (c) additionally check the webcast endpoint's /api/live/detail/ or the newer /webcast/user/get_by_uid/ — signature: {data:{user:{room_id: <non-zero-int>, status:2}}}; (d) unit-test with 4-5 known-offline handles that MUST return False.",
+    "Add a smoke test on backend startup that probes _is_tiktok_user_live('tiktok') and logs a warning if it returns True (since tiktok is rarely live), to catch future regressions.",
+    "Consider gating any burst order behind a second confirmation call (e.g. hit /@handle/live again after 10s) to reduce false-positive spend risk once the detector is fixed."
+  ],
+  "critical_code_review_comments": [
+    "server.py:2216-2226 — substring matching on lowered SSR HTML is inherently fragile; TikTok ships JSON schema keys in SSR that will always match these substrings. Use regex on values instead of substrings on keys.",
+    "server.py:2402 — worker sleep is 30s but next_check_at default is 60s; fine but means every sub is polled twice per minute if under load — acceptable.",
+    "server.py:2246-2270 — no upper bound on quantity_per_burst * duration_days combined spend; consider adding a hard daily cap so a runaway detector can't drain wallet in minutes. Especially relevant given the current detector bug."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter27_live_sub_bugfix.py"],
+  "success_rate": {"backend": "92% (11/12 pytest tests pass) — the failing test is the false-positive detection assertion, which is a REAL bug not a test flake", "frontend": "not tested (backend-only request)"},
+  "test_credentials": "testbugfix1 / password1 (auto_live_enabled + $50 wallet ensured); admin secret haha123.",
+  "seed_data_creation": "Inserted synthetic active live-subscription docs (id prefix TEST-iter27-*) directly via pymongo; all cleaned up in fixture teardown. Also toggled auto_live_enabled=true and adjusted-balance +$50 for testbugfix1 for regression tests (not reverted — acceptable persistent state for a test user).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Reuse /app/backend/tests/test_iter27_live_sub_bugfix.py. When main agent fixes _is_tiktok_user_live, re-run the whole file — the currently-failing TestDebugTiktokLiveEndpoint::test_debug_nonexistent_handle_no_500 MUST pass (nonsense handle → is_live=false). Also consider adding an assertion that 'tiktok'/'nba' typically return False (they're rarely live). To run: `REACT_APP_BACKEND_URL=<url> MONGO_URL=mongodb://localhost:27017 DB_NAME=test_database python -m pytest backend/tests/test_iter27_live_sub_bugfix.py -v`. Worker liveness test passed — worker DOES pick up due subs and updates last_check_at within ~30s.",
+  "rca of the issue": "Original bug: _is_tiktok_user_live() always False → worker never fired. Rewrite added webcast API + HTML multi-marker fallback. Rewrite's HTML fallback uses substrings that are JSON KEY NAMES ('liveroominfo', 'roomid\":') always present in TikTok's SSR HTML shell, so signal 2 returns True universally. Webcast API returns empty data:{} for non-live users (returns False from signal 1, then falls through to broken signal 2). Reproduction: `curl 'https://www.tiktok.com/@ANY_HANDLE/live' | tr A-Z a-z | grep -c 'liveroominfo\\|roomid\"'` returns ≥2 for every handle tested. Mitigation: switch signal 2 to VALUE-based matching (regex on liveRoomId numeric value, is_live:true after a colon, etc.) and require an explicit positive value marker rather than schema-key presence."
+}
