@@ -48,6 +48,10 @@ export function AuthProvider({ children }) {
         api.get(path, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${t}` } }),
       post: (path, data, opts = {}) =>
         api.post(path, data, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${t}` } }),
+      patch: (path, data, opts = {}) =>
+        api.patch(path, data, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${t}` } }),
+      delete: (path, opts = {}) =>
+        api.delete(path, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${t}` } }),
     };
   }, []);
 

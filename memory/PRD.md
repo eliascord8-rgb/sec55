@@ -1,5 +1,13 @@
 # Better Social — PRD
 
+## Recent Updates (Jul 21, 2026 — Iteration 30 · Fork · Google Auth)
+- ✅ **Google Sign-in / Sign-up** — Emergent-managed Google OAuth wired up end-to-end:
+  - Backend: `POST /api/auth/google-status` (exchanges Emergent `session_id` → JWT for existing users OR `signup_token` for new users) + `POST /api/auth/google-finalize` (creates user with chosen username, tolerates uniqueness collisions).
+  - Frontend: `<GoogleSignInButton>` in `ClientAuth`, "Continue with Google" in `GuestLanding` auth modals, `<GoogleAuthCallback>` mounted inside `<BrowserRouter>` — parses `#session_id` fragment on any route, cleans it, calls status endpoint, and shows a mandatory username picker modal for new users.
+  - New user flow: Google → 15-min `signup_token` in `pending_google_signups` → username picker → account created (no password, `auth_provider_google: true`, avatar synced from Google profile picture).
+  - Existing user flow: Email match → auto-link Google id + refresh avatar → issue our JWT → done.
+- ✅ `authedApi()` now exposes `patch` + `delete` (required by AvatarSettings).
+
 ## Recent Updates (Jul 21, 2026 — Iteration 29 · Fork)
 - ✅ **AI chat flow rebuilt** — "Send us a message" no longer auto-hands-off to staff. AI is first responder again; explicit "Talk to a human" button + user-initiated handover only. Duplicate "Got it — I've paged the human team" messages fixed via 10-min dedupe check in backend. Once handover flagged, LLM calls skip (message still saved for admin).
 - ✅ **NOWPayments auto-reconciler** — New 90s background worker (`_nowpayments_reconciler_loop`) polls pending crypto deposits in the last 48h and auto-credits any that NOWPayments now reports as paid. Belt-and-suspenders for missed webhooks — users never have to click "Verify" again.

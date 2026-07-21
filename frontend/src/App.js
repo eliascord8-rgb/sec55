@@ -10,6 +10,7 @@ import ResetPassword from "@/pages/ResetPassword";
 import ClientDashboard from "@/pages/ClientDashboard";
 import Splash from "@/components/Splash";
 import MaintenanceGate from "@/components/MaintenanceGate";
+import GoogleAuthCallback from "@/components/GoogleAuthCallback";
 import { AuthProvider } from "@/context/AuthContext";
 import { LanguageProvider } from "@/context/LanguageContext";
 import { CurrencyProvider } from "@/context/CurrencyContext";
@@ -31,6 +32,7 @@ function App() {
         <CurrencyProvider>
           <AuthProvider>
             <BrowserRouter>
+              <GoogleAuthCallback />
               <MaintenanceGate>
                 <Routes>
                   <Route path="/" element={<Landing />} />
