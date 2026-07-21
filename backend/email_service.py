@@ -32,7 +32,40 @@ async def send_email(
     Returns {ok: bool, error?: str}."""
     cfg = await db.email_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
 
-    # ---- MailerSend API path (recommended) ----
+    # ---- Elastic Email API path (NO KYC — preferred) ----
+    ee_key = (cfg.get("elastic_api_key") or "").strip()
+    if ee_key:
+        from_email = (cfg.get("from_email") or "").strip()
+        from_name = (cfg.get("from_name") or "Better Social").strip()
+        if not from_email:
+            return {"ok": False, "error": "Elastic Email: from_email is required (must be on a verified domain)"}
+        import httpx
+        payload = {
+            "Recipients": {"To": [to_email]},
+            "Content": {
+                "Body": [{"ContentType": "HTML", "Content": html, "Charset": "utf-8"}],
+                "From": f"{from_name} <{from_email}>",
+                "Subject": subject,
+            },
+        }
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as c:
+                r = await c.post(
+                    "https://api.elasticemail.com/v4/emails/transactional",
+                    json=payload,
+                    headers={
+                        "X-ElasticEmail-ApiKey": ee_key,
+                        "Content-Type": "application/json",
+                    },
+                )
+            if r.status_code in (200, 201, 202):
+                return {"ok": True, "provider": "elastic_email"}
+            return {"ok": False, "error": f"Elastic {r.status_code}: {r.text[:300]}"}
+        except Exception as e:
+            logger.exception("Elastic Email send failed: %s", e)
+            return {"ok": False, "error": f"Elastic Email: {str(e)[:200]}"}
+
+    # ---- MailerSend API path (fallback) ----
     ms_key = cfg.get("mailersend_api_key", "").strip()
     if ms_key:
         from_email = (cfg.get("from_email") or "").strip()

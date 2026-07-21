@@ -37,7 +37,7 @@ const FEATURES = [
     icon: Zap,
     title: "Instant Delivery",
     desc: "Most orders kick off within minutes of confirmation. No waiting, no babysitting.",
-    accent: "bg-cyan-500/10 border-cyan-500/30",
+    accent: "bg-emerald-500/10 border-emerald-500/30",
     visual: "progress",
   },
   {
@@ -128,11 +128,11 @@ export default function Landing() {
       >
         <div className="max-w-7xl mx-auto px-4 md:px-8 h-16 md:h-[68px] flex items-center justify-between gap-3">
           <Link to="/" className="flex items-center gap-2.5 shrink-0" data-testid="brand-logo">
-            <div className="w-8 h-8 md:w-9 md:h-9 rounded-lg bg-cyan-500/15 border border-cyan-500/40 flex items-center justify-center shadow-[0_0_20px_rgba(0,229,255,0.15)]">
-              <Sparkles className="w-4 h-4 md:w-4.5 md:h-4.5 text-cyan-300" strokeWidth={2.5} />
+            <div className="w-8 h-8 md:w-9 md:h-9 rounded-lg bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-center shadow-[0_0_20px_rgba(52,211,153,0.15)]">
+              <Sparkles className="w-4 h-4 md:w-4.5 md:h-4.5 text-emerald-300" strokeWidth={2.5} />
             </div>
             <span className="font-display font-black text-base md:text-lg tracking-tight text-white">
-              Better<span className="text-cyan-400">Social</span>
+              Better<span className="text-emerald-400">Social</span>
             </span>
           </Link>
 
@@ -177,7 +177,7 @@ export default function Landing() {
             <button
               onClick={goCatalog}
               data-testid="header-checkout-btn"
-              className="px-3.5 md:px-5 py-2 rounded-full bg-cyan-400 hover:bg-cyan-300 text-black text-[11px] md:text-xs font-bold tracking-wide transition-all whitespace-nowrap shadow-[0_0_20px_rgba(0,229,255,0.25)] hover:shadow-[0_0_30px_rgba(0,229,255,0.5)]"
+              className="px-3.5 md:px-5 py-2 rounded-full bg-emerald-400 hover:bg-emerald-300 text-black text-[11px] md:text-xs font-bold tracking-wide transition-all whitespace-nowrap shadow-[0_0_20px_rgba(52,211,153,0.25)] hover:shadow-[0_0_30px_rgba(52,211,153,0.5)]"
             >
               Order now
             </button>
@@ -192,7 +192,7 @@ export default function Landing() {
           className="absolute inset-0 opacity-70"
           style={{
             background:
-              "radial-gradient(circle at 50% 30%, rgba(0,229,255,0.20) 0%, transparent 55%)",
+              "radial-gradient(circle at 50% 30%, rgba(52,211,153,0.20) 0%, transparent 55%)",
           }}
         />
         {/* Subtle grid backdrop */}
@@ -212,7 +212,7 @@ export default function Landing() {
             className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full backdrop-blur-xl bg-white/[0.03] border border-white/10 text-[11px] uppercase tracking-[0.22em] mb-9 animate-in fade-in slide-in-from-bottom-2 duration-700"
             data-testid="hero-badge"
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(0,229,255,0.9)] animate-pulse" />
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)] animate-pulse" />
             <span className="text-zinc-300 font-semibold">No-login · Pay anonymously</span>
           </div>
 
@@ -224,7 +224,7 @@ export default function Landing() {
               Growth done
             </span>
             <br />
-            <span className="text-cyan-400 [text-shadow:0_0_40px_rgba(0,229,255,0.35)]">
+            <span className="text-emerald-400 [text-shadow:0_0_40px_rgba(52,211,153,0.35)]">
               obnoxiously
             </span>
             <span className="text-transparent bg-clip-text bg-gradient-to-b from-white to-white/40">
@@ -241,7 +241,7 @@ export default function Landing() {
             <button
               onClick={goCatalog}
               data-testid="hero-checkout-btn"
-              className="group inline-flex items-center justify-center gap-2 px-8 py-4 rounded-full bg-cyan-400 hover:bg-cyan-300 text-black font-bold tracking-wide transition-all shadow-[0_0_30px_rgba(0,229,255,0.35)] hover:shadow-[0_0_45px_rgba(0,229,255,0.6)]"
+              className="group inline-flex items-center justify-center gap-2 px-8 py-4 rounded-full bg-emerald-400 hover:bg-emerald-300 text-black font-bold tracking-wide transition-all shadow-[0_0_30px_rgba(52,211,153,0.35)] hover:shadow-[0_0_45px_rgba(52,211,153,0.6)]"
             >
               Start an order
               <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
@@ -267,7 +267,7 @@ export default function Landing() {
       <section className="relative py-24 md:py-32 border-t border-white/5">
         <div className="max-w-7xl mx-auto px-6 md:px-10">
           <div className="max-w-2xl mb-14 md:mb-16">
-            <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-cyan-400 mb-4">
+            <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-emerald-400 mb-4">
               Why Better
             </div>
             <h2 className="font-display text-3xl md:text-5xl font-black tracking-tight leading-tight">
@@ -293,16 +293,16 @@ export default function Landing() {
           className="absolute inset-0 opacity-40 pointer-events-none"
           style={{
             background:
-              "radial-gradient(ellipse at 20% 50%, rgba(0,229,255,0.10) 0%, transparent 50%)",
+              "radial-gradient(ellipse at 20% 50%, rgba(52,211,153,0.10) 0%, transparent 50%)",
           }}
         />
         <div className="relative max-w-7xl mx-auto px-6 md:px-10">
           <div className="max-w-2xl mb-14">
-            <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-cyan-400 mb-4">
+            <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-emerald-400 mb-4">
               Workflow
             </div>
             <h2 className="font-display text-3xl md:text-5xl font-black tracking-tight leading-tight">
-              Four steps. <span className="text-cyan-400">Zero</span> drama.
+              Four steps. <span className="text-emerald-400">Zero</span> drama.
             </h2>
             <p className="text-zinc-400 mt-4 md:text-lg">
               The fastest path between "I want followers" and watching them appear.
@@ -314,15 +314,15 @@ export default function Landing() {
               <div
                 key={i}
                 data-testid={`step-${s.n}`}
-                className="group relative p-6 md:p-7 rounded-2xl bg-white/[0.02] border border-white/5 hover:border-cyan-500/30 hover:bg-white/[0.04] transition-all"
+                className="group relative p-6 md:p-7 rounded-2xl bg-white/[0.02] border border-white/5 hover:border-emerald-500/30 hover:bg-white/[0.04] transition-all"
               >
-                <div className="mb-5 w-11 h-11 rounded-full flex items-center justify-center bg-cyan-500/10 border border-cyan-500/40 shadow-[0_0_20px_rgba(0,229,255,0.15)] font-display font-black text-sm text-cyan-300">
+                <div className="mb-5 w-11 h-11 rounded-full flex items-center justify-center bg-emerald-500/10 border border-emerald-500/40 shadow-[0_0_20px_rgba(52,211,153,0.15)] font-display font-black text-sm text-emerald-300">
                   {s.n}
                 </div>
                 <h3 className="font-display font-bold text-lg mb-2 text-white">{s.t}</h3>
                 <p className="text-sm text-zinc-400 leading-relaxed">{s.d}</p>
                 {i < STEPS.length - 1 && (
-                  <div className="hidden lg:block absolute top-11 -right-3 w-6 h-px bg-gradient-to-r from-cyan-500/40 to-transparent" />
+                  <div className="hidden lg:block absolute top-11 -right-3 w-6 h-px bg-gradient-to-r from-emerald-500/40 to-transparent" />
                 )}
               </div>
             ))}
@@ -338,17 +338,17 @@ export default function Landing() {
         <div className="max-w-7xl mx-auto px-6 md:px-10">
           <div className="grid lg:grid-cols-2 gap-12 md:gap-16 items-center">
             <div>
-              <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-cyan-400 mb-4">
+              <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-emerald-400 mb-4">
                 Payments
               </div>
               <h2 className="font-display text-3xl md:text-5xl font-black tracking-tight leading-tight mb-6">
                 Two ways to pay. <br />
-                <span className="text-cyan-400">Both are private.</span>
+                <span className="text-emerald-400">Both are private.</span>
               </h2>
               <div className="space-y-3">
-                <div className="flex gap-4 p-5 rounded-2xl border border-white/5 bg-white/[0.02] hover:border-cyan-500/30 transition-all">
-                  <div className="w-11 h-11 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center shrink-0">
-                    <Coins className="w-5 h-5 text-cyan-300" strokeWidth={2.2} />
+                <div className="flex gap-4 p-5 rounded-2xl border border-white/5 bg-white/[0.02] hover:border-emerald-500/30 transition-all">
+                  <div className="w-11 h-11 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                    <Coins className="w-5 h-5 text-emerald-300" strokeWidth={2.2} />
                   </div>
                   <div>
                     <div className="font-display font-bold mb-1 text-white">Crypto & Card</div>
@@ -358,9 +358,9 @@ export default function Landing() {
                     </div>
                   </div>
                 </div>
-                <div className="flex gap-4 p-5 rounded-2xl border border-white/5 bg-white/[0.02] hover:border-cyan-500/30 transition-all">
-                  <div className="w-11 h-11 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center shrink-0">
-                    <Ticket className="w-5 h-5 text-cyan-300" strokeWidth={2.2} />
+                <div className="flex gap-4 p-5 rounded-2xl border border-white/5 bg-white/[0.02] hover:border-emerald-500/30 transition-all">
+                  <div className="w-11 h-11 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                    <Ticket className="w-5 h-5 text-emerald-300" strokeWidth={2.2} />
                   </div>
                   <div>
                     <div className="font-display font-bold mb-1 text-white">Better Social Coupon</div>
@@ -380,7 +380,7 @@ export default function Landing() {
                   className="absolute inset-0 opacity-70"
                   style={{
                     background:
-                      "radial-gradient(circle at 50% 50%, rgba(0,229,255,0.15) 0%, transparent 60%)",
+                      "radial-gradient(circle at 50% 50%, rgba(52,211,153,0.15) 0%, transparent 60%)",
                   }}
                 />
                 <div className="relative w-full h-full flex items-center justify-center p-8">
@@ -388,7 +388,7 @@ export default function Landing() {
                     {CRYPTO_METHODS.map((c, i) => (
                       <div
                         key={c}
-                        className="aspect-square rounded-2xl border border-white/10 bg-black/40 backdrop-blur-sm flex items-center justify-center font-display font-black text-sm md:text-base text-zinc-300 hover:border-cyan-500/50 hover:text-cyan-300 hover:scale-105 transition-all"
+                        className="aspect-square rounded-2xl border border-white/10 bg-black/40 backdrop-blur-sm flex items-center justify-center font-display font-black text-sm md:text-base text-zinc-300 hover:border-emerald-500/50 hover:text-emerald-300 hover:scale-105 transition-all"
                         style={{ animationDelay: `${i * 80}ms` }}
                       >
                         {c}
@@ -406,7 +406,7 @@ export default function Landing() {
       <section id="faq" className="relative py-24 md:py-32 border-t border-white/5">
         <div className="max-w-3xl mx-auto px-6 md:px-10">
           <div className="text-center mb-14">
-            <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-cyan-400 mb-4">
+            <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-emerald-400 mb-4">
               FAQ
             </div>
             <h2 className="font-display text-3xl md:text-5xl font-black tracking-tighter">
@@ -420,9 +420,9 @@ export default function Landing() {
                 data-testid={`faq-${i}`}
                 className="group py-5 md:py-6"
               >
-                <summary className="cursor-pointer flex items-center justify-between gap-4 font-display font-bold text-base md:text-lg text-white/90 hover:text-cyan-300 transition-colors">
+                <summary className="cursor-pointer flex items-center justify-between gap-4 font-display font-bold text-base md:text-lg text-white/90 hover:text-emerald-300 transition-colors">
                   {f.q}
-                  <ChevronDown className="w-5 h-5 shrink-0 text-cyan-400 group-open:rotate-180 transition-transform" />
+                  <ChevronDown className="w-5 h-5 shrink-0 text-emerald-400 group-open:rotate-180 transition-transform" />
                 </summary>
                 <p className="text-sm md:text-base text-zinc-400 mt-3 leading-relaxed">{f.a}</p>
               </details>
@@ -437,7 +437,7 @@ export default function Landing() {
           className="absolute inset-0 opacity-40 pointer-events-none"
           style={{
             background:
-              "radial-gradient(ellipse at 50% 100%, rgba(0,229,255,0.15) 0%, transparent 65%)",
+              "radial-gradient(ellipse at 50% 100%, rgba(52,211,153,0.15) 0%, transparent 65%)",
           }}
         />
         <div className="relative max-w-7xl mx-auto px-6 md:px-10">
@@ -448,30 +448,30 @@ export default function Landing() {
           </div>
           <div className="flex flex-col md:flex-row items-center justify-between gap-4 text-sm border-t border-white/5 pt-8">
             <div className="font-display font-black text-base text-white">
-              Better<span className="text-cyan-400">Social</span>
+              Better<span className="text-emerald-400">Social</span>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2 md:gap-4 text-[10px] uppercase tracking-widest text-zinc-500">
               <span className="inline-flex items-center gap-2 font-bold">
-                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 © {new Date().getFullYear()} BetterSocial
               </span>
               <span className="text-white/20">·</span>
               <span>
-                Development by <span className="text-cyan-300 font-bold">BK</span> &amp; CEO{" "}
-                <span className="text-cyan-300 font-bold">Sinester</span>
+                Development by <span className="text-emerald-300 font-bold">BK</span> &amp; CEO{" "}
+                <span className="text-emerald-300 font-bold">Sinester</span>
               </span>
               <span className="text-white/20">·</span>
               <a
                 href="mailto:balkinstr@web.de"
                 data-testid="footer-contact"
-                className="text-cyan-300 hover:text-white transition"
+                className="text-emerald-300 hover:text-white transition"
               >
                 balkinstr@web.de
               </a>
             </div>
             <a
               href="/admin"
-              className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 hover:text-cyan-300 transition"
+              className="text-[10px] uppercase tracking-widest font-bold text-zinc-500 hover:text-emerald-300 transition"
               data-testid="admin-link"
             >
               Admin →
@@ -491,16 +491,16 @@ export default function Landing() {
             className="fixed bottom-16 right-5 md:bottom-16 md:right-6 z-50 group flex items-center gap-3"
           >
             <span
-              className="hidden sm:inline-block px-3.5 py-2 rounded-full backdrop-blur-xl bg-black/60 border border-cyan-500/20 text-xs font-semibold text-white shadow-lg group-hover:border-cyan-500/50 group-hover:bg-black/80 transition-all"
+              className="hidden sm:inline-block px-3.5 py-2 rounded-full backdrop-blur-xl bg-black/60 border border-emerald-500/20 text-xs font-semibold text-white shadow-lg group-hover:border-emerald-500/50 group-hover:bg-black/80 transition-all"
               data-testid="ai-fab-label"
             >
               Need help? Customer support
             </span>
             <div className="relative">
-              <span className="absolute inset-0 rounded-full bg-cyan-500/40 blur-2xl opacity-70 group-hover:opacity-100 transition animate-pulse" />
-              <div className="relative w-14 h-14 md:w-16 md:h-16 rounded-full backdrop-blur-xl bg-cyan-500/25 border border-cyan-400/50 flex items-center justify-center shadow-[0_0_30px_rgba(0,229,255,0.4)] group-hover:scale-105 group-hover:bg-cyan-500/40 transition-all">
+              <span className="absolute inset-0 rounded-full bg-emerald-500/40 blur-2xl opacity-70 group-hover:opacity-100 transition animate-pulse" />
+              <div className="relative w-14 h-14 md:w-16 md:h-16 rounded-full backdrop-blur-xl bg-emerald-500/25 border border-emerald-400/50 flex items-center justify-center shadow-[0_0_30px_rgba(52,211,153,0.4)] group-hover:scale-105 group-hover:bg-emerald-500/40 transition-all">
                 <MessageCircle
-                  className="w-6 h-6 md:w-7 md:h-7 text-cyan-100"
+                  className="w-6 h-6 md:w-7 md:h-7 text-emerald-100"
                   strokeWidth={2.2}
                 />
               </div>
@@ -534,19 +534,19 @@ function FeatureCard({ feature, index }) {
   return (
     <div
       data-testid={`feature-card-${index}`}
-      className={`group relative overflow-hidden rounded-2xl border border-white/5 hover:border-cyan-500/30 ${feature.accent} p-6 md:p-8 transition-all hover:-translate-y-1 duration-300 min-h-[220px] md:min-h-[260px] ${feature.span} col-span-1`}
+      className={`group relative overflow-hidden rounded-2xl border border-white/5 hover:border-emerald-500/30 ${feature.accent} p-6 md:p-8 transition-all hover:-translate-y-1 duration-300 min-h-[220px] md:min-h-[260px] ${feature.span} col-span-1`}
     >
       {/* Ambient glow on hover */}
       <div
         className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"
         style={{
           background:
-            "radial-gradient(circle at 30% 20%, rgba(0,229,255,0.10) 0%, transparent 60%)",
+            "radial-gradient(circle at 30% 20%, rgba(52,211,153,0.10) 0%, transparent 60%)",
         }}
       />
       <div className="relative flex flex-col h-full">
-        <div className="w-11 h-11 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center mb-5 shadow-[0_0_20px_rgba(0,229,255,0.15)] group-hover:scale-110 transition-transform">
-          <Icon className="w-5 h-5 text-cyan-300" strokeWidth={2.2} />
+        <div className="w-11 h-11 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mb-5 shadow-[0_0_20px_rgba(52,211,153,0.15)] group-hover:scale-110 transition-transform">
+          <Icon className="w-5 h-5 text-emerald-300" strokeWidth={2.2} />
         </div>
         <h3 className="font-display font-bold text-xl md:text-2xl text-white mb-2.5 tracking-tight">
           {feature.title}
@@ -559,11 +559,11 @@ function FeatureCard({ feature, index }) {
           <div className="mt-auto pt-6">
             <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
               <div
-                className="h-full bg-gradient-to-r from-cyan-500 to-cyan-300 rounded-full animate-[fillBar_2.4s_ease-in-out_infinite]"
+                className="h-full bg-gradient-to-r from-emerald-500 to-emerald-300 rounded-full animate-[fillBar_2.4s_ease-in-out_infinite]"
                 style={{ width: "60%" }}
               />
             </div>
-            <div className="text-[10px] uppercase tracking-widest text-cyan-400/70 mt-2 font-bold">
+            <div className="text-[10px] uppercase tracking-widest text-emerald-400/70 mt-2 font-bold">
               Live · executing
             </div>
           </div>
@@ -572,7 +572,7 @@ function FeatureCard({ feature, index }) {
           <div className="mt-auto pt-6 grid grid-cols-2 gap-1.5 text-[11px] font-mono text-zinc-500">
             {["Instagram", "TikTok", "YouTube", "Spotify", "X / Twitter", "Threads", "Twitch", "Discord"].map((s) => (
               <div key={s} className="truncate flex items-center gap-1.5">
-                <span className="w-1 h-1 rounded-full bg-cyan-400/60" />
+                <span className="w-1 h-1 rounded-full bg-emerald-400/60" />
                 {s}
               </div>
             ))}

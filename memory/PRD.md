@@ -1,5 +1,23 @@
 # Better Social — PRD
 
+## Recent Updates (Jul 21, 2026 — Iteration 29 · Fork)
+- ✅ **AI chat flow rebuilt** — "Send us a message" no longer auto-hands-off to staff. AI is first responder again; explicit "Talk to a human" button + user-initiated handover only. Duplicate "Got it — I've paged the human team" messages fixed via 10-min dedupe check in backend. Once handover flagged, LLM calls skip (message still saved for admin).
+- ✅ **NOWPayments auto-reconciler** — New 90s background worker (`_nowpayments_reconciler_loop`) polls pending crypto deposits in the last 48h and auto-credits any that NOWPayments now reports as paid. Belt-and-suspenders for missed webhooks — users never have to click "Verify" again.
+- ✅ **Maintenance mode** — `GET /api/maintenance` (public) + `PATCH /api/admin/maintenance` (owner-only). New `<MaintenanceGate>` wraps the router; when enabled, regular clients see a "Be right back" screen. Staff/admin/owner + `/admin` route always allowed. Admin panel has toggle + custom message input.
+- ✅ **Profile pictures** — `POST /api/auth/me/avatar` (upload), `PATCH /api/auth/me/avatar-url` (paste URL), `DELETE /api/auth/me/avatar`, `GET /api/auth/avatars/{fname}` (serve). Avatar shows in Settings, topbar profile menu, shoutbox messages.
+- ✅ **Chat XP/level system** — `_award_chat_xp` grants 3 XP per shoutbox message; formula `level = isqrt(xp // 25) + 1`. Level badge shows next to username in topbar profile menu + shoutbox.
+- ✅ **Elastic Email integration (no-KYC)** — `send_email()` now supports Elastic Email API v4 as primary provider, MailerSend as fallback, SMTP as last resort. Admin panel Email Config panel has dedicated Elastic key field.
+- ✅ **Landing page redesign** — Complete rewrite to match dashboard: emerald green + obsidian dark, Outfit+Manrope fonts, bento-grid features, glassy scroll-blur header, radial glow hero, crypto chips grid, sleek 1px-border FAQ, giant "BETTER SOCIAL" watermark footer.
+- ✅ **Classic-layout dashboard footer bug FIXED** — Footer had escaped the flex wrapper causing huge green void on right side. Moved footer outside `<div className="flex flex-1">` container.
+- ✅ **Removed $0.80 daily free-bet** from topbar per user request. Backend endpoints kept as no-op.
+- ✅ **Support FAB gated to Help Center only** — Removed global AI FAB from ClientDashboard; new big "Need help? Customer support" button lives at the top of Help Center view.
+- ✅ **Staff name locked to login username** — Staff no longer have a "display name" editable field. `get_actor_display_name()` always returns their login username. Owner keeps customizable nickname.
+- ✅ **AI Inbox deduplication** — `admin_ai_sessions` now merges duplicate sessions by `identified_user_id` OR `identified_as`. One card per user. `_merged_count` field tells admin how many sessions were consolidated.
+- ✅ **Session migration on identify** — Both `/ai/identify` and `_auto_identify_from_token` now migrate messages from guest session IDs to canonical `ai-user-<username>` sessions, then delete the old session doc.
+- ✅ **User-agent + device parsing** — Sessions capture UA on identify/auth; `_parse_ua_device()` extracts OS/browser/type. Rendered in admin inbox header.
+- ✅ **Order history in admin inbox** — Each dedup'd session shows lifetime order count, total spent, and last 5 orders (collapsible details section).
+- ✅ **FAB label change** — "Live Chat?" → "Need help? Customer support" everywhere.
+
 ## Recent Updates (Jul 17, 2026 — Iterations 29+)
 - ✅ **Rollbit-style support widget** — Redesigned AIWidget header: BS brand square + stacked circular avatars of on-shift team members + large "Hi there 👋 How can we help?" heading. On-shift status pulled from new `GET /api/team/online` (public) endpoint. Team members flip themselves on/off shift via new `POST /api/admin/shift/toggle` — the "🟢 On shift" toggle now lives at the top of the Admin panel next to Logout.
 - ✅ **Auto-human on widget open** — Signed-in users now trigger `/ai/request-handover` immediately when they open the chat (no need to wait for the AI to fail). Past sessions preload into the Previous tab.

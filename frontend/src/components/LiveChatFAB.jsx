@@ -93,10 +93,22 @@ export default function LiveChatFAB() {
               {msgs.map((m) => {
                 const roleTag = m.role === "owner" ? "OWNER" : m.role === "admin" ? "ADMIN" : m.role === "moderator" || m.role === "staff" ? "STAFF" : null;
                 const roleCls = m.role === "owner" ? "text-amber-300 bg-amber-500/20 border-amber-500/40" : m.role === "admin" ? "text-emerald-200 bg-emerald-500/20 border-emerald-500/40" : "text-sky-200 bg-sky-500/20 border-sky-500/40";
+                const backend = process.env.REACT_APP_BACKEND_URL || "";
+                const avatar = m.avatar_url ? (m.avatar_url.startsWith("http") ? m.avatar_url : `${backend}${m.avatar_url}`) : null;
                 return (
                   <div key={m.id} className="bg-black/30 rounded-sm px-2 py-1.5">
                     <div className="flex items-center gap-1.5 mb-0.5">
+                      {avatar ? (
+                        <img src={avatar} alt="" className="w-5 h-5 rounded-full object-cover border border-emerald-500/40" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                      ) : (
+                        <div className="w-5 h-5 rounded-full bg-emerald-500/25 border border-emerald-500/40 flex items-center justify-center text-[8px] font-black text-emerald-200">
+                          {(m.username || "?").slice(0, 2).toUpperCase()}
+                        </div>
+                      )}
                       <span className="text-emerald-300 font-bold">@{m.username || "user"}</span>
+                      {m.level > 1 && (
+                        <span className="px-1 py-px rounded-sm bg-emerald-500/20 border border-emerald-500/40 text-[8px] font-black text-emerald-200 tracking-wider">L{m.level}</span>
+                      )}
                       {roleTag && (
                         <span className={`text-[8px] px-1 py-px rounded-sm border font-bold uppercase tracking-wider ${roleCls}`}>{roleTag}</span>
                       )}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Rocket, Zap, Palette, KeyRound, Mail, Save, User } from "lucide-react";
+import { Loader2, Rocket, Zap, Palette, KeyRound, Mail, Save, User, Camera, Link as LinkIcon, Trash2 } from "lucide-react";
 
 // -----------------------------------------------------------------------------
 // AviatorGame — daily crash game. Custom bet, cashout any time before the plane
@@ -197,6 +197,159 @@ export function SettingsView({ authedApi, user }) {
   );
 }
 
+function AvatarSettings({ authedApi, user }) {
+  const inputRef = useRef(null);
+  const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || "");
+  const [urlInput, setUrlInput] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [savingUrl, setSavingUrl] = useState(false);
+
+  // Build absolute URL for relative /api paths so <img> can render it
+  const backend = process.env.REACT_APP_BACKEND_URL || "";
+  const displayUrl = avatarUrl
+    ? (avatarUrl.startsWith("http") ? avatarUrl : `${backend}${avatarUrl}`)
+    : "";
+
+  const pickFile = () => inputRef.current?.click();
+
+  const onFileChange = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    if (f.size > 4 * 1024 * 1024) { toast.error("Image is too big (max 4 MB)"); return; }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      const r = await authedApi().post("/auth/me/avatar", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setAvatarUrl(r.data.avatar_url);
+      toast.success("Profile picture updated!");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const saveUrl = async () => {
+    const v = urlInput.trim();
+    if (!/^https?:\/\//i.test(v)) { toast.error("URL must start with http:// or https://"); return; }
+    setSavingUrl(true);
+    try {
+      const r = await authedApi().patch("/auth/me/avatar-url", { avatar_url: v });
+      setAvatarUrl(r.data.avatar_url);
+      setUrlInput("");
+      toast.success("Profile picture updated from URL!");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to set URL");
+    } finally {
+      setSavingUrl(false);
+    }
+  };
+
+  const clearAvatar = async () => {
+    try {
+      await authedApi().delete("/auth/me/avatar");
+      setAvatarUrl("");
+      toast.success("Profile picture removed.");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to remove");
+    }
+  };
+
+  return (
+    <div className="bg-[#0d0a14] border border-white/5 rounded-md p-5" data-testid="settings-avatar">
+      <div className="flex items-center gap-2 mb-4">
+        <Camera className="w-4 h-4 text-emerald-400" />
+        <div className="font-display font-bold text-sm">Profile picture</div>
+      </div>
+
+      <div className="flex flex-col sm:flex-row items-start gap-5">
+        {/* Preview */}
+        <div className="relative shrink-0">
+          <div className="w-24 h-24 rounded-full overflow-hidden border-2 border-emerald-500/40 bg-emerald-500/20 flex items-center justify-center shadow-lg shadow-emerald-900/30">
+            {displayUrl ? (
+              <img
+                src={displayUrl}
+                alt="avatar"
+                data-testid="settings-avatar-preview-img"
+                className="w-full h-full object-cover"
+                onError={() => setAvatarUrl("")}
+              />
+            ) : (
+              <span className="font-display font-black text-2xl text-emerald-200" data-testid="settings-avatar-initials">
+                {(user?.username || "?").slice(0, 2).toUpperCase()}
+              </span>
+            )}
+          </div>
+          {uploading && (
+            <div className="absolute inset-0 rounded-full bg-black/60 flex items-center justify-center">
+              <Loader2 className="w-6 h-6 animate-spin text-white" />
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div className="flex-1 w-full space-y-3">
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            onChange={onFileChange}
+            data-testid="settings-avatar-file-input"
+            className="hidden"
+          />
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={pickFile}
+              disabled={uploading}
+              data-testid="settings-avatar-upload-btn"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider bg-emerald-500 text-black hover:bg-emerald-400 disabled:opacity-50 transition"
+            >
+              <Camera className="w-3.5 h-3.5" /> Upload image
+            </button>
+            {avatarUrl && (
+              <button
+                onClick={clearAvatar}
+                data-testid="settings-avatar-clear-btn"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider border border-white/15 text-white/70 hover:text-white hover:border-white/30 transition"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Remove
+              </button>
+            )}
+          </div>
+          <div className="text-[11px] text-white/50">JPG, PNG, WEBP or GIF · Max 4 MB</div>
+
+          <div className="pt-3 border-t border-white/5">
+            <label className="text-[10px] uppercase tracking-widest text-white/50">Or paste an image URL</label>
+            <div className="mt-1 flex gap-2">
+              <input
+                type="url"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="https://i.imgur.com/example.png"
+                data-testid="settings-avatar-url-input"
+                className="flex-1 bg-black/40 border border-white/10 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-400"
+              />
+              <button
+                onClick={saveUrl}
+                disabled={savingUrl || !urlInput.trim()}
+                data-testid="settings-avatar-url-save"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/15 disabled:opacity-50 transition"
+              >
+                {savingUrl ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LinkIcon className="w-3.5 h-3.5" />}
+                Set URL
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AccountSettings({ authedApi, user }) {
   const [email, setEmail] = useState(user?.email || "");
   const [emailPw, setEmailPw] = useState("");
@@ -232,6 +385,8 @@ function AccountSettings({ authedApi, user }) {
 
   return (
     <div className="space-y-4">
+      <AvatarSettings authedApi={authedApi} user={user} />
+
       <div className="bg-[#0d0a14] border border-white/5 rounded-md p-5" data-testid="settings-email">
         <div className="flex items-center gap-2 mb-3">
           <Mail className="w-4 h-4 text-emerald-400" />

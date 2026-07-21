@@ -245,17 +245,30 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
             <span className="font-display font-black text-sm md:text-base truncate">Admin Console</span>
           </Link>
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => setNickOpen(true)}
-              data-testid="admin-nickname-btn"
-              className="hidden md:inline-flex items-center gap-2 px-3 py-2 border border-emerald-400/30 bg-emerald-500/10 rounded-sm text-xs hover:bg-emerald-500/20 transition"
-              title="Click to change the nickname shown to clients"
-            >
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-emerald-200">
-                Posting as <span className="font-bold text-white">{displayName || username || "—"}</span>
-              </span>
-            </button>
+            {role === "owner" ? (
+              <button
+                onClick={() => setNickOpen(true)}
+                data-testid="admin-nickname-btn"
+                className="hidden md:inline-flex items-center gap-2 px-3 py-2 border border-emerald-400/30 bg-emerald-500/10 rounded-sm text-xs hover:bg-emerald-500/20 transition"
+                title="Click to change the nickname shown to clients"
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-emerald-200">
+                  Posting as <span className="font-bold text-white">{displayName || username || "—"}</span>
+                </span>
+              </button>
+            ) : (
+              <div
+                data-testid="admin-staff-name-display"
+                className="hidden md:inline-flex items-center gap-2 px-3 py-2 border border-emerald-400/30 bg-emerald-500/10 rounded-sm text-xs cursor-default"
+                title="Staff always chat as their login username — no custom name allowed."
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-emerald-200">
+                  Posting as <span className="font-bold text-white">@{username || "—"}</span>
+                </span>
+              </div>
+            )}
             <ShiftToggle token={token} />
             <a href="/client/dashboard" data-testid="admin-return-shop"
                className="inline-flex items-center gap-1 px-3 py-2 border border-white/10 rounded-sm text-[11px] uppercase tracking-wider hover:bg-white/5 transition"
@@ -1352,6 +1365,7 @@ function SettingsPanel({ token }) {
   return (
     <div className="space-y-6">
       <UILayoutTogglePanel token={token} />
+      <MaintenancePanel token={token} />
       <NewsAnnouncementPanel token={token} />
       <FakeOnlineTogglePanel token={token} />
       <Sim5ConfigPanel token={token} />
@@ -1476,6 +1490,87 @@ function FakeOnlineTogglePanel({ token }) {
     </div>
   );
 }
+
+
+function MaintenancePanel({ token }) {
+  const [enabled, setEnabled] = useState(false);
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await adminApi(token).get("/maintenance");
+        setEnabled(!!r.data.enabled);
+        setMessage(r.data.message || "");
+      } catch {}
+      setLoading(false);
+    })();
+  }, [token]);
+
+  const save = async (nextEnabled, nextMessage = null) => {
+    setSaving(true);
+    try {
+      const body = { enabled: !!nextEnabled };
+      if (nextMessage !== null) body.message = nextMessage;
+      await adminApi(token).patch("/admin/maintenance", body);
+      setEnabled(!!nextEnabled);
+      toast.success(
+        nextEnabled ? "Maintenance mode ENABLED — regular clients now see the maintenance screen." : "Maintenance mode DISABLED — site is live for everyone."
+      );
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to save");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="maintenance-panel">
+      <h2 className="font-display font-bold text-lg mb-1 flex items-center gap-2">
+        <span className={`w-2 h-2 rounded-full ${enabled ? "bg-amber-400 animate-pulse" : "bg-white/25"}`} />
+        Maintenance mode
+      </h2>
+      <p className="text-xs text-white/50 mb-4">
+        Flip ON to lock out regular clients — they'll see a "Be right back" screen. Staff, admins and owners can still access the site.
+      </p>
+      <div className="mb-4">
+        <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">Custom message shown to clients</label>
+        <textarea
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          rows={3}
+          placeholder="We're doing quick maintenance — we'll be back in a few minutes."
+          data-testid="maintenance-message-input"
+          className="w-full bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm text-white resize-none focus:outline-none focus:border-amber-400"
+          maxLength={500}
+        />
+      </div>
+      <div className="flex items-center gap-4 flex-wrap">
+        <button
+          onClick={() => save(!enabled, message)}
+          disabled={loading || saving}
+          data-testid="toggle-maintenance"
+          className={`relative w-14 h-7 rounded-full transition ${enabled ? "bg-amber-400" : "bg-white/15"} disabled:opacity-50`}
+        >
+          <span className={`absolute top-0.5 ${enabled ? "left-8" : "left-0.5"} w-6 h-6 rounded-full bg-white shadow transition-all`} />
+        </button>
+        <span className="text-sm font-bold" data-testid="maintenance-status">
+          {loading ? "Loading…" : enabled ? "🔒 Maintenance ON" : "🟢 Site is live"}
+        </span>
+        <button
+          onClick={() => save(enabled, message)}
+          disabled={saving}
+          data-testid="save-maintenance-message"
+          className="ml-auto px-4 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider bg-emerald-500 hover:bg-emerald-400 text-black disabled:opacity-50 transition"
+        >
+          Save message
+        </button>
+      </div>
+    </div>
+  );
+}
+
 
 function Sim5ConfigPanel({ token }) {
   const [cfg, setCfg] = useState({ api_key: "", prices: {}, default_country: "any", default_operator: "any" });
@@ -1723,6 +1818,7 @@ function NowpaymentsConfigPanel({ token }) {
 function EmailConfigPanel({ token }) {
   const [cfg, setCfg] = useState(null);
   const [msKey, setMsKey] = useState("");
+  const [eeKey, setEeKey] = useState("");
   const [host, setHost] = useState("");
   const [port, setPort] = useState(587);
   const [user, setUser] = useState("");
@@ -1768,10 +1864,12 @@ function EmailConfigPanel({ token }) {
       };
       if (pw) body.smtp_password = pw;
       if (msKey) body.mailersend_api_key = msKey.trim();
+      if (eeKey) body.elastic_api_key = eeKey.trim();
       await adminApi(token).post("/admin/email-config", body);
       toast.success("Email config saved");
       setPw("");
       setMsKey("");
+      setEeKey("");
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed");
@@ -1808,7 +1906,9 @@ function EmailConfigPanel({ token }) {
       {cfg && (
         <div className={`mb-4 p-3 rounded-sm text-xs ${cfg.configured ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" : "bg-amber-500/10 border border-amber-500/30 text-amber-300"}`}>
           {cfg.configured
-            ? cfg.provider === "mailersend"
+            ? cfg.provider === "elastic_email"
+              ? `Active · Elastic Email API · key ${cfg.elastic_api_key_masked}`
+              : cfg.provider === "mailersend"
               ? `Active · MailerSend API · key ${cfg.mailersend_api_key_masked}`
               : `Active · SMTP · ${cfg.smtp_user} via ${cfg.smtp_host}:${cfg.smtp_port}`
             : "Not configured — welcome emails & password reset are disabled."}
@@ -1816,10 +1916,25 @@ function EmailConfigPanel({ token }) {
       )}
 
       <form onSubmit={save} className="space-y-4" data-testid="email-config-form">
-        {/* MailerSend — recommended */}
+        {/* Elastic Email — top pick (no KYC) */}
+        <div className="bg-[#0d0a14] border border-emerald-400/30 rounded-sm p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 text-[10px] font-bold uppercase tracking-wider rounded-sm">No KYC</div>
+            <h3 className="font-bold text-sm">Elastic Email API</h3>
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Elastic Email API Key</Label>
+            <Input data-testid="elastic-api-key" type="password" value={eeKey} onChange={(e) => setEeKey(e.target.value)} placeholder={cfg?.elastic_set ? `••••••••${(cfg.elastic_api_key_masked || "").slice(-4)} (saved — re-enter to update)` : "e.g. F8ADEB4CBB1234567890ABCDEF..."} className="bg-[#1a1525] border-white/10 mt-1 font-mono text-xs" />
+            <div className="text-[10px] text-white/40 mt-1">
+              Get from <span className="font-mono text-emerald-400">elasticemail.com → Settings → Manage API Keys</span>. Permission required: <span className="text-emerald-300">SendHttp</span>. Verify your sending domain first (SPF + DKIM).
+            </div>
+          </div>
+        </div>
+
+        {/* MailerSend — alternate */}
         <div className="bg-[#0d0a14] border border-blue-400/20 rounded-sm p-4 space-y-3">
           <div className="flex items-center gap-2">
-            <div className="px-2 py-0.5 bg-blue-500/20 text-blue-300 text-[10px] font-bold uppercase tracking-wider rounded-sm">Recommended</div>
+            <div className="px-2 py-0.5 bg-blue-500/20 text-blue-300 text-[10px] font-bold uppercase tracking-wider rounded-sm">Alternate</div>
             <h3 className="font-bold text-sm">MailerSend API</h3>
           </div>
           <div>
@@ -3221,28 +3336,15 @@ function AIInboxPanel({ token, displayName }) {
 
   return (
     <div className="space-y-4">
-      {/* Top toolbar — staff name + offline messages toggle */}
+      {/* Top toolbar — offline messages toggle (staff name is auto = login username) */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-[#1a1525] border border-white/5 rounded-sm p-4">
-        <form onSubmit={saveStaffName} className="flex items-center gap-2">
-          <Label className="text-[11px] uppercase tracking-wider text-white/60 shrink-0">
-            Staff name (shown to user)
-          </Label>
-          <Input
-            data-testid="staff-name-input"
-            value={staffName}
-            onChange={(e) => setStaffName(e.target.value)}
-            maxLength={40}
-            className="bg-[#0d0a14] border-white/10 max-w-[180px] text-sm"
-          />
-          <button
-            type="submit"
-            disabled={savingName}
-            data-testid="staff-name-save"
-            className="px-3 py-2 gradient-pp rounded-sm text-[10px] uppercase tracking-wider font-bold disabled:opacity-50"
-          >
-            {savingName ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save"}
-          </button>
-        </form>
+        <div className="flex items-center gap-2 text-xs text-white/60">
+          <span className="text-[11px] uppercase tracking-wider text-white/40">Chatting as</span>
+          <span className="px-2 py-1 rounded-sm bg-emerald-500/15 border border-emerald-500/40 text-emerald-200 font-bold text-sm">
+            {staffName || "Support"}
+          </span>
+          <span className="text-[10px] text-white/40">(your login username — clients see this)</span>
+        </div>
         <div className="flex items-center gap-3">
           {waiting > 0 && (
             <span
@@ -3437,7 +3539,7 @@ function AIInboxPanel({ token, displayName }) {
                       ? "User asked for staff — Take Over now"
                       : "AI handling · click Take Over to reply"}
                   </div>
-                  {(activeSess?.ip || activeSess?.country || activeSess?.isp) && (
+                  {(activeSess?.ip || activeSess?.country || activeSess?.isp || activeSess?.device || activeSess?.orders_count) && (
                     <div
                       data-testid="session-geo"
                       className="mt-1.5 flex flex-wrap gap-1.5 text-[9px] font-mono"
@@ -3458,7 +3560,44 @@ function AIInboxPanel({ token, displayName }) {
                           ISP: {activeSess.isp}
                         </span>
                       )}
+                      {activeSess.device && (activeSess.device.os || activeSess.device.browser) && (
+                        <span
+                          className="px-1.5 py-0.5 rounded-sm bg-white/5 text-emerald-300/80"
+                          title={activeSess.device.raw || ""}
+                          data-testid="session-device"
+                        >
+                          {activeSess.device.type} · {activeSess.device.os} · {activeSess.device.browser}
+                        </span>
+                      )}
+                      {typeof activeSess.orders_count === "number" && (
+                        <span
+                          className="px-1.5 py-0.5 rounded-sm bg-emerald-500/15 border border-emerald-500/30 text-emerald-200"
+                          data-testid="session-orders-summary"
+                          title={`${activeSess.orders_count} orders · $${(activeSess.orders_total || 0).toFixed(2)} lifetime`}
+                        >
+                          🛒 {activeSess.orders_count} orders · ${(activeSess.orders_total || 0).toFixed(2)}
+                        </span>
+                      )}
                     </div>
+                  )}
+                  {/* Recent orders — collapsible */}
+                  {Array.isArray(activeSess?.recent_orders) && activeSess.recent_orders.length > 0 && (
+                    <details className="mt-1.5" data-testid="session-recent-orders">
+                      <summary className="text-[9px] uppercase tracking-widest text-emerald-300/60 cursor-pointer hover:text-emerald-200 font-bold">
+                        Show recent {activeSess.recent_orders.length} orders ▾
+                      </summary>
+                      <div className="mt-1.5 space-y-1">
+                        {activeSess.recent_orders.map((o) => (
+                          <div key={o.id} className="text-[10px] font-mono flex items-center gap-2 px-2 py-1 rounded-sm bg-white/[0.02] border border-white/5">
+                            <span className="text-white/50 shrink-0">{o.created_at ? new Date(o.created_at).toLocaleDateString() : "—"}</span>
+                            <span className="text-white truncate flex-1" title={o.service_name}>{o.service_name}</span>
+                            <span className="text-emerald-300 shrink-0">×{o.quantity}</span>
+                            <span className="text-amber-300 shrink-0">${(o.charge || 0).toFixed(2)}</span>
+                            <span className={`shrink-0 px-1.5 py-0.5 rounded-sm text-[8px] uppercase tracking-wider ${o.status === "Completed" || o.status === "completed" ? "bg-emerald-500/20 text-emerald-300" : "bg-white/5 text-white/60"}`}>{o.status || "?"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">

@@ -554,11 +554,27 @@ export default function ClientDashboard() {
                 <button onClick={() => setProfileOpen((v) => !v)}
                   data-testid="profile-menu-btn"
                   className="flex items-center gap-2 hover:bg-white/5 rounded-md px-1.5 py-1 transition">
-                  <div className="w-8 h-8 rounded-full bg-emerald-500/25 border border-emerald-500/40 flex items-center justify-center text-xs font-bold text-emerald-200" data-testid="client-username">
-                    {user.username.slice(0, 2).toUpperCase()}
+                  <div className="w-8 h-8 rounded-full bg-emerald-500/25 border border-emerald-500/40 overflow-hidden flex items-center justify-center text-xs font-bold text-emerald-200" data-testid="client-username">
+                    {user.avatar_url ? (
+                      <img
+                        src={user.avatar_url.startsWith("http") ? user.avatar_url : `${process.env.REACT_APP_BACKEND_URL}${user.avatar_url}`}
+                        alt="avatar"
+                        className="w-full h-full object-cover"
+                        onError={(e) => { e.currentTarget.style.display = "none"; }}
+                      />
+                    ) : (
+                      user.username.slice(0, 2).toUpperCase()
+                    )}
                   </div>
                   <div className="hidden md:block text-xs text-left">
-                    <div className="font-bold text-white leading-tight">{user.username}</div>
+                    <div className="font-bold text-white leading-tight flex items-center gap-1.5">
+                      {user.username}
+                      {user.chat_level && user.chat_level > 1 && (
+                        <span className="px-1.5 py-px rounded-sm bg-emerald-500/25 border border-emerald-500/40 text-[9px] font-black text-emerald-200 tracking-wider" data-testid="topbar-user-level">
+                          L{user.chat_level}
+                        </span>
+                      )}
+                    </div>
                     <div className="text-emerald-400/70 leading-tight uppercase text-[10px] tracking-widest">{user.role || "member"}</div>
                   </div>
                 </button>
@@ -839,7 +855,7 @@ export default function ClientDashboard() {
               {view === "invoices" && (
                 <InvoicesView authedApi={authedApi} reloadBalance={loadBalance} />
               )}
-              {view === "help" && <HelpCenterView />}
+              {view === "help" && <HelpCenterView onOpenAI={() => setAiOpen(true)} />}
               {view === "settings" && <SettingsView authedApi={authedApi} user={user} />}
               {view === "redeem" && (
                 <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
@@ -856,45 +872,28 @@ export default function ClientDashboard() {
             </div>
           )}
         </main>
-        {/* Dashboard footer — global copyright / credits */}
-        <footer className="border-t border-emerald-500/20 bg-[#0d2b12] py-4 px-4 md:px-8 text-center" data-testid="dashboard-footer">
-          <div className="max-w-7xl mx-auto flex items-center justify-center gap-3 flex-wrap text-[10px] uppercase tracking-widest text-white/60">
-            <span className="inline-flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="font-bold">© {new Date().getFullYear()} BetterSocial</span>
-            </span>
-            <span className="text-emerald-500/40">·</span>
-            <span>
-              Development by <span className="text-emerald-300 font-bold">BK</span> &amp; CEO <span className="text-emerald-300 font-bold">Sinester</span>
-            </span>
-          </div>
-        </footer>
       </div>
+      {/* Dashboard footer — spans FULL width outside the sidebar flex row */}
+      <footer className="border-t border-emerald-500/20 bg-[#0d2b12] py-4 px-4 md:px-8 text-center" data-testid="dashboard-footer">
+        <div className="max-w-7xl mx-auto flex items-center justify-center gap-3 flex-wrap text-[10px] uppercase tracking-widest text-white/60">
+          <span className="inline-flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="font-bold">© {new Date().getFullYear()} BetterSocial</span>
+          </span>
+          <span className="text-emerald-500/40">·</span>
+          <span>
+            Development by <span className="text-emerald-300 font-bold">BK</span> &amp; CEO <span className="text-emerald-300 font-bold">Sinester</span>
+          </span>
+        </div>
+      </footer>
 
-      {/* Better Social AI floating widget */}
+      {/* Better Social AI floating widget — only rendered when open */}
       <AIWidget open={aiOpen} onOpenChange={setAiOpen} />
       <GoalNotifier />
-      <LiveChatFAB />
       <NewsModal />
-      {!aiOpen && !(typeof window !== "undefined" && localStorage.getItem("bs_chat_banned") === "1") && (
-        <button
-          onClick={() => setAiOpen(true)}
-          data-testid="dashboard-ai-fab"
-          aria-label="Open AI assistant"
-          className="fixed bottom-5 right-5 z-50 group flex items-center gap-3"
-        >
-          <span className="hidden sm:inline-block px-3 py-1.5 rounded-full bg-[#1a1525]/95 backdrop-blur border border-white/10 text-xs font-medium text-white shadow-lg group-hover:border-[#FF007F]/50 transition">
-            Need help? Customer support
-          </span>
-          <div className="relative">
-            <span className="absolute inset-0 rounded-full gradient-pp blur-lg opacity-70 group-hover:opacity-100 transition animate-pulse" />
-            <div className="relative w-14 h-14 rounded-full gradient-pp flex items-center justify-center shadow-[0_10px_40px_-12px_rgba(255,0,127,0.8)] group-hover:scale-105 transition">
-              <Bot className="w-6 h-6 text-white" />
-            </div>
-            <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-[#00E5FF] border-2 border-[#050505] animate-pulse" />
-          </div>
-        </button>
-      )}
+      {/* AI FAB — ONLY inside the Help Center view (per user request).
+          The Help Center itself renders a big "Chat with support" button
+          that calls setAiOpen(true), so we pass it via context/prop. */}
     </div>
   );
 }
