@@ -1,0 +1,23 @@
+{
+  "summary": "Retested TikTok Auto-Live detector fix (_is_tiktok_user_live) after the iter-27 value-based rewrite. All 16 pytest checks pass (12 original + 4 added parametrized rarely-live handles). The previously-failing false-positive assertion — nonsense handle → is_live=false — now PASSES. Additionally verified that tiktok/nba/zachking/charlidamelio all return is_live=false as expected. Endpoint returns HTTP 200 for every handle (no 500s). Live-sub create/cancel regression + worker liveness (last_check_at updated within 60s) also green. Critical false-positive regression is RESOLVED.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter27_live_sub_bugfix.py",
+    "/app/test_reports/pytest/iter28_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:2238 — regex `\"liveRoomId\":\"?([1-9]\\d{6,})\"?` requires 7+ digits. Real room IDs are typically 19 digits so this is safe, but worth documenting the assumption in a comment.",
+    "server.py:2233 — off-marker regex has a trailing `\"?` outside the alternation that never matches the closing quote of `userStatus\":1`; it works but is slightly odd. Cosmetic only.",
+    "server.py:2245 — consider adding a defensive second-confirmation call (e.g. re-probe 10s later) before triggering burst orders, given the financial impact of a false positive."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter27_live_sub_bugfix.py"],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "not tested (backend-only request)"},
+  "test_credentials": "testbugfix1 / password1; admin secret haha123",
+  "seed_data_creation": "Synthetic live_subscriptions docs (TEST-iter27-*) inserted+cleaned per-test. testbugfix1 wallet was already topped up from iter-27; no additional persistent state changed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Detector fix verified with real TikTok probes for 5 known-offline / nonexistent handles. If regressions are suspected, re-run `python -m pytest backend/tests/test_iter27_live_sub_bugfix.py -v` — expect 16/16. The parametrized `test_debug_rarely_live_handles_return_false` block is the smoke test for future changes to _is_tiktok_user_live.",
+  "rca of the issue": "Root cause (iter-27): substring matching on 'liveroominfo' / 'roomid\":' matched JSON schema KEYS present in every TikTok /@handle/live SSR page. Fix (iter-28): switched to VALUE-based regex — requires a numeric room_id ≥7 digits AND either `\"status\":2` (with negative lookahead to avoid 20/22/etc.) or `\"is_live\":true`. Webcast API signal 1 now returns False on empty `data:{}`. Explicit off-markers (userNotLive / userStatus:1 / is_live:false) short-circuit to False first. Verified live against tiktok/nba/zachking/charlidamelio and a nonsense handle — all correctly return is_live=false."
+}

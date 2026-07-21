@@ -2160,16 +2160,19 @@ LIVE_SUB_ALLOWED_DAYS = [7, 14, 30, 60, 90, 365]
 
 
 async def _is_tiktok_user_live(tt_username: str) -> bool:
-    """Robust best-effort check whether a TikTok user is currently live.
-    Uses TWO signals so a single scraping-shape change doesn't take the worker
-    down:
-      1. `webcast.tiktok.com/webcast/room/info_by_scene/` — the mobile-app
-         endpoint used to open a LIVE room, keyed on unique_id (username).
-         Returns `{"data":{"user":{"status":2}}}` (status 2 == broadcasting)
-         when the user is live. This works without cookies.
-      2. Fallback: the SSR HTML on /@handle/live — look for ANY of several
-         markers TikTok has shipped over the last 12 months so a copy tweak
-         doesn't break detection.
+    """Robust check whether a TikTok user is currently broadcasting live.
+    Rule: return True ONLY when we find an unambiguous positive signal — never
+    match on JSON *key* names (TikTok's SSR HTML embeds those for every
+    account, live or not, which would spam-order every sub).
+
+    Signals, evaluated in order:
+      1. Webcast API `info_by_scene` — user.status == 2 OR room.status == 2
+         OR liveRoomInfo.liveRoomId is a non-zero numeric value. Empty
+         `data: {}` means "not currently broadcasting" → False.
+      2. HTML fallback: regex for `"liveRoomId":"<digits>"` PAIRED with
+         `"status":2` (numeric value 2, appearing after a colon — not the
+         schema key). Any of the explicit "off" markers immediately shortcut
+         to False.
     Returns False on any error so a network hiccup never spam-orders."""
     handle = tt_username.strip().lstrip("@")
     if not handle:
@@ -2179,7 +2182,8 @@ async def _is_tiktok_user_live(tt_username: str) -> bool:
         "Accept-Language": "en-US,en;q=0.9",
         "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
     }
-    # ---- Signal 1: webcast API ----
+
+    # ---- Signal 1: webcast info_by_scene ----
     try:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as c:
             wc = await c.get(
@@ -2188,22 +2192,33 @@ async def _is_tiktok_user_live(tt_username: str) -> bool:
                 headers=headers,
             )
             if wc.status_code == 200:
-                data = wc.json() if wc.headers.get("content-type", "").startswith("application/json") else None
+                ct = wc.headers.get("content-type", "")
+                data = wc.json() if ct.startswith("application/json") else None
                 if isinstance(data, dict):
-                    # Multiple shapes seen in the wild — check them all.
-                    user = ((data.get("data") or {}).get("user")) or {}
-                    if int(user.get("status") or 0) == 2:
+                    inner = data.get("data") or {}
+                    user = inner.get("user") or {}
+                    room = inner.get("room") or {}
+                    live_room = inner.get("liveRoomInfo") or {}
+                    # status 2 means "broadcasting" in TikTok's LIVE state machine
+                    if isinstance(user, dict) and int(user.get("status") or 0) == 2:
                         return True
-                    room = ((data.get("data") or {}).get("room")) or {}
-                    if int(room.get("status") or 0) == 2:
+                    if isinstance(room, dict) and int(room.get("status") or 0) == 2:
                         return True
-                    live_room = (data.get("data") or {}).get("liveRoomInfo") or {}
-                    if isinstance(live_room, dict) and live_room.get("liveRoomId"):
-                        return True
+                    if isinstance(live_room, dict):
+                        room_id = live_room.get("liveRoomId") or live_room.get("room_id")
+                        try:
+                            if room_id and int(str(room_id).strip("\"'")) > 0:
+                                # room_id present AND status field says broadcasting
+                                if int(live_room.get("status") or 0) == 2:
+                                    return True
+                        except (TypeError, ValueError):
+                            pass
+                    # If data was returned but no positive marker → NOT live
+                    return False
     except Exception as e:
         logger.debug("[livesub] webcast probe failed for %s: %s", handle, e)
 
-    # ---- Signal 2: /@handle/live HTML scrape (multi-marker) ----
+    # ---- Signal 2: /@handle/live HTML — VALUE regex, never key substrings ----
     url = f"https://www.tiktok.com/@{handle}/live"
     try:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as c:
@@ -2214,14 +2229,20 @@ async def _is_tiktok_user_live(tt_username: str) -> bool:
     if r.status_code >= 400:
         return False
     html = r.text[:400_000]
-    lower = html.lower()
-    # Any of these substrings appearing together with a live-room indicator = live
-    live_markers = ('"status":2', '"is_live":true', 'liveroominfo', 'roomid":', '"liveintro')
-    off_markers = ('usernotlive', '"userstatus":1', '"islive":false')
-    if any(m in lower for m in off_markers):
+    # Explicit off-signals — if present, bail out immediately
+    off_re = re.compile(r'"(userNotLive|userStatus":\s*1|isLive":\s*false|is_live":\s*false)"?', re.IGNORECASE)
+    if off_re.search(html):
         return False
-    hits = sum(1 for m in live_markers if m in lower)
-    if hits >= 2:
+    # Positive signals — REQUIRE both a non-zero liveRoomId value AND status:2
+    # (both need to be VALUES, not the key strings themselves).
+    room_id_re = re.compile(r'"liveRoomId"\s*:\s*"?([1-9]\d{6,})"?')  # rooms are ≥7 digit numbers
+    room_id_hit = bool(room_id_re.search(html))
+    # `"status":2` — the 2 must be a raw number, not part of "status2" or a longer number
+    status_two_re = re.compile(r'"status"\s*:\s*2(?!\d)')
+    status_two_hit = bool(status_two_re.search(html))
+    is_live_true_re = re.compile(r'"is[_]?[lL]ive"\s*:\s*true')
+    is_live_hit = bool(is_live_true_re.search(html))
+    if room_id_hit and (status_two_hit or is_live_hit):
         return True
     return False
 
