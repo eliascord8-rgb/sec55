@@ -130,6 +130,14 @@ class TestDebugTiktokLiveEndpoint:
         d = r.json()
         assert d.get("is_live") is False
 
+    @pytest.mark.parametrize("handle", ["tiktok", "nba", "zachking", "charlidamelio"])
+    def test_debug_rarely_live_handles_return_false(self, user_token, handle):
+        r = requests.get(f"{API}/debug/tiktok-live/{handle}",
+                         headers=ah(user_token), timeout=30)
+        assert r.status_code == 200, f"{handle}: {r.status_code} {r.text}"
+        d = r.json()
+        assert d.get("is_live") is False, f"{handle} should not be live: {d}"
+
 
 # ---------------- 2. Live-Sub create validation (regression) ----------------
 class TestLiveSubValidationRegression:
