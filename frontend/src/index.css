@@ -32,8 +32,11 @@ html:has(body.theme-green-body) {
 }
 
 .font-display {
-    font-family: "Unbounded", sans-serif;
+    font-family: "Outfit", "Unbounded", sans-serif;
     letter-spacing: -0.02em;
+}
+.font-manrope {
+    font-family: "Manrope", "IBM Plex Sans", sans-serif;
 }
 .font-mono {
     font-family: "JetBrains Mono", monospace;
