@@ -227,6 +227,9 @@ def _user_public(doc: dict) -> dict:
         "email": doc["email"],
         "role": doc.get("role", "user"),
         "created_at": doc.get("created_at"),
+        "avatar_url": doc.get("avatar_url"),
+        "chat_level": doc.get("chat_level", 1),
+        "chat_xp": doc.get("chat_xp", 0),
     }
 
 
@@ -449,6 +452,84 @@ async def me(user: CurrentUser = Depends(current_user_dep), request: Request = N
     db: AsyncIOMotorDatabase = request.app.state.db
     doc = await db.users.find_one({"id": user.id}, {"_id": 0, "password_hash": 0})
     return {"user": _user_public(doc)}
+
+
+# ============ PROFILE PICTURES ============
+# Users can EITHER upload a file OR paste an image URL — the frontend picks
+# which flow. Uploads land in AI_UPLOAD_DIR/avatars and are served via a
+# public GET endpoint so shoutbox / dashboard can render them cheaply.
+
+AVATAR_DIR = UPLOAD_ROOT / "avatars"
+try:
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+except PermissionError as _e:
+    logger.warning(f"Cannot create avatar dir {AVATAR_DIR}: {_e}")
+MAX_AVATAR_BYTES = 4 * 1024 * 1024  # 4 MB
+ALLOWED_AVATAR_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+
+class AvatarUrlBody(BaseModel):
+    avatar_url: str = Field(..., min_length=8, max_length=500)
+
+
+@auth_router.post("/me/avatar")
+async def upload_avatar(
+    request: Request,
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(current_user_dep),
+):
+    """Upload a profile picture from the user's device. Persists file + updates avatar_url."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    ct = (file.content_type or "").lower()
+    if ct not in ALLOWED_AVATAR_MIME:
+        raise HTTPException(status_code=400, detail="Only JPG, PNG, WEBP or GIF images are allowed.")
+    data = await file.read()
+    if len(data) > MAX_AVATAR_BYTES:
+        raise HTTPException(status_code=413, detail="Image too big (max 4 MB).")
+    if len(data) < 100:
+        raise HTTPException(status_code=400, detail="File is empty or corrupt.")
+    ext = mimetypes.guess_extension(ct) or ".jpg"
+    fname = f"{user.id}_{uuid.uuid4().hex[:8]}{ext}"
+    fpath = AVATAR_DIR / fname
+    fpath.write_bytes(data)
+    url = f"/api/auth/avatars/{fname}"
+    await db.users.update_one(
+        {"id": user.id},
+        {"$set": {"avatar_url": url}},
+    )
+    return {"ok": True, "avatar_url": url}
+
+
+@auth_router.patch("/me/avatar-url")
+async def set_avatar_url(payload: AvatarUrlBody, request: Request, user: CurrentUser = Depends(current_user_dep)):
+    """Set profile picture from a pasted URL (Twitter/Discord CDN, imgur, etc.)."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    url = payload.avatar_url.strip()
+    if not re.match(r"^https?://", url):
+        raise HTTPException(status_code=400, detail="URL must start with http(s)://")
+    await db.users.update_one({"id": user.id}, {"$set": {"avatar_url": url}})
+    return {"ok": True, "avatar_url": url}
+
+
+@auth_router.delete("/me/avatar")
+async def clear_avatar(request: Request, user: CurrentUser = Depends(current_user_dep)):
+    """Remove the user's avatar (falls back to initials)."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    await db.users.update_one({"id": user.id}, {"$unset": {"avatar_url": ""}})
+    return {"ok": True}
+
+
+@auth_router.get("/avatars/{filename}")
+async def serve_avatar(filename: str):
+    """Serve an uploaded avatar image."""
+    # Basic path-traversal protection
+    safe = re.sub(r"[^a-zA-Z0-9._-]", "", filename)[:120]
+    if not safe:
+        raise HTTPException(status_code=404, detail="Not found")
+    fpath = AVATAR_DIR / safe
+    if not fpath.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(str(fpath))
 
 
 @auth_router.get("/hcaptcha-site-key")
@@ -926,9 +1007,21 @@ async def ai_chat(req: AIChatRequest, request: Request):
     )
 
     # If admin has taken over → don't call LLM, return empty reply
-    sess = await db.ai_sessions.find_one({"session_id": session_id}, {"_id": 0, "status": 1})
+    sess = await db.ai_sessions.find_one({"session_id": session_id}, {"_id": 0, "status": 1, "needs_handover": 1})
     if sess and sess.get("status") == "human":
         return {"reply": "", "session_id": session_id, "human_takeover": True, "needs_handover": False, "admin_online": True}
+    # If user already asked for a human and we're still waiting for one to
+    # join, don't call the LLM — the user's message is already persisted and
+    # the team can see it. Returning an empty reply keeps the "waiting for
+    # staff" state clean without spamming the AI's fallback CTA.
+    if sess and sess.get("needs_handover"):
+        return {
+            "reply": "",
+            "session_id": session_id,
+            "human_takeover": False,
+            "needs_handover": True,
+            "admin_online": await is_admin_online(db),
+        }
 
     # Otherwise, call LLM
     from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -1008,6 +1101,20 @@ async def ai_request_handover(req: HandoverRequest, request: Request):
         # the admin still sees the request in the inbox.
         session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    # Dedupe: if this session already flagged for handover within the last 10
+    # minutes, don't insert another confirmation bubble — return the existing
+    # notice instead. Prevents duplicate "Got it — I've paged the human team"
+    # messages when the widget re-triggers the flow.
+    ten_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    existing = await db.ai_chat_messages.find_one(
+        {
+            "session_id": session_id,
+            "kind": "handover_notice",
+            "created_at": {"$gt": ten_min_ago},
+        },
+        {"_id": 0, "id": 1},
+        sort=[("created_at", -1)],
+    )
     await db.ai_sessions.update_one(
         {"session_id": session_id},
         {
@@ -1023,6 +1130,8 @@ async def ai_request_handover(req: HandoverRequest, request: Request):
         },
         upsert=True,
     )
+    if existing:
+        return {"ok": True, "session_id": session_id, "message_id": existing["id"], "deduped": True}
     # Confirm bot message to the user — persisted so the widget can show it
     # if it re-opens later, and the admin can see it in the inbox too.
     bot_msg_id = str(uuid.uuid4())

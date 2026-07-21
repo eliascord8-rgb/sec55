@@ -335,7 +335,7 @@ export default function Landing() {
             className="hidden sm:inline-block px-3 py-1.5 rounded-full bg-[#1a1525]/95 backdrop-blur border border-white/10 text-xs font-medium text-white shadow-lg group-hover:border-[#FF007F]/50 transition"
             data-testid="ai-fab-label"
           >
-            Live Chat?
+            Need help? Customer support
           </span>
           <div className="relative">
             <span className="absolute inset-0 rounded-full gradient-pp blur-lg opacity-70 group-hover:opacity-100 transition animate-pulse" />

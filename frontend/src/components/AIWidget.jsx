@@ -86,19 +86,15 @@ export default function AIWidget({ open, onOpenChange }) {
     }
   }, [user, identified]);
 
-  // Auto-connect signed-in users to a live human on OPEN — the AI is only a
-  // fallback when no team member is around. We fire an immediate handover
-  // request and preload their previous conversations.
+  // Preload past sessions when the widget opens for signed-in users so the
+  // "Previous" tab is instant. AI is the first responder — no auto-handover.
   const openedRef = useRef(false);
   useEffect(() => {
     if (!open) { openedRef.current = false; return; }
     if (openedRef.current) return;
     openedRef.current = true;
     if (user) {
-      // 1. Preload past sessions so the "Previous" tab is instant
       loadPastSessions();
-      // Home is the default view for signed-in users — they can browse quick
-      // help / past sessions before jumping into a chat.
     }
     // eslint-disable-next-line
   }, [open, user]);
@@ -664,7 +660,8 @@ export default function AIWidget({ open, onOpenChange }) {
         {/* Messages */}
         {activeTab === "home" ? (
           <div className="flex-1 overflow-y-auto bg-gradient-to-b from-[#0d2b12] to-[#050505] p-4 flex flex-col" data-testid="ai-widget-home-view">
-            {/* Big "Send us a message" card — the only marquee CTA, Crisp-style */}
+            {/* Ask the AI card — starts a fresh AI conversation. Human handover
+                only fires when the user asks for it or the AI decides. */}
             <button
               onClick={async () => {
                 setActiveTab("chat");
@@ -677,31 +674,54 @@ export default function AIWidget({ open, onOpenChange }) {
                       text: m.text,
                     }));
                     if (items.length) setMessages(items);
-                  } catch { /* new session — no history yet */ }
-                  setMessages((prev) => [
-                    ...prev,
-                    { role: "system", text: "🔄 You've been transferred to a live operator. Any staff on-shift will jump in shortly." },
-                  ]);
-                  if (handoverState === "none" && !humanTakeover) {
-                    try {
-                      await api.post("/ai/request-handover", {
-                        session_id: sid,
-                        reason: "clicked_send_us_a_message",
-                      });
-                      setHandoverState("waiting");
-                    } catch { /* silent */ }
-                  }
+                    else setMessages([GREETING]);
+                  } catch { setMessages([GREETING]); }
                 }
               }}
               data-testid="ai-home-send-message"
               className="w-full bg-white/95 hover:bg-white text-black rounded-xl px-4 py-4 flex items-center justify-between gap-3 shadow-lg transition group"
             >
               <div className="text-left flex-1">
-                <div className="font-black text-base leading-tight">Send us a message</div>
-                <div className="text-xs text-black/60 mt-0.5">We typically reply in a few minutes</div>
+                <div className="font-black text-base leading-tight">Chat with our AI assistant</div>
+                <div className="text-xs text-black/60 mt-0.5">Instant answers · Ask anything · Escalate to a human anytime</div>
               </div>
               <Send className="w-4 h-4 text-black/60 group-hover:text-black transition shrink-0" />
             </button>
+
+            {/* Explicit "Talk to a human" — opt-in handover, not automatic */}
+            {user && (
+              <button
+                onClick={async () => {
+                  const sid = ensureSession();
+                  setActiveTab("chat");
+                  try {
+                    const r = await authedApi().get(`/ai/session/${encodeURIComponent(sid)}/messages`);
+                    const items = (r.data.messages || []).map((m) => ({
+                      role: m.role === "user" ? "user" : m.role === "admin" ? "admin" : "assistant",
+                      text: m.text,
+                    }));
+                    setMessages(items.length ? items : [GREETING]);
+                  } catch { setMessages([GREETING]); }
+                  if (handoverState === "none" && !humanTakeover) {
+                    try {
+                      await api.post("/ai/request-handover", {
+                        session_id: sid,
+                        reason: "user_clicked_talk_to_human",
+                      });
+                      setHandoverState("waiting");
+                    } catch { /* silent */ }
+                  }
+                }}
+                data-testid="ai-home-talk-human"
+                className="mt-3 w-full bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 rounded-xl px-4 py-3 flex items-center justify-between gap-3 transition group"
+              >
+                <div className="text-left flex-1">
+                  <div className="font-bold text-sm text-emerald-200 leading-tight">Talk to a human</div>
+                  <div className="text-xs text-white/60 mt-0.5">Prefer a person? We'll page a team member.</div>
+                </div>
+                <User className="w-4 h-4 text-emerald-300 group-hover:text-white transition shrink-0" />
+              </button>
+            )}
 
             {/* Signed-in users get an unobtrusive link to previous conversations */}
             {user && (

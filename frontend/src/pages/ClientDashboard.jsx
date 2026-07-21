@@ -549,18 +549,7 @@ export default function ClientDashboard() {
                   Buy
                 </button>
               </div>
-              {/* Daily free-bet claim — only visible when eligible */}
-              {freeBet.can_claim && (
-                <button
-                  onClick={claimFreeBet}
-                  disabled={claimingFreeBet}
-                  data-testid="topbar-freebet-btn"
-                  title="Claim your daily free bet — from our pocket, no strings attached"
-                  className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-fuchsia-500 hover:bg-fuchsia-400 text-white text-[10px] md:text-[11px] font-black uppercase tracking-wider transition shadow-md shadow-fuchsia-500/40 disabled:opacity-40 animate-pulse"
-                >
-                  {claimingFreeBet ? "…" : <>🎁 Free ${freeBet.amount?.toFixed?.(2) || "0.80"}</>}
-                </button>
-              )}
+              {/* Daily free-bet claim removed per user request */}
               <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-white/10 relative" data-testid="profile-menu-wrap">
                 <button onClick={() => setProfileOpen((v) => !v)}
                   data-testid="profile-menu-btn"
@@ -895,7 +884,7 @@ export default function ClientDashboard() {
           className="fixed bottom-5 right-5 z-50 group flex items-center gap-3"
         >
           <span className="hidden sm:inline-block px-3 py-1.5 rounded-full bg-[#1a1525]/95 backdrop-blur border border-white/10 text-xs font-medium text-white shadow-lg group-hover:border-[#FF007F]/50 transition">
-            Live Chat?
+            Need help? Customer support
           </span>
           <div className="relative">
             <span className="absolute inset-0 rounded-full gradient-pp blur-lg opacity-70 group-hover:opacity-100 transition animate-pulse" />
