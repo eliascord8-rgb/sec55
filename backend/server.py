@@ -998,6 +998,46 @@ async def update_my_nickname(payload: NicknameUpdate, x_admin_token: Optional[st
     return {"display_name": new_name, "role": "staff"}
 
 
+# ============ MAINTENANCE MODE ============
+# Persisted in app_settings.maintenance = { enabled: bool, message: str }.
+# Public endpoint (GET) returns current state so the frontend can gate access.
+# Admin endpoint (PATCH) requires OWNER token to toggle.
+
+@api_router.get("/maintenance")
+async def get_maintenance():
+    """Public — frontend polls this to know whether to render the maintenance screen."""
+    cfg = await db.app_settings.find_one({"_id": "singleton"}, {"_id": 0, "maintenance": 1}) or {}
+    m = cfg.get("maintenance") or {}
+    return {
+        "enabled": bool(m.get("enabled")),
+        "message": m.get("message") or "We're doing quick maintenance — we'll be back in a few minutes.",
+        "updated_at": m.get("updated_at"),
+    }
+
+
+class MaintenanceUpdate(BaseModel):
+    enabled: bool
+    message: Optional[str] = None
+
+
+@api_router.patch("/admin/maintenance")
+async def admin_set_maintenance(payload: MaintenanceUpdate, x_admin_token: Optional[str] = Header(None)):
+    """Owner-only — toggle maintenance mode + optional custom message."""
+    check_owner(x_admin_token)
+    upd = {
+        "enabled": bool(payload.enabled),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if payload.message is not None:
+        upd["message"] = payload.message[:500]
+    await db.app_settings.update_one(
+        {"_id": "singleton"},
+        {"$set": {"maintenance": upd}},
+        upsert=True,
+    )
+    return {"ok": True, "maintenance": upd}
+
+
 
 
 @api_router.get("/admin/orders")
@@ -2544,6 +2584,8 @@ async def _start_live_sub_worker():
     asyncio.create_task(_live_sub_worker_loop())
     # Sports goal watcher — polls the RapidAPI livescore feed and emits events.
     asyncio.create_task(_sports_watcher_loop())
+    # NOWPayments auto-reconciler — auto-credits paid invoices if the webhook missed.
+    asyncio.create_task(_nowpayments_reconciler_loop())
 
 
 # ============ Realtime user commands ============
@@ -3130,6 +3172,11 @@ async def public_chat_send(payload: PublicChatMessage, user: CurrentUser = Depen
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.public_chat.insert_one(doc.copy())
+    # Award chat XP so the level badge grows over time
+    try:
+        await _award_chat_xp(user.id, 3)
+    except Exception as _e:
+        logger.warning(f"[xp] award failed for {user.id}: {_e}")
     if (await db.public_chat.estimated_document_count()) > 600:
         cutoff = await db.public_chat.find({}, {"_id": 0, "created_at": 1}).sort("created_at", -1).skip(500).limit(1).to_list(1)
         if cutoff:
@@ -3148,16 +3195,25 @@ async def public_chat_list(since: Optional[str] = None, limit: int = 50):
     msgs = await cursor.to_list(200)
     if not since:
         msgs.reverse()  # oldest first for initial paint
-    # Enrich each message with the sender's chat rank (cached per user for this call)
+    # Enrich each message with the sender's chat rank + level + avatar
     rank_cache: dict = {}
+    user_cache: dict = {}
     for m in msgs:
         uid = m.get("user_id")
         if uid and uid not in rank_cache:
             rank_cache[uid] = _rank_from_amount(await _user_deposits_total(uid))
+            u = await db.users.find_one(
+                {"id": uid},
+                {"_id": 0, "avatar_url": 1, "chat_level": 1, "chat_xp": 1},
+            ) or {}
+            user_cache[uid] = u
         r = rank_cache.get(uid) or _rank_from_amount(0)
+        u = user_cache.get(uid) or {}
         m["rank_name"] = r["name"]
         m["rank_text_class"] = r["text_class"]
         m["rank_border_class"] = r["border_class"]
+        m["avatar_url"] = u.get("avatar_url")
+        m["level"] = int(u.get("chat_level") or _level_from_xp(u.get("chat_xp") or 0))
     return {"messages": msgs}
 
 
@@ -3189,6 +3245,27 @@ RANK_TIERS = [
     (200,   "Elite",   "text-purple-300",     "border-purple-500/40 bg-purple-500/15"),
     (500,   "Legend",  "text-amber-300",      "border-amber-500/40 bg-amber-500/15"),
 ]
+
+
+def _level_from_xp(xp: float | int) -> int:
+    """XP → chat level. Every level costs a growing amount of XP.
+    Formula: level = floor(sqrt(xp / 25)) + 1 → L1 (0 xp), L2 (25 xp), L3 (100), L4 (225), L5 (400)…"""
+    try:
+        v = max(0, int(xp))
+    except (TypeError, ValueError):
+        v = 0
+    import math as _math
+    return int(_math.isqrt(v // 25)) + 1
+
+
+async def _award_chat_xp(user_id: str, amount: int = 3) -> int:
+    """Increment user's chat XP + recompute level. Returns new level."""
+    await db.users.update_one({"id": user_id}, {"$inc": {"chat_xp": amount}})
+    doc = await db.users.find_one({"id": user_id}, {"_id": 0, "chat_xp": 1})
+    new_xp = int((doc or {}).get("chat_xp") or 0)
+    new_level = _level_from_xp(new_xp)
+    await db.users.update_one({"id": user_id}, {"$set": {"chat_level": new_level}})
+    return new_level
 
 
 async def _user_deposits_total(user_id: str) -> float:
@@ -4895,6 +4972,53 @@ async def list_pending_deposits(user: CurrentUser = Depends(current_user_dep)):
         {"_id": 0, "id": 1, "amount": 1, "created_at": 1, "nowpayments_url": 1, "nowpayments_invoice_id": 1},
     ).sort("created_at", -1).limit(10)
     return {"pending": await cur.to_list(10)}
+
+
+# ============ NOWPayments Auto-Reconciler ============
+# Belt-and-suspenders: even if the webhook never fires (network glitch,
+# firewall, IPN secret mismatch), this background task scans pending
+# NOWPayments deposits from the last 48h every 90s and credits any that
+# NOWPayments now reports as paid. Users no longer need to click "Verify"
+# manually — the money lands automatically.
+
+async def _nowpayments_reconciler_loop():
+    """Poll pending NOWPayments deposits and credit ones that have been paid."""
+    while True:
+        try:
+            await asyncio.sleep(90)
+            # Skip if NOWPayments isn't configured
+            cfg = await db.nowpayments_config.find_one({"_id": "singleton"}, {"_id": 0, "api_key": 1}) or {}
+            if not cfg.get("api_key"):
+                continue
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+            pending_cur = db.transactions.find(
+                {
+                    "method": "nowpayments",
+                    "status": "pending",
+                    "created_at": {"$gt": cutoff},
+                    "nowpayments_invoice_id": {"$exists": True, "$ne": None},
+                },
+                {"_id": 0},
+            ).limit(50)
+            pending = await pending_cur.to_list(50)
+            if not pending:
+                continue
+            logger.info(f"[nowpay-reconciler] checking {len(pending)} pending deposits")
+            for tx in pending:
+                try:
+                    invoice_id = tx.get("nowpayments_invoice_id")
+                    if not invoice_id:
+                        continue
+                    payment = await _fetch_nowpayments_invoice_status(invoice_id)
+                    pstatus = (payment.get("payment_status") or "").lower()
+                    if pstatus in NOWPAY_SUCCESS_STATUSES:
+                        result = await _credit_nowpayments_deposit(tx, payment)
+                        logger.info(f"[nowpay-reconciler] auto-credited tx={tx['id']} user={tx.get('username')} status={pstatus} result={result}")
+                except Exception as e:
+                    logger.warning(f"[nowpay-reconciler] tx={tx.get('id')} failed: {e}")
+        except Exception as e:
+            logger.error(f"[nowpay-reconciler] loop error: {e}")
+            await asyncio.sleep(30)
 
 
 
