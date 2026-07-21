@@ -537,6 +537,137 @@ async def hcaptcha_site_key():
     return {"site_key": os.environ.get("HCAPTCHA_SITEKEY", "")}
 
 
+# ============ EMERGENT-MANAGED GOOGLE AUTH ============
+# Flow: frontend redirects to auth.emergentagent.com → user completes Google
+# → returns with `#session_id=xxx` → frontend calls /google-status with that id.
+# If email matches an existing account → we issue our JWT and log them in.
+# If new email → we return a short-lived signup_token — frontend then prompts
+# the user to pick a username and calls /google-finalize.
+
+EMERGENT_OAUTH_SESSION_DATA = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
+GOOGLE_SIGNUP_TOKEN_TTL = timedelta(minutes=15)
+
+
+class GoogleStatusReq(BaseModel):
+    session_id: str = Field(..., min_length=8, max_length=400)
+
+
+@auth_router.post("/google-status")
+async def google_status(body: GoogleStatusReq, request: Request):
+    """Exchange the Emergent session_id for either a JWT (existing user) or a
+    signup_token (new user — must pick a username next)."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    # Call Emergent's session-data endpoint to resolve the session_id → user
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(EMERGENT_OAUTH_SESSION_DATA, headers={"X-Session-ID": body.session_id.strip()})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"OAuth provider unreachable: {e}")
+    if r.status_code != 200:
+        raise HTTPException(status_code=401, detail=f"Invalid or expired Google session ({r.status_code})")
+    data = r.json()
+    email = (data.get("email") or "").strip().lower()
+    name = (data.get("name") or "").strip()
+    picture = (data.get("picture") or "").strip()
+    google_id = (data.get("id") or "").strip()
+    if not email or not google_id:
+        raise HTTPException(status_code=400, detail="Google didn't return an email/id")
+
+    # Existing user by email → log them in
+    existing = await db.users.find_one({"email": email}, {"_id": 0, "password_hash": 0})
+    if existing:
+        # Link Google id (idempotent) + refresh avatar if user hasn't set one
+        upd = {"google_id": google_id, "auth_provider_google": True}
+        if picture and not existing.get("avatar_url"):
+            upd["avatar_url"] = picture
+        await db.users.update_one({"id": existing["id"]}, {"$set": upd})
+        token = create_token(
+            existing["id"], existing["username"], existing.get("role", "user"),
+            int(existing.get("session_epoch", 0) or 0),
+        )
+        existing.update(upd)
+        return {
+            "kind": "existing_user",
+            "token": token,
+            "user": _user_public(existing),
+        }
+
+    # New user → issue signup_token, front-end must pick a username
+    signup_token = secrets.token_urlsafe(24)
+    await db.pending_google_signups.insert_one({
+        "signup_token": signup_token,
+        "email": email,
+        "name": name,
+        "picture": picture,
+        "google_id": google_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": (datetime.now(timezone.utc) + GOOGLE_SIGNUP_TOKEN_TTL).isoformat(),
+    })
+    return {
+        "kind": "needs_username",
+        "signup_token": signup_token,
+        "google_data": {"email": email, "name": name, "picture": picture},
+    }
+
+
+class GoogleFinalizeReq(BaseModel):
+    signup_token: str = Field(..., min_length=10, max_length=200)
+    username: str = Field(..., min_length=3, max_length=24, pattern=r"^[a-zA-Z0-9_]+$")
+
+
+@auth_router.post("/google-finalize")
+async def google_finalize(body: GoogleFinalizeReq, request: Request):
+    """Finish Google sign-up by creating the user with a chosen username."""
+    db: AsyncIOMotorDatabase = request.app.state.db
+    pending = await db.pending_google_signups.find_one({"signup_token": body.signup_token}, {"_id": 0})
+    if not pending:
+        raise HTTPException(status_code=404, detail="Invalid or expired signup token")
+    # Expiry check
+    try:
+        exp = datetime.fromisoformat(pending["expires_at"])
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < datetime.now(timezone.utc):
+            await db.pending_google_signups.delete_one({"signup_token": body.signup_token})
+            raise HTTPException(status_code=410, detail="Signup token expired — please try again")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    # Username availability
+    uname = body.username.strip()
+    uname_lower = uname.lower()
+    taken = await db.users.find_one({"username_lower": uname_lower}, {"_id": 0, "id": 1})
+    if taken:
+        raise HTTPException(status_code=409, detail="Username is already taken")
+    # Email might also collide if a plain-registration happened between /google-status and here
+    email = pending["email"]
+    if await db.users.find_one({"email": email}, {"_id": 0, "id": 1}):
+        raise HTTPException(status_code=409, detail="An account with this email already exists — please sign in with password.")
+
+    # Create the user — no password, Google-only account
+    now = datetime.now(timezone.utc).isoformat()
+    user_id = str(uuid.uuid4())
+    doc = {
+        "id": user_id,
+        "username": uname,
+        "username_lower": uname_lower,
+        "email": email,
+        "role": "user",
+        "auth_provider_google": True,
+        "google_id": pending.get("google_id"),
+        "avatar_url": pending.get("picture") or None,
+        "password_hash": "",  # no local password for Google-only accounts
+        "created_at": now,
+        "last_seen": now,
+        "session_epoch": int(time.time()),
+    }
+    await db.users.insert_one(doc.copy())
+    await db.pending_google_signups.delete_one({"signup_token": body.signup_token})
+    token = create_token(user_id, uname, "user", doc["session_epoch"])
+    return {"token": token, "user": _user_public(doc)}
+
+
 # ================= CLIENT DASHBOARD =================
 
 # ---- Fake online-users booster ----
