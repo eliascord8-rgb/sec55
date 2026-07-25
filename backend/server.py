@@ -3960,16 +3960,43 @@ async def sports_events(since: Optional[str] = None, limit: int = 50):
 
 async def _sports_watcher_loop():
     """Background task: polls livescores every 20s, diffs scores + status
-    against the last snapshot, writes any changes to `sports_events`."""
+    against the last snapshot, writes any changes to `sports_events`.
+
+    Smart backoff: on 401/403 (invalid key) or 429 (rate limited), we back off
+    exponentially so a broken/expired RapidAPI subscription doesn't spam the
+    logs 3 times a minute forever. Reset to normal interval on first success.
+    """
     logger.info("[sports] goal watcher started (interval=%ss)", SPORTS_WATCH_INTERVAL_SEC)
+    backoff = 0        # seconds of extra sleep beyond the base interval
+    fail_streak = 0    # consecutive failures for exponential ramp
     while True:
         try:
             data = await _rapid_get("/football-current-live")
             resp = data.get("response") if isinstance(data, dict) else None
             matches = (resp or {}).get("live") or (resp or {}).get("matches") or []
+            # First success after failures → reset backoff
+            if backoff or fail_streak:
+                logger.info("[sports] watcher recovered — resuming normal polling")
+            backoff = 0
+            fail_streak = 0
         except Exception as e:
-            logger.warning("[sports] watcher poll failed: %s", e)
-            await asyncio.sleep(SPORTS_WATCH_INTERVAL_SEC)
+            fail_streak += 1
+            msg = str(e)
+            # Auth-style failures (401/403/429): back off HARD to avoid burning
+            # rate-limit quota and log-spamming — max 10 min between polls.
+            if "401" in msg or "403" in msg or "429" in msg or "Forbidden" in msg or "Too Many" in msg:
+                backoff = min(600, 30 * (2 ** min(fail_streak, 5)))
+                # Log only on transitions (streak==1) and every 5th to keep logs quiet
+                if fail_streak == 1 or fail_streak % 5 == 0:
+                    logger.warning(
+                        "[sports] auth/rate-limit failure (streak=%s, sleeping +%ss): %s",
+                        fail_streak, backoff, msg[:140],
+                    )
+            else:
+                backoff = min(120, 15 * fail_streak)
+                if fail_streak == 1 or fail_streak % 5 == 0:
+                    logger.warning("[sports] watcher poll failed (streak=%s): %s", fail_streak, msg[:140])
+            await asyncio.sleep(SPORTS_WATCH_INTERVAL_SEC + backoff)
             continue
 
         now = datetime.now(timezone.utc).isoformat()
