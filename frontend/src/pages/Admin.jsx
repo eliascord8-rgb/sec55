@@ -278,7 +278,7 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
             <button
               onClick={onLogout}
               data-testid="admin-logout"
-              className="inline-flex items-center gap-1 px-3 py-2 border border-white/10 rounded-sm text-[11px] uppercase tracking-wider hover:bg-white/5 transition"
+              className="inline-flex items-center gap-1 px-3 py-2 border border-red-800/60 bg-red-950/40 text-red-300 rounded-sm text-[11px] uppercase tracking-wider hover:bg-red-900/60 hover:border-red-700 hover:text-red-100 transition font-bold"
             >
               <LogOut className="w-3 h-3" /> <span className="hidden sm:inline">Logout</span>
             </button>
