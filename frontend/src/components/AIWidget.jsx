@@ -192,12 +192,12 @@ export default function AIWidget({ open, onOpenChange }) {
         setBanned(!!r.data.banned);
         if (r.data.banned) {
           // Persist so the floating launcher button can hide itself on next render
-          try { localStorage.setItem("bs_chat_banned", "1"); } catch {}
-          setOpen(false);
+          try { localStorage.setItem("bs_chat_banned", "1"); } catch { /* localStorage disabled */ }
+          onOpenChange(false);
           return;
         }
         // Clear ban flag if we were previously marked banned and now we're not
-        try { if (localStorage.getItem("bs_chat_banned")) localStorage.removeItem("bs_chat_banned"); } catch {}
+        try { if (localStorage.getItem("bs_chat_banned")) localStorage.removeItem("bs_chat_banned"); } catch { /* ignore */ }
         if (r.data.staff_display_name) setStaffName(r.data.staff_display_name);
         // If admin just took over → reset handover state to "submitted" so we don't show form
         if (r.data.human_takeover && handoverState !== "none") setHandoverState("none");
@@ -766,7 +766,7 @@ export default function AIWidget({ open, onOpenChange }) {
               >
                 <div className="text-left flex-1">
                   <div className="font-bold text-sm text-emerald-200 leading-tight">Talk to a human</div>
-                  <div className="text-xs text-white/60 mt-0.5">Prefer a person? We'll page a team member.</div>
+                  <div className="text-xs text-white/60 mt-0.5">Prefer a person? We&apos;ll page a team member.</div>
                 </div>
                 <User className="w-4 h-4 text-emerald-300 group-hover:text-white transition shrink-0" />
               </button>
@@ -905,7 +905,7 @@ export default function AIWidget({ open, onOpenChange }) {
               <a href="/client" className="underline hover:text-[#00E5FF]">
                 sign in
               </a>{" "}
-              and we'll recognize you automatically.
+              and we&apos;ll recognize you automatically.
             </div>
             <div className="flex gap-2">
               <input
@@ -941,7 +941,7 @@ export default function AIWidget({ open, onOpenChange }) {
             className="mx-3 mb-2 p-3 rounded-sm border border-[#FF007F]/40 bg-[#FF007F]/10 space-y-2"
           >
             <div className="text-xs text-white/80 leading-snug">
-              No team-member is online right now. Leave your email + a message and we'll get back to you ASAP.
+              No team-member is online right now. Leave your email + a message and we&apos;ll get back to you ASAP.
             </div>
             <input
               type="email"
