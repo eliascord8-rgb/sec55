@@ -540,7 +540,7 @@ function OrdersPanel({ token }) {
           <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14]">
             <tr>
               <th className="text-left px-6 py-3">Date</th>
-              <th className="text-left px-6 py-3">IP</th>
+              <th className="text-left px-6 py-3">User</th>
               <th className="text-left px-6 py-3">Service</th>
               <th className="text-left px-6 py-3">Qty</th>
               <th className="text-left px-6 py-3">Price</th>
@@ -564,30 +564,41 @@ function OrdersPanel({ token }) {
                 </td>
               </tr>
             )}
-            {orders.map((o) => (
-              <tr key={o.id} className="border-t border-white/5 hover:bg-white/[0.02]">
-                <td className="px-6 py-3 text-white/60 font-mono text-xs">
-                  {new Date(o.created_at).toLocaleString()}
-                </td>
-                <td className="px-6 py-3 font-mono text-xs text-[#00E5FF]">{o.ip}</td>
-                <td className="px-6 py-3 font-mono text-xs">#{o.service_id}</td>
-                <td className="px-6 py-3 font-mono">{o.quantity}</td>
-                <td className="px-6 py-3 font-mono font-bold text-[#FF007F]">${o.price_usd?.toFixed(2)}</td>
-                <td className="px-6 py-3 text-xs uppercase tracking-wider">{o.payment_method}</td>
-                <td className="px-6 py-3">
-                  <span
-                    className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded-sm ${
-                      o.status === "completed"
-                        ? "bg-[#00E5FF]/20 text-[#00E5FF]"
-                        : "bg-[#FFB800]/20 text-[#FFB800]"
-                    }`}
-                  >
-                    {o.status}
-                  </span>
-                </td>
-                <td className="px-6 py-3 font-mono text-xs">{o.smm_order_id || "—"}</td>
-              </tr>
-            ))}
+            {orders.map((o) => {
+              const price = Number(o.price_usd ?? o.charge ?? o.total ?? 0);
+              const method = o.payment_method || o.source || "—";
+              const svc = o.service_name || (o.service_id ? `#${o.service_id}` : "—");
+              return (
+                <tr key={o.id} className="border-t border-white/5 hover:bg-white/[0.02]" data-testid={`admin-order-${o.id}`}>
+                  <td className="px-6 py-3 text-white/60 font-mono text-xs">
+                    {o.created_at ? new Date(o.created_at).toLocaleString() : "—"}
+                  </td>
+                  <td className="px-6 py-3 font-mono text-xs text-[#00E5FF]">
+                    {o.username ? `@${o.username}` : (o.ip || "—")}
+                  </td>
+                  <td className="px-6 py-3 text-xs truncate max-w-[220px]" title={svc}>{svc}</td>
+                  <td className="px-6 py-3 font-mono">{o.quantity ?? "—"}</td>
+                  <td className="px-6 py-3 font-mono font-bold text-emerald-300">${price.toFixed(2)}</td>
+                  <td className="px-6 py-3 text-xs uppercase tracking-wider">{method}</td>
+                  <td className="px-6 py-3">
+                    <span
+                      className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded-sm ${
+                        o.status === "completed"
+                          ? "bg-emerald-500/20 text-emerald-300"
+                          : o.status === "in progress" || o.status === "processing"
+                          ? "bg-[#00E5FF]/20 text-[#00E5FF]"
+                          : o.status === "cancelled" || o.status === "failed" || o.status === "canceled"
+                          ? "bg-red-500/20 text-red-300"
+                          : "bg-[#FFB800]/20 text-[#FFB800]"
+                      }`}
+                    >
+                      {o.status || "pending"}
+                    </span>
+                  </td>
+                  <td className="px-6 py-3 font-mono text-xs">{o.smm_order_id || "—"}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
