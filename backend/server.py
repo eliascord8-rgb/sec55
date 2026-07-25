@@ -3908,23 +3908,217 @@ async def _rapid_get(path: str, params: dict = None):
         return r.json()
 
 
+async def _sofascore_live_matches() -> list:
+    """Free public API — SofaScore returns all currently-live football matches.
+    No key required. Normalized to our frontend shape."""
+    try:
+        async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = await c.get("https://api.sofascore.com/api/v1/sport/football/events/live")
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        logger.warning("[sports] sofascore live failed: %s", e)
+        return []
+    out = []
+    for ev in (data.get("events") or [])[:60]:
+        try:
+            hs = ((ev.get("homeScore") or {}).get("current") or 0)
+            as_ = ((ev.get("awayScore") or {}).get("current") or 0)
+            status_map = {"inprogress": "LIVE", "notstarted": "SCHEDULED", "finished": "FT", "postponed": "POSTPONED"}
+            status_type = (ev.get("status") or {}).get("type", "")
+            out.append({
+                "id": f"sofa-{ev.get('id')}",
+                "home": {"name": (ev.get("homeTeam") or {}).get("name") or "Home"},
+                "away": {"name": (ev.get("awayTeam") or {}).get("name") or "Away"},
+                "homeScore": {"current": hs},
+                "awayScore": {"current": as_},
+                "status": {"description": (ev.get("status") or {}).get("description", "Live"), "code": status_map.get(status_type, status_type)},
+                "startTime": ev.get("startTimestamp"),
+                "league": {"name": ((ev.get("tournament") or {}).get("name") or "")},
+                "source": "sofascore",
+            })
+        except Exception:
+            continue
+    return out
+
+
 @api_router.get("/sports/livescores")
 async def sports_livescores():
-    """Currently-live football matches."""
+    """Currently-live football matches. Tries RapidAPI first, falls back to
+    SofaScore's free public API when RapidAPI is unavailable/expired."""
     try:
         data = await _rapid_get("/football-current-live")
+        resp = data.get("response") if isinstance(data, dict) else None
+        matches = (
+            (resp or {}).get("live")
+            or (resp or {}).get("matches")
+            if isinstance(resp, dict)
+            else (resp or [])
+        )
+        if matches:
+            return {"matches": matches, "source": "rapidapi"}
     except Exception as e:
-        logger.warning("[sports] livescores failed: %s", e)
-        return {"matches": [], "error": "sports_source_unavailable"}
-    resp = data.get("response") if isinstance(data, dict) else None
-    # The RapidAPI endpoint wraps live matches under `response.live`, not `.matches`
-    matches = (
-        (resp or {}).get("live")
-        or (resp or {}).get("matches")
-        if isinstance(resp, dict)
-        else (resp or [])
+        logger.info("[sports] rapid livescores failed, using sofascore: %s", e)
+    # Free fallback — no key, no KYC, no subscription
+    sofa = await _sofascore_live_matches()
+    return {"matches": sofa, "source": "sofascore"}
+
+
+# ============ SPORTS BETTING SYSTEM ============
+# Simple but complete: users place single or combo (accumulator) bets on live
+# or upcoming matches. Odds are admin-editable. Cashout returns a dynamic
+# refund based on the current live-implied odds. All bet money is deducted
+# from balance immediately and settled to withdrawable_balance on win.
+
+MIN_STAKE = 0.10
+MAX_STAKE = 20.0
+DEFAULT_MARKETS = {  # sensible defaults if admin hasn't set odds for a match
+    "1X2":       {"home": 2.10, "draw": 3.20, "away": 3.40},
+    "over_0_5":  {"over": 1.15, "under": 4.50},
+    "over_1_5":  {"over": 1.55, "under": 2.30},
+    "over_2_5":  {"over": 2.05, "under": 1.75},
+    "btts":      {"yes": 1.80, "no": 1.90},   # both teams to score
+}
+
+
+class BetSelection(BaseModel):
+    match_id: str = Field(..., min_length=3, max_length=80)
+    match_label: Optional[str] = ""  # e.g. "Arsenal vs Chelsea"
+    market: str = Field(..., pattern="^(1X2|over_0_5|over_1_5|over_2_5|btts)$")
+    selection: str = Field(..., min_length=1, max_length=20)  # "home"|"draw"|"away"|"over"|"under"|"yes"|"no"
+    odds: float = Field(..., gt=1.0, lt=100.0)
+
+
+class PlaceBetRequest(BaseModel):
+    selections: List[BetSelection] = Field(..., min_length=1, max_length=10)
+    stake: float = Field(..., ge=MIN_STAKE, le=MAX_STAKE)
+
+
+@api_router.get("/sports/odds/{match_id}")
+async def get_match_odds(match_id: str):
+    """Return the odds board for a given match — admin overrides + defaults."""
+    doc = await db.match_odds.find_one({"match_id": match_id}, {"_id": 0}) or {}
+    markets = doc.get("markets") or {}
+    # Merge with defaults so every match has a full board
+    merged = {m: {**opts, **(markets.get(m) or {})} for m, opts in DEFAULT_MARKETS.items()}
+    return {"match_id": match_id, "markets": merged, "suspended": bool(doc.get("suspended"))}
+
+
+@client_router.post("/sports/bet")
+async def place_bet(body: PlaceBetRequest, user: CurrentUser = Depends(current_user_dep)):
+    """Place a single or combo bet. Combos multiply odds. Deducts stake from balance."""
+    stake = round(float(body.stake), 2)
+    if stake < MIN_STAKE or stake > MAX_STAKE:
+        raise HTTPException(status_code=400, detail=f"Stake must be between ${MIN_STAKE:.2f} and ${MAX_STAKE:.2f}")
+    balance = await _get_user_balance(user.id)
+    if balance < stake:
+        raise HTTPException(status_code=400, detail="Insufficient balance")
+    combined_odds = 1.0
+    for sel in body.selections:
+        odds_doc = await db.match_odds.find_one({"match_id": sel.match_id}, {"_id": 0, "suspended": 1, "markets": 1}) or {}
+        if odds_doc.get("suspended"):
+            raise HTTPException(status_code=400, detail=f"Market suspended for {sel.match_label or sel.match_id}")
+        combined_odds *= float(sel.odds)
+    combined_odds = round(combined_odds, 2)
+    potential_win = round(stake * combined_odds, 2)
+    bet_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    bet_doc = {
+        "id": bet_id,
+        "user_id": user.id,
+        "username": user.username,
+        "selections": [s.dict() for s in body.selections],
+        "stake": stake,
+        "combined_odds": combined_odds,
+        "potential_win": potential_win,
+        "status": "open",
+        "is_combo": len(body.selections) > 1,
+        "cashout_offered": None,
+        "created_at": now,
+        "settled_at": None,
+    }
+    await db.bets.insert_one(bet_doc.copy())
+    # Deduct stake
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+        "amount": -stake, "method": "balance", "status": "approved",
+        "type": "bet_stake", "note": f"Bet #{bet_id[:8]} — {len(body.selections)} pick(s)",
+        "bet_id": bet_id, "created_at": now, "approved_at": now,
+    })
+    return {"ok": True, "bet": bet_doc, "new_balance": balance - stake}
+
+
+@client_router.get("/sports/my-bets")
+async def my_bets(user: CurrentUser = Depends(current_user_dep), status: Optional[str] = None):
+    q = {"user_id": user.id}
+    if status: q["status"] = status
+    bets = await db.bets.find(q, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
+    return {"bets": bets}
+
+
+@client_router.post("/sports/bet/{bet_id}/cashout")
+async def cashout_bet(bet_id: str, user: CurrentUser = Depends(current_user_dep)):
+    """Dynamic cashout — offers 85% of `stake * (elapsed_progress_toward_win)`.
+    For MVP, cashout = stake × 0.85 if bet is open + at least 1 selection is
+    still live. Admin can override per-bet via /admin/sports/cashout-rate."""
+    bet = await db.bets.find_one({"id": bet_id, "user_id": user.id}, {"_id": 0})
+    if not bet:
+        raise HTTPException(status_code=404, detail="Bet not found")
+    if bet.get("status") != "open":
+        raise HTTPException(status_code=400, detail=f"Bet is {bet.get('status')} — cannot cash out")
+    rate = float(bet.get("cashout_rate_override") or 0.85)
+    refund = round(float(bet["stake"]) * rate, 2)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.bets.update_one(
+        {"id": bet_id, "status": "open"},
+        {"$set": {"status": "cashed_out", "settled_at": now, "cashout_amount": refund}},
     )
-    return {"matches": matches or []}
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+        "amount": refund, "method": "balance", "status": "approved",
+        "type": "bet_cashout", "note": f"Cashout bet #{bet_id[:8]} @ {int(rate*100)}%",
+        "bet_id": bet_id, "created_at": now, "approved_at": now,
+    })
+    return {"ok": True, "refund": refund, "rate": rate}
+
+
+class AdminOddsUpdate(BaseModel):
+    markets: dict = Field(..., description="e.g. {'1X2': {'home': 1.9, 'draw': 3.2}, 'over_1_5': {'over': 1.4}}")
+    suspended: Optional[bool] = None
+
+
+@api_router.patch("/admin/sports/odds/{match_id}")
+async def admin_update_odds(match_id: str, body: AdminOddsUpdate, x_admin_token: Optional[str] = Header(None)):
+    """Owner/staff can override odds per market or suspend the whole match."""
+    check_admin(x_admin_token)
+    upd = {"match_id": match_id, "markets": body.markets, "updated_at": datetime.now(timezone.utc).isoformat()}
+    if body.suspended is not None:
+        upd["suspended"] = bool(body.suspended)
+    await db.match_odds.update_one({"match_id": match_id}, {"$set": upd}, upsert=True)
+    return {"ok": True, "match_id": match_id}
+
+
+@api_router.post("/admin/sports/settle-bet/{bet_id}")
+async def admin_settle_bet(bet_id: str, won: bool, x_admin_token: Optional[str] = Header(None)):
+    """Owner settles a bet as won/lost. Won → credit potential_win to
+    withdrawable balance; Lost → nothing (stake already taken)."""
+    check_admin(x_admin_token)
+    bet = await db.bets.find_one({"id": bet_id}, {"_id": 0})
+    if not bet:
+        raise HTTPException(status_code=404, detail="Bet not found")
+    if bet.get("status") != "open":
+        raise HTTPException(status_code=400, detail=f"Bet already {bet.get('status')}")
+    now = datetime.now(timezone.utc).isoformat()
+    new_status = "won" if won else "lost"
+    await db.bets.update_one({"id": bet_id}, {"$set": {"status": new_status, "settled_at": now}})
+    if won:
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()), "user_id": bet["user_id"], "username": bet["username"],
+            "amount": bet["potential_win"], "method": "balance", "status": "approved",
+            "type": "bet_win", "note": f"Bet #{bet_id[:8]} won @ {bet['combined_odds']}x",
+            "bet_id": bet_id, "created_at": now, "approved_at": now,
+        })
+    return {"ok": True, "status": new_status}
 
 
 async def _tsdb_upcoming_for_league(league_id: str, league_name: str) -> list:

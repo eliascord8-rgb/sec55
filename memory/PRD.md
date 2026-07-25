@@ -1,5 +1,20 @@
 # Better Social — PRD
 
+## Recent Updates (Jul 26, 2026 — Iteration 34 · Fork · Sports Betting Ships)
+- ✅ **Free live-scores API** — `sports_livescores` now falls back to **SofaScore** (public JSON, no key, no KYC) when RapidAPI fails. Returns `source: "rapidapi"` or `source: "sofascore"` so frontend can label the data source.
+- ✅ **Full betting system MVP** shipped end-to-end:
+  - `bets` collection with fields: `{id, user_id, selections[], stake, combined_odds, potential_win, status, is_combo, cashout_offered, cashout_amount, created_at, settled_at}`
+  - `match_odds` collection for admin overrides + per-match suspension.
+  - Endpoints (all backend-tested with real curl):
+    - `GET /api/sports/odds/{match_id}` — merged odds board (admin overrides on top of defaults)
+    - `POST /api/client/sports/bet` — single or combo bet, stake $0.10–$20, deducts from balance atomically
+    - `POST /api/client/sports/bet/{id}/cashout` — dynamic refund at 85% of stake (admin-tunable)
+    - `GET /api/client/sports/my-bets?status=open|won|lost|cashed_out`
+    - `PATCH /api/admin/sports/odds/{match_id}` — set custom odds + suspend/unsuspend market
+    - `POST /api/admin/sports/settle-bet/{bet_id}?won=true|false` — settle wins credit `potential_win` to balance
+  - **Markets supported**: 1X2, over/under 0.5, 1.5, 2.5, BTTS (yes/no).
+  - **Odds format**: Decimal + Asian both use the same numeric field — front-end can render as either.
+
 ## Recent Updates (Jul 25, 2026 — Iteration 33 · Fork · Auto-Live audit + Purchase polish)
 - ✅ **TikTok live-status polling: 60s → 90s** per user request. Existing subs pick this up on their next tick.
 - ✅ **Live-status history log** — new `tiktok_live_checks` collection. Every scrape (only in `live_only` mode) records `{sub_id, user_id, tiktok_username, is_live, will_fire, checked_at, mode}`. Cap at 500 rows per sub (auto-trim).
