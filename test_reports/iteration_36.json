@@ -1,0 +1,35 @@
+{
+  "summary": "Feature-focused backend re-verification completed for the three iteration 35 PayPal defects plus chat-retention startup behavior. All 3 previously failing pytest cases passed against the public REACT_APP_BACKEND_URL. Backend startup logs also contain the required worker-start message followed immediately by a purge log before application startup completes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_35_paypal_retention.py",
+    "/app/test_reports/pytest/iter36_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Verified the checkout callback now resolves to the absolute HTTPS public backend URL in the generated PayPal checkout_url.",
+    "Verified malformed mc_gross is safely parsed and acknowledged with HTTP 200.",
+    "Verified the mocked VERIFIED branch checks update_one().matched_count and does not create paypal_bonus for an unknown pending transaction.",
+    "Verified startup logs show '[chat-retention] worker started (interval=6h, window=30 days)' and an immediate purge before 'Application startup complete'."
+  ],
+  "updated_files": [
+    "/app/test_reports/iteration_36.json"
+  ],
+  "success_rate": {
+    "backend": "100% (3/3 previously failing tests passed; retention startup log and immediate purge verified)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "The reused checkout test temporarily created one pending PayPal transaction and cleaned it. The PayPal singleton config was temporarily guarded/set to sandbox test values and restored after the run. The VERIFIED spoof test created no bonus and cleaned its event records.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 35's three PayPal failures are resolved. Focused rerun command selected only checkout absolute notify_url, malformed gross HTTP 200, and VERIFIED orphan-bonus prevention. Startup log at 2026-07-25 23:44:48 shows worker started, immediate purge, then application startup complete. Auth-hardening tests were intentionally excluded as requested.",
+  "rca_of_the_issue": "Confirmed mitigations: checkout now derives a public origin from PUBLIC_BACKEND_URL/REACT_APP_BACKEND_URL or forwarded request headers; IPN numeric parsing and handler processing are defensive; bonus creation is gated by a successful atomic pending-transaction match; retention logs startup and purges before its first six-hour sleep."
+}
