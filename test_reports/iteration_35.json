@@ -1,0 +1,83 @@
+{
+  "summary": "Backend-only PayPal IPN and 30-day chat-retention verification completed against the external REACT_APP_BACKEND_URL, with method-level tests for VERIFIED-only branches. PayPal config persistence, unique route registration, unconfigured checkout 503, ordinary INVALID IPN acknowledgement/event persistence, wrong-receiver no-credit behavior, retention deletion, notification import, bcrypt owner hash/seed sync, and startup health passed. Pytest: 8/11 feature tests passed; 3 product defects failed. Auth hardening regression: 1/4 passed, with the same three unresolved auth failures from iteration 34.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/client/funds/paypal-checkout",
+        "issue": "Generated checkout_url has notify_url=/api/paypal/ipn instead of the required absolute public URL. REACT_APP_BACKEND_URL is absent from backend runtime env, and the code defaults it to an empty string, so PayPal cannot call the IPN endpoint.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/paypal/ipn",
+        "issue": "Malformed form input such as mc_gross=not-a-number raises ValueError and returns HTTP 500. This violates the explicit requirement that every IPN failure path acknowledge with HTTP 200 to prevent PayPal retry loops.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/paypal/ipn",
+        "issue": "In the VERIFIED branch, an attacker-controlled custom userId|txId that does not match any pending PayPal transaction still creates an approved paypal_bonus transaction and logs CREDITED. The result of the conditional pending-transaction update is never checked, allowing orphan balance credit whenever bonus_pct > 0.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Successful login sends no secure httpOnly access token cookie; Set-Cookie is empty.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "CORS middleware / all API endpoints",
+        "issue": "Credentialed CORS still returns Access-Control-Allow-Origin: * because CORS_ORIGINS is wildcard instead of explicit trusted origin(s).",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Dashboard login still has no brute-force lockout: six invalid credential attempts with valid captchas returned 401 rather than locking on the sixth request.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "backend startup / chat retention",
+        "issue": "The 30-day retention loop runs and deletes correctly in method testing, but sleeps six hours before its first purge and has no worker-start log. Fresh startup logs therefore cannot prove the retention worker started; only livesub and sports emit explicit start logs. NOWPayments reconciler is also silent until it has configured pending work."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_35_paypal_retention.py",
+    "/app/test_reports/pytest/iter35_results.xml",
+    "/app/backend/tests/test_iteration_34_admin_sports.py",
+    "/app/test_reports/pytest/iter35_auth_results.xml"
+  ],
+  "action_items": [
+    "Build PayPal return/notify URLs from a required backend public URL environment variable (or validated forwarded host) and fail configuration/startup if it is missing; never default to an empty string.",
+    "Wrap all IPN form parsing/conversion and downstream processing so every malformed payload returns HTTP 200 {ok:true} while safely logging/persisting the failure.",
+    "Use find_one_and_update or check UpdateResult.matched_count before creating a bonus or notification; only credit when the referenced pending PayPal transaction belongs to the custom user and was atomically transitioned to approved.",
+    "Add an explicit [chat-retention] worker-start log and consider purging immediately before the first six-hour sleep so startup behavior is observable and stale rows are not retained for another six hours.",
+    "Resolve the carried auth hardening failures: secure httpOnly cookies, explicit credentialed-CORS origins, and persistent five-failure lockout.",
+    "Retest PayPal checkout/IPN and auth security after fixes."
+  ],
+  "critical_code_review_comments": [
+    "server.py:2880 reads REACT_APP_BACKEND_URL with an empty fallback, but that variable is only in frontend/.env in this environment; checkout URLs consequently contain relative callback paths.",
+    "server.py:2929 performs unguarded float(form.get('mc_gross') or 0) outside the body-read try/except, producing the reproduced 500.",
+    "server.py:2974-2984 ignores update_one.matched_count and unconditionally inserts paypal_bonus. This is a direct balance-integrity vulnerability in the VERIFIED IPN path.",
+    "server.py:2796 sleeps before the first retention purge, and _start_live_sub_worker emits no chat-retention/nowpayments startup log, making worker liveness opaque.",
+    "server.py remains 6,920 lines, far above the 700-line maintainability threshold; extract PayPal, retention, payments, sports, and worker lifecycle code into focused routers/services.",
+    "Auth playbook comparison confirms token-body-only login, wildcard credentialed CORS, and missing persistent login-attempt tracking remain deviations."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_35_paypal_retention.py",
+    "/app/test_reports/iteration_35.json"
+  ],
+  "success_rate": {
+    "backend": "Feature suite 72.7% (8/11); auth-hardening regression 25% (1/4)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "Temporarily set PayPal singleton config to test@example.com/sandbox/10% and restored the pre-test document. Created pending PayPal transactions, IPN event rows, synthetic retention messages, and a mocked VERIFIED orphan-bonus record; all test-created records were cleaned. No lasting wallet change remains.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run test_iteration_35_paypal_retention.py. Expected current failures are absolute notify_url, malformed mc_gross returning 500, and VERIFIED unknown tx creating an orphan bonus. Retention behavior passed for public_chat, ai_chat_messages, and direct_messages; ordinary INVALID IPN persisted verified=false and returned 200; wrong receiver under mocked VERIFIED did not credit. Startup logs show Application startup complete plus livesub and sports starts, but no explicit chat-retention/nowpayments start lines. Auth failures remain reproducible in TestStartupAndAuthSecurity.",
+  "rca_of_the_issue": "Checkout callback construction uses a frontend-only environment key that is not loaded by the backend and silently falls back to empty. IPN parsing trusts numeric form text before defensive handling. The VERIFIED credit path does not verify that its conditional update matched a legitimate pending transaction before awarding the bonus and notification. Worker logging occurs only after retention's initial six-hour sleep and NOWPayments work discovery, so startup liveness is not observable."
+}

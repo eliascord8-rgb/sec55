@@ -1606,8 +1606,10 @@ async def public_paypal_config():
     }
 
 
-@api_router.post("/admin/paypal-config")
-async def admin_set_paypal_config(payload: PaypalConfig, x_admin_token: Optional[str] = Header(None)):
+@api_router.post("/admin/paypal-config-legacy")
+async def admin_set_paypal_config_legacy(payload: PaypalConfig, x_admin_token: Optional[str] = Header(None)):
+    """LEGACY — kept for backwards compat with the old paypal.me URL flow. The new
+    IPN auto-credit flow lives at POST /admin/paypal-config."""
     check_admin(x_admin_token)
     await db.paypal_config.update_one(
         {},
@@ -2781,6 +2783,214 @@ async def _start_live_sub_worker():
     asyncio.create_task(_sports_watcher_loop())
     # NOWPayments auto-reconciler — auto-credits paid invoices if the webhook missed.
     asyncio.create_task(_nowpayments_reconciler_loop())
+    # Monthly chat cleanup — hourly worker that trims public_chat, ai_chat_messages
+    # and direct_messages older than 30 days.
+    asyncio.create_task(_chat_retention_loop())
+
+
+async def _chat_retention_loop():
+    """Every 6 hours, purge chat messages older than 30 days across all chat collections.
+    Keeps the DB lean and gives users a predictable retention window."""
+    while True:
+        try:
+            await asyncio.sleep(6 * 60 * 60)  # every 6 hours
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            r1 = await db.public_chat.delete_many({"created_at": {"$lt": cutoff}})
+            r2 = await db.ai_chat_messages.delete_many({"created_at": {"$lt": cutoff}})
+            r3 = await db.direct_messages.delete_many({"created_at": {"$lt": cutoff}})
+            logger.info(
+                "[chat-retention] purged public=%s ai=%s dms=%s older than 30 days",
+                r1.deleted_count, r2.deleted_count, r3.deleted_count,
+            )
+        except Exception as e:
+            logger.error("[chat-retention] loop error: %s", e)
+            await asyncio.sleep(300)
+
+
+# ============ PAYPAL IPN (EMAIL-ONLY, NO API KEY) ============
+# Admin sets their PayPal email in the panel. Any inbound payment to that
+# receiver_email verified by PayPal's IPN validator will auto-credit the
+# buyer's balance. Zero API keys required — this is PayPal's classic IPN
+# protocol that they still support in 2026.
+#
+# Setup (admin does this ONCE in PayPal.com):
+#   Profile → Settings → Merchant tools → Instant Payment Notifications →
+#   Notify URL = https://<yourdomain>/api/paypal/ipn → Save.
+# Then paste your receiver email in our Admin → Settings → PayPal.
+# When users click "Deposit with PayPal" we generate a hosted payment URL
+# with `custom={user_id}` so we know who to credit.
+
+PAYPAL_IPN_VERIFY_URLS = {
+    "live":    "https://ipnpb.paypal.com/cgi-bin/webscr",
+    "sandbox": "https://ipnpb.sandbox.paypal.com/cgi-bin/webscr",
+}
+
+
+class PayPalConfig(BaseModel):
+    receiver_email: str = Field(..., min_length=5, max_length=200)
+    mode: str = Field(default="live", pattern="^(live|sandbox)$")
+    bonus_pct: int = Field(default=0, ge=0, le=200)
+
+
+@api_router.get("/admin/paypal-config")
+async def admin_get_paypal_config(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.paypal_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    return {
+        "configured": bool(cfg.get("receiver_email")),
+        "receiver_email": cfg.get("receiver_email", ""),
+        "mode": cfg.get("mode", "live"),
+        "bonus_pct": int(cfg.get("bonus_pct", 0)),
+    }
+
+
+@api_router.post("/admin/paypal-config")
+async def admin_set_paypal_config(payload: PayPalConfig, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    await db.paypal_config.update_one(
+        {"_id": "singleton"},
+        {"$set": {
+            "receiver_email": payload.receiver_email.strip().lower(),
+            "mode": payload.mode,
+            "bonus_pct": int(payload.bonus_pct),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+class PayPalDepositRequest(BaseModel):
+    amount: float = Field(..., ge=1.0, le=10000.0)
+
+
+@client_router.post("/funds/paypal-checkout")
+async def paypal_checkout(body: PayPalDepositRequest, user: CurrentUser = Depends(current_user_dep)):
+    """Generate a hosted PayPal payment URL for the current user."""
+    cfg = await db.paypal_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    if not cfg.get("receiver_email"):
+        raise HTTPException(status_code=503, detail="PayPal deposits are not configured yet.")
+    tx_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    await db.transactions.insert_one({
+        "id": tx_id, "user_id": user.id, "username": user.username,
+        "amount": float(body.amount), "method": "paypal", "status": "pending",
+        "type": "deposit", "created_at": now,
+    })
+    backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+    base = "https://www.sandbox.paypal.com" if cfg.get("mode") == "sandbox" else "https://www.paypal.com"
+    params = {
+        "cmd": "_xclick",
+        "business": cfg["receiver_email"],
+        "item_name": f"Better Social deposit — {user.username}",
+        "amount": f"{body.amount:.2f}",
+        "currency_code": "USD",
+        "no_note": "1",
+        "no_shipping": "1",
+        "custom": f"{user.id}|{tx_id}",
+        "notify_url": f"{backend_url}/api/paypal/ipn",
+        "return":     f"{backend_url}/client/dashboard?paypal=success",
+        "cancel_return": f"{backend_url}/client/dashboard?paypal=cancel",
+    }
+    return {"checkout_url": f"{base}/cgi-bin/webscr?{urlencode(params)}", "tx_id": tx_id}
+
+
+@api_router.post("/paypal/ipn")
+async def paypal_ipn(request: Request):
+    """PayPal IPN endpoint. PayPal POSTs form-encoded data here after a
+    payment completes. We MUST echo it back to PayPal to verify, then credit
+    the user identified by the `custom` field.
+
+    Never rejects with 4xx (PayPal will retry forever) — always 200, log details."""
+    try:
+        raw = await request.body()
+        form = await request.form()
+    except Exception as e:
+        logger.warning("[paypal-ipn] failed to read body: %s", e)
+        return {"ok": False, "error": "bad_body"}
+    cfg = await db.paypal_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    verify_url = PAYPAL_IPN_VERIFY_URLS["sandbox" if cfg.get("mode") == "sandbox" else "live"]
+    # Verification: echo the exact bytes back prefixed with cmd=_notify-validate
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.post(
+                verify_url,
+                content=b"cmd=_notify-validate&" + raw,
+                headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "BetterSocial-IPN"},
+            )
+        verified = r.text.strip() == "VERIFIED"
+    except Exception as e:
+        verified = False
+        logger.warning("[paypal-ipn] verify failed: %s", e)
+
+    payment_status = (form.get("payment_status") or "").strip()
+    receiver = (form.get("receiver_email") or form.get("business") or "").strip().lower()
+    txn_id = (form.get("txn_id") or "").strip()
+    gross = float(form.get("mc_gross") or 0)
+    currency = (form.get("mc_currency") or "USD").upper()
+    custom = (form.get("custom") or "").strip()
+    user_id, our_tx_id = (custom.split("|", 1) + [""])[:2]
+
+    await db.paypal_events.insert_one({
+        "id": str(uuid.uuid4()),
+        "verified": verified,
+        "payment_status": payment_status,
+        "receiver_email": receiver,
+        "txn_id": txn_id,
+        "gross": gross,
+        "currency": currency,
+        "custom": custom,
+        "user_id": user_id,
+        "our_tx_id": our_tx_id,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "raw_payload": {k: str(v) for k, v in form.items()},
+    })
+
+    if not verified:
+        logger.warning("[paypal-ipn] NOT verified (status=%s receiver=%s)", payment_status, receiver)
+        return {"ok": True}
+    if payment_status != "Completed":
+        logger.info("[paypal-ipn] ignored status=%s (waiting for Completed)", payment_status)
+        return {"ok": True}
+    expected_receiver = (cfg.get("receiver_email") or "").strip().lower()
+    if not expected_receiver or receiver != expected_receiver:
+        logger.warning("[paypal-ipn] receiver mismatch: got=%s expected=%s", receiver, expected_receiver)
+        return {"ok": True}
+    if currency != "USD" or gross <= 0:
+        logger.warning("[paypal-ipn] bad amount/currency: %s %s", gross, currency)
+        return {"ok": True}
+    if not user_id or not our_tx_id:
+        logger.warning("[paypal-ipn] no custom field — can't attribute")
+        return {"ok": True}
+    # Idempotency: if we've already credited this PayPal txn_id, skip
+    if txn_id and await db.transactions.find_one({"paypal_txn_id": txn_id, "status": "approved"}, {"_id": 0, "id": 1}):
+        logger.info("[paypal-ipn] duplicate — already credited %s", txn_id)
+        return {"ok": True}
+
+    now = datetime.now(timezone.utc).isoformat()
+    bonus_pct = int(cfg.get("bonus_pct") or 0)
+    bonus = round(gross * bonus_pct / 100.0, 2) if bonus_pct else 0.0
+
+    await db.transactions.update_one(
+        {"id": our_tx_id, "user_id": user_id, "method": "paypal", "status": "pending"},
+        {"$set": {"status": "approved", "approved_at": now, "amount": gross, "paypal_txn_id": txn_id}},
+    )
+    if bonus > 0:
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()), "user_id": user_id,
+            "amount": bonus, "method": "paypal_bonus", "status": "approved",
+            "type": "bonus", "note": f"+{bonus_pct}% PayPal deposit bonus",
+            "linked_tx_id": our_tx_id, "created_at": now, "approved_at": now,
+        })
+    # Email the user
+    try:
+        from notification_service import notify_deposit_credited
+        backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+        asyncio.create_task(notify_deposit_credited(db, user_id, gross, bonus, backend_url, method="paypal"))
+    except Exception:
+        pass
+    logger.info("[paypal-ipn] CREDITED user=%s $%s (+$%s bonus) txn=%s", user_id, gross, bonus, txn_id)
+    return {"ok": True}
 
 
 # ============ Realtime user commands ============
