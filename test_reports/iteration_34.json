@@ -1,0 +1,71 @@
+{
+  "summary": "Backend-only independent verification completed against the public REACT_APP_BACKEND_URL. Core requested flows passed: owner captcha login/admin exchange, admin order logs, per-user activity dossier, livescores, full odds board, single and combo bets, my-bets, cashout, repeated-cashout rejection, concurrent-cashout smoke, and notification_service startup import. Pytest result: 9 passed, 3 failed; the failures are auth-security requirements (no httpOnly login cookie, wildcard CORS, no dashboard-login brute-force lockout).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Successful login returns the JWT only in JSON and sends no access_token httpOnly cookie. Verified Set-Cookie was empty. This leaves the application dependent on script-accessible token storage and does not meet the requested auth hardening check.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "CORS middleware / all API endpoints",
+        "issue": "A preflight from https://example-evil.test returned Access-Control-Allow-Origin: * while the app config enables allow_credentials=True. CORS_ORIGINS is '*' in backend/.env rather than an explicit trusted frontend origin.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "No brute-force lockout is implemented for regular dashboard login. Six consecutive invalid attempts with fresh valid captchas all returned 401; the sixth should have returned 429 after five failures.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/client/sports/bet",
+        "issue": "Code review found that payout odds are trusted directly from the client payload. The endpoint only checks whether a match is suspended and never compares submitted market/selection/odds with server-side match_odds/defaults, so an authenticated user can submit inflated odds (up to 99x) and create an illegitimate potential payout.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/admin/user-activity/{user_id}",
+        "issue": "The activity dossier returns orders, transactions, number rentals, live subscriptions, and live checks, but no sports bets array. This leaves the owner's stated requirement to inspect each user's sports-bet history incomplete, even though the explicitly listed response keys passed."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_34_admin_sports.py",
+    "/app/test_reports/pytest/iter34_results.xml"
+  ],
+  "action_items": [
+    "Derive bet odds server-side from match_id + market + selection and reject unknown or stale client values; do not calculate payouts from client-supplied odds.",
+    "Set secure httpOnly authentication cookie(s) on successful login and keep Bearer support only if intentionally required.",
+    "Replace wildcard CORS with explicit trusted frontend origin(s) when credentials are enabled.",
+    "Add persistent per-IP + identifier login-attempt tracking with a 429 lockout after five failures and clear it after successful login.",
+    "Include the user's sports bets in /api/admin/user-activity/{user_id} and render them in the admin history drill-down.",
+    "Retest auth security and sports-bet tamper resistance after fixes."
+  ],
+  "critical_code_review_comments": [
+    "server.py:4017-4023 multiplies BetSelection.odds supplied by the requester instead of resolving authoritative odds from DEFAULT_MARKETS/match_odds; this is a direct financial-integrity vulnerability.",
+    "auth_and_chat.py:414-419 returns a token body but never accepts a Response or calls set_cookie.",
+    "auth_and_chat.py:422-441 has no failed-attempt persistence or lockout logic for normal login.",
+    "server.py:6696-6702 combines allow_credentials=True with CORS_ORIGINS='*'; configure explicit trusted origins.",
+    "server.py:2522-2567 does not query db.bets, so sports-bet history is absent from the admin user dossier.",
+    "server.py:4072-4081 ignores the matched/modified count of the conditional cashout update before inserting the refund transaction. The 5-way concurrency smoke passed, but checking the update result is still necessary to make double-refund prevention atomic under higher concurrency or multiple workers."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_34_admin_sports.py",
+    "/app/test_reports/iteration_34.json"
+  ],
+  "success_rate": {
+    "backend": "75% overall (9/12); 100% for the explicitly requested core admin/sports/startup flows, 0/3 for additional required auth-hardening checks",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "Created five $0.10 TEST sports bets across two pytest runs (single, combo, and concurrency cases), exercised cashout, then deleted all five bet documents and all ten associated stake/cashout transactions directly from the test database. Net persistent wallet impact was removed with transaction cleanup.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run /app/backend/tests/test_iteration_34_admin_sports.py against the external URL. Core flows currently pass. The three expected failures are httpOnly login cookie, explicit-origin credentialed CORS, and lockout after five invalid dashboard logins. Add a negative sports test that submits 99x odds and expects rejection/server-normalization once authoritative odds validation is implemented.",
+  "rca_of_the_issue": "Admin order/activity and sports E2E implementations are operational. Remaining auth failures stem from token-body-only login, wildcard CORS configuration, and regular credential verification lacking attempt tracking. The sports financial-integrity issue stems from treating requester-supplied odds as authoritative when calculating combined_odds and potential_win."
+}

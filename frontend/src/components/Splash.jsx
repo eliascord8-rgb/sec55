@@ -13,10 +13,7 @@ export default function Splash({ onDone, minMs = 4000 }) {
       firedRef.current = true;
       onDoneRef.current?.();
     }, minMs);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
+    return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [minMs]);
 
   return (
@@ -27,71 +24,62 @@ export default function Splash({ onDone, minMs = 4000 }) {
       }`}
       style={{
         background:
-          "radial-gradient(ellipse at 30% 20%, #ff007f 0%, transparent 55%), radial-gradient(ellipse at 70% 80%, #7000ff 0%, transparent 55%), #0a0014",
+          "radial-gradient(ellipse at 30% 20%, rgba(16,185,129,0.35) 0%, transparent 55%), radial-gradient(ellipse at 70% 80%, rgba(52,211,153,0.20) 0%, transparent 55%), #050505",
       }}
     >
-      <div className="relative w-48 h-48 md:w-56 md:h-56">
-        <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 100 100">
-          <circle cx="50" cy="50" r="46" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="2.5" />
-          <circle
-            cx="50"
-            cy="50"
-            r="46"
-            fill="none"
-            stroke="url(#splashGrad)"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            className="splash-spin"
-            style={{ strokeDasharray: "72 289", transformOrigin: "50% 50%" }}
-          />
+      {/* Emerald ring + BGS pill — same design language as the in-app BrandLoader */}
+      <div className="relative w-40 h-40 md:w-48 md:h-48">
+        <div className="absolute rounded-full bg-emerald-500/25 blur-3xl" style={{ inset: -16 }} />
+        <svg
+          className="relative animate-spin"
+          style={{ animationDuration: "1.4s" }}
+          viewBox="0 0 100 100"
+          width="100%"
+          height="100%"
+        >
           <defs>
-            <linearGradient id="splashGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#ff007f" />
-              <stop offset="50%" stopColor="#b388ff" />
-              <stop offset="100%" stopColor="#00e5ff" />
+            <linearGradient id="bs-splash-grad" x1="0" y1="0" x2="100" y2="100" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stopColor="#34d399" />
+              <stop offset="0.55" stopColor="#10b981" />
+              <stop offset="1" stopColor="#10b981" stopOpacity="0.05" />
             </linearGradient>
           </defs>
-        </svg>
-        <svg className="absolute inset-3 w-[calc(100%-24px)] h-[calc(100%-24px)]" viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="44" fill="none" stroke="rgba(52,211,153,0.10)" strokeWidth="4" />
           <circle
-            cx="50"
-            cy="50"
-            r="46"
+            cx="50" cy="50" r="44"
             fill="none"
-            stroke="url(#splashGrad2)"
-            strokeWidth="1.5"
+            stroke="url(#bs-splash-grad)"
+            strokeWidth="4"
             strokeLinecap="round"
-            className="splash-spin-reverse"
-            style={{ strokeDasharray: "40 289", transformOrigin: "50% 50%" }}
+            strokeDasharray="100 250"
+            transform="rotate(-90 50 50)"
           />
-          <defs>
-            <linearGradient id="splashGrad2" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#00e5ff" />
-              <stop offset="100%" stopColor="#ff007f" />
-            </linearGradient>
-          </defs>
         </svg>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="text-center">
-            <div className="font-display font-black text-4xl md:text-5xl glow-pink text-white">BS</div>
-            <div className="text-[9px] md:text-[10px] uppercase tracking-[0.3em] text-white/70 mt-1">
-              Better Social
-            </div>
-          </div>
+        <div
+          className="absolute rounded-full bg-emerald-500 flex items-center justify-center shadow-2xl shadow-emerald-500/50 ring-4 ring-[#050505]"
+          style={{
+            top: "50%", left: "50%",
+            width: "58%", height: "58%",
+            transform: "translate(-50%, -50%)",
+          }}
+        >
+          <span
+            className="font-black text-white tracking-tight leading-none"
+            style={{ fontSize: 34, fontFamily: "'Unbounded','Outfit',system-ui,sans-serif" }}
+          >
+            BGS
+          </span>
         </div>
       </div>
 
       <h1 className="mt-10 font-display text-2xl md:text-3xl font-black tracking-tight text-white text-center px-4">
-        <span className="gradient-text">Better-Social.pro</span>
+        Better<span className="text-emerald-400">Social</span>.pro
       </h1>
-      <p className="mt-2 text-xs md:text-sm text-white/50 uppercase tracking-[0.25em]">Loading your panel…</p>
-
-      <style>{`
-        @keyframes splash-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        @keyframes splash-spin-reverse { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
-        .splash-spin { animation: splash-spin 1.4s linear infinite; }
-        .splash-spin-reverse { animation: splash-spin-reverse 2s linear infinite; }
-      `}</style>
+      <p className="mt-2 text-[10px] md:text-xs text-emerald-300/80 uppercase tracking-[0.3em] font-bold flex items-center gap-2">
+        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
+        Loading your panel
+      </p>
     </div>
   );
 }
+
