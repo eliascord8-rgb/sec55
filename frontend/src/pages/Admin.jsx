@@ -1825,6 +1825,7 @@ function EmailConfigPanel({ token }) {
   const [pw, setPw] = useState("");
   const [fromEmail, setFromEmail] = useState("");
   const [fromName, setFromName] = useState("Better Social");
+  const [replyTo, setReplyTo] = useState("");
   const [useTls, setUseTls] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testTo, setTestTo] = useState("");
@@ -1839,6 +1840,7 @@ function EmailConfigPanel({ token }) {
       setUser(r.data.smtp_user || "");
       setFromEmail(r.data.from_email || "");
       setFromName(r.data.from_name || "Better Social");
+      setReplyTo(r.data.reply_to || "");
       setUseTls(r.data.use_tls !== false);
     } catch {}
   };
@@ -1860,6 +1862,7 @@ function EmailConfigPanel({ token }) {
         smtp_user: user.trim(),
         from_email: fromEmail.trim(),
         from_name: fromName.trim() || "Better Social",
+        reply_to: replyTo.trim(),
         use_tls: useTls,
       };
       if (pw) body.smtp_password = pw;
@@ -1955,6 +1958,25 @@ function EmailConfigPanel({ token }) {
           <div>
             <Label className="text-[11px] uppercase tracking-wider text-white/60">From Name</Label>
             <Input data-testid="smtp-from-name" value={fromName} onChange={(e) => setFromName(e.target.value)} placeholder="Better Social" className="bg-[#0d0a14] border-white/10 mt-1" />
+          </div>
+        </div>
+
+        {/* Reply-To — huge deliverability boost, replies actually reach a human */}
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60 flex items-center gap-2">
+            Reply-To Email
+            <span className="px-1.5 py-0.5 bg-emerald-500/20 text-emerald-300 text-[9px] font-bold rounded">Boosts inbox rate</span>
+          </Label>
+          <Input
+            data-testid="smtp-reply-to"
+            type="email"
+            value={replyTo}
+            onChange={(e) => setReplyTo(e.target.value)}
+            placeholder="support@yourdomain.com"
+            className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+          />
+          <div className="text-[10px] text-white/40 mt-1">
+            When a user hits "Reply" in Gmail, it lands here. Leave blank to reply back to <span className="text-emerald-400">From Email</span>. Setting a real support inbox measurably improves your spam score.
           </div>
         </div>
 

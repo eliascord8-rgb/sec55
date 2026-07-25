@@ -1,5 +1,14 @@
 # Better Social — PRD
 
+## Recent Updates (Jul 25, 2026 — Iteration 31 · Fork · Auto-Live rebuilt)
+- ✅ **Auto-Live rebuilt as a strict timer** (per repeated user complaint). New `mode` field on `live_subscriptions`:
+  - `mode: "always"` (default & recommended) — Pure timer. Fires the exact same order (service, quantity, link) every 2/5/10/60 minutes on the dot, for the full duration in days. No TikTok live-status check. This finally fixes the "orders came once then stopped" bug — the live-status scraper kept returning false-negatives after TikTok markup changes and silently killed the loop.
+  - `mode: "live_only"` — Legacy. Only fires while target is broadcasting. Fails OPEN (fires anyway) if scraping fails, so you can never get stuck.
+- ✅ **Migration ran** — all existing subs updated to `mode="always"`, paused subs that still have time reactivated, `next_check_at` reset to now.
+- ✅ **UI: mode picker** in the Auto-Live setup — big Always/Live-only toggle with clear copy so users understand what they're getting. Default is Always.
+- ✅ **Reply-To header** added to `send_email()` for all three providers (Elastic Email `ReplyTo`, MailerSend `reply_to`, SMTP `Reply-To` header) — measurably lowers spam-folder placement rate.
+- ✅ **Admin UI**: new "Reply-To Email" field with green "Boosts inbox rate" badge in Email Config panel.
+
 ## Recent Updates (Jul 21, 2026 — Iteration 30 · Fork · Google Auth)
 - ✅ **Google Sign-in / Sign-up** — Emergent-managed Google OAuth wired up end-to-end:
   - Backend: `POST /api/auth/google-status` (exchanges Emergent `session_id` → JWT for existing users OR `signup_token` for new users) + `POST /api/auth/google-finalize` (creates user with chosen username, tolerates uniqueness collisions).

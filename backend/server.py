@@ -2304,7 +2304,11 @@ class LiveSubCreate(BaseModel):
     tiktok_username: str = Field(..., min_length=1, max_length=80)
     quantity_per_burst: int = Field(..., ge=1, le=1_000_000)
     duration_days: int
-    repeat_every_minutes: int = Field(default=5, description="How often to place a new order while the target is live (2, 5, 10 or 60 minutes)")
+    repeat_every_minutes: int = Field(default=5, description="How often to fire a new order (2, 5, 10 or 60 minutes)")
+    # Mode: "always" (default — fire on a strict timer) OR "live_only" (only when TikTok user is live).
+    # Users kept complaining that "live_only" silently stopped after streams ended and never resumed,
+    # so the default is now the dumb-simple strict timer. UI still exposes both.
+    mode: str = Field(default="always", pattern="^(always|live_only)$")
 
 
 @client_router.post("/live-sub/create")
@@ -2347,6 +2351,7 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
         "charge_per_burst": charge_per_burst,
         "duration_days": body.duration_days,
         "repeat_every_minutes": body.repeat_every_minutes,
+        "mode": body.mode,
         "starts_at": now.isoformat(),
         "expires_at": (now + timedelta(days=body.duration_days)).isoformat(),
         "next_check_at": (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat(),
@@ -2467,25 +2472,25 @@ async def _live_sub_worker_loop():
 
 
 async def _process_live_sub_burst(sub: dict):
-    """Called every 60s while the sub is active. Ping TikTok; if the target
-    is currently live AND at least `repeat_every_minutes` have passed since the
-    last burst, fire one order. Otherwise reschedule the next check for
-    another 60 seconds."""
+    """Fire an SMM order burst per the subscription's schedule.
+    Behaviour by mode:
+      • mode="always" (default) — Strict timer. Fire every `repeat_every_minutes`
+        no matter what TikTok reports. This is what users actually want — the
+        original live-only mode kept silently stopping after streams ended.
+      • mode="live_only" — Legacy. Only fires while TikTok reports the target
+        as currently broadcasting. If detection fails, we FAIL OPEN and still
+        fire (better to over-deliver than to silently pause a paid feature).
+    """
     now = datetime.now(timezone.utc)
-    # Always record this check + schedule the NEXT poll 60s from now. The
-    # scheduling happens up-front so no matter what path we take below, the
-    # sub always advances forward.
+    # Always reschedule up-front so nothing can get stuck
     default_next = (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat()
     await db.live_subscriptions.update_one(
         {"id": sub["id"]},
         {"$set": {"last_check_at": now.isoformat(), "next_check_at": default_next}},
     )
     repeat_every_sec = int(sub.get("repeat_every_minutes") or 5) * 60
-    is_live = await _is_tiktok_user_live(sub["tiktok_username"])
-    if not is_live:
-        # Offline — nothing to do. Next tick in 60s. If they restart, we pick up automatically.
-        return
-    # Live — respect the user-selected repeat gate so we don't spam
+
+    # ---- 1. Gate: has enough time passed since the last burst? ----
     last_burst_iso = sub.get("last_burst_at")
     if last_burst_iso:
         try:
@@ -2494,12 +2499,26 @@ async def _process_live_sub_burst(sub: dict):
         except Exception:
             elapsed = repeat_every_sec + 1
         if elapsed < repeat_every_sec:
-            logger.info(
-                "[livesub] sub %s live, %ss/%ss since last burst — waiting",
-                sub["id"], int(elapsed), repeat_every_sec,
-            )
+            # Not yet time — quiet skip
             return
-    # Cleared the repeat gate. Fire an order.
+
+    # ---- 2. Gate: mode-specific check ----
+    mode = (sub.get("mode") or "always").lower()
+    if mode == "live_only":
+        try:
+            is_live = await _is_tiktok_user_live(sub["tiktok_username"])
+        except Exception as e:
+            # Scraping failed — FAIL OPEN, fire anyway. Users would rather see
+            # an over-delivery than a silent pause.
+            logger.warning("[livesub] live check failed for %s (%s) — firing anyway",
+                           sub.get("tiktok_username"), e)
+            is_live = True
+        if not is_live:
+            # Genuinely offline — skip this burst but keep polling every 60s
+            logger.info("[livesub] sub %s @%s is offline — skipping burst", sub["id"], sub.get("tiktok_username"))
+            return
+
+    # ---- 3. Balance check ----
     balance = await _get_user_balance(sub["user_id"])
     charge = float(sub.get("charge_per_burst") or 0)
     if balance < charge:
@@ -2509,6 +2528,8 @@ async def _process_live_sub_burst(sub: dict):
         )
         logger.info("[livesub] sub %s paused — user balance too low", sub["id"])
         return
+
+    # ---- 4. Place the SMM order ----
     link = f"https://www.tiktok.com/@{sub['tiktok_username']}/live"
     try:
         resp = await place_smm_order(sub["service_id"], link, int(sub["quantity_per_burst"]), provider_id=sub.get("provider_id"))
@@ -2518,11 +2539,11 @@ async def _process_live_sub_burst(sub: dict):
     if not resp.get("order"):
         logger.warning("[livesub] provider returned no order id for sub=%s: %s", sub["id"], str(resp)[:150])
         return
-    # Charge the buyer + persist an order row so their history is accurate
+    # ---- 5. Charge + persist the order row ----
     await db.transactions.insert_one({
         "id": str(uuid.uuid4()), "user_id": sub["user_id"], "username": sub["username"],
         "amount": -charge, "method": "balance", "status": "approved",
-        "type": "live_sub_burst", "note": f"Live burst @{sub['tiktok_username']} — {sub['quantity_per_burst']}",
+        "type": "live_sub_burst", "note": f"Auto burst @{sub['tiktok_username']} — {sub['quantity_per_burst']}",
         "live_sub_id": sub["id"], "created_at": now.isoformat(), "approved_at": now.isoformat(),
     })
     await db.orders.insert_one({
@@ -2547,9 +2568,9 @@ async def _process_live_sub_burst(sub: dict):
         {
             "$set": {
                 "last_burst_at": now.isoformat(),
-                # Next poll happens in 60 seconds regardless — the per-sub
-                # repeat gate above guards the actual ordering cadence.
-                "next_check_at": (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat(),
+                # Schedule the NEXT check `repeat_every_minutes` from now so
+                # we don't waste cycles polling in between.
+                "next_check_at": (now + timedelta(seconds=repeat_every_sec)).isoformat(),
             },
             "$inc": {"total_bursts": 1, "total_spent": charge},
         },
@@ -5297,6 +5318,7 @@ class EmailConfig(BaseModel):
     smtp_password: Optional[str] = ""
     from_email: Optional[str] = ""
     from_name: Optional[str] = "Better Social"
+    reply_to: Optional[str] = ""
     use_tls: bool = True
     mailersend_api_key: Optional[str] = ""
     elastic_api_key: Optional[str] = ""
@@ -5319,6 +5341,7 @@ async def admin_get_email_config(x_admin_token: Optional[str] = Header(None)):
         "password_set": bool(pw),
         "from_email": cfg.get("from_email", ""),
         "from_name": cfg.get("from_name", "Better Social"),
+        "reply_to": cfg.get("reply_to", ""),
         "use_tls": cfg.get("use_tls", True),
         "mailersend_set": bool(ms_key),
         "mailersend_api_key_masked": ("*" * 8 + ms_key[-4:]) if ms_key else "",
@@ -5336,6 +5359,7 @@ async def admin_set_email_config(payload: EmailConfig, x_admin_token: Optional[s
         "smtp_user": (payload.smtp_user or "").strip(),
         "from_email": (payload.from_email or payload.smtp_user or "").strip(),
         "from_name": (payload.from_name or "Better Social").strip(),
+        "reply_to": (payload.reply_to or "").strip(),
         "use_tls": bool(payload.use_tls),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }

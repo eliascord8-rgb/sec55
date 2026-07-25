@@ -31,6 +31,7 @@ async def send_email(
     """Send a transactional email. Prefers MailerSend API if configured, else falls back to SMTP.
     Returns {ok: bool, error?: str}."""
     cfg = await db.email_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    reply_to = (cfg.get("reply_to") or "").strip()
 
     # ---- Elastic Email API path (NO KYC — preferred) ----
     ee_key = (cfg.get("elastic_api_key") or "").strip()
@@ -40,13 +41,16 @@ async def send_email(
         if not from_email:
             return {"ok": False, "error": "Elastic Email: from_email is required (must be on a verified domain)"}
         import httpx
+        content = {
+            "Body": [{"ContentType": "HTML", "Content": html, "Charset": "utf-8"}],
+            "From": f"{from_name} <{from_email}>",
+            "Subject": subject,
+        }
+        if reply_to:
+            content["ReplyTo"] = reply_to
         payload = {
             "Recipients": {"To": [to_email]},
-            "Content": {
-                "Body": [{"ContentType": "HTML", "Content": html, "Charset": "utf-8"}],
-                "From": f"{from_name} <{from_email}>",
-                "Subject": subject,
-            },
+            "Content": content,
         }
         try:
             async with httpx.AsyncClient(timeout=20.0) as c:
@@ -80,6 +84,8 @@ async def send_email(
             "html": html,
             "text": text_alt or _html_to_text(html),
         }
+        if reply_to:
+            payload["reply_to"] = {"email": reply_to}
         try:
             async with httpx.AsyncClient(timeout=15.0) as c:
                 r = await c.post(
@@ -115,6 +121,8 @@ async def send_email(
     msg["From"] = f"{from_name} <{from_email}>"
     msg["To"] = to_email
     msg["Subject"] = subject
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg.set_content(text_alt or _html_to_text(html))
     msg.add_alternative(html, subtype="html")
 

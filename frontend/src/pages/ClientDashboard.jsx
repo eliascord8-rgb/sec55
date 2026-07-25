@@ -2698,6 +2698,8 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
   };
   useEffect(() => { loadMySubs(); }, []);
 
+  const [subFireMode, setSubFireMode] = useState("always"); // "always" (default) or "live_only"
+
   const subscribe = async () => {
     if (!selected) return;
     if (!subUsername.trim()) { toast.error("Enter the TikTok @username"); return; }
@@ -2710,6 +2712,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
         quantity_per_burst: Number(qty),
         duration_days: subDays,
         repeat_every_minutes: subRepeatMins,
+        mode: subFireMode,
       });
       const firstNote = r.data.first_order_id ? ` — first order #${r.data.first_order_id} placed now.` : "";
       toast.success(`✅ Auto-live activated for @${r.data.subscription.tiktok_username} (${subDays} days, every ${subRepeatMins} min)${firstNote}`);
@@ -3077,8 +3080,46 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                 <div className="text-[11px] uppercase tracking-widest text-fuchsia-300 font-bold">Auto-Live setup</div>
               </div>
               <p className="text-xs text-white/60">
-                We check TikTok every <span className="text-fuchsia-200 font-bold">60 seconds</span>. Your first order fires the moment you activate. After that, we automatically place a new order for <span className="text-fuchsia-200 font-bold">{qty || 0}</span> {selected?.name || "unit(s)"} every <span className="text-fuchsia-200 font-bold">{subRepeatMins} minutes</span> — but only while your target is actually live. If they end the stream and go live again, the loop resumes automatically. Cancel anytime.
+                {subFireMode === "always" ? (
+                  <>
+                    <span className="text-emerald-300 font-bold">Strict timer mode.</span> We automatically place <span className="text-fuchsia-200 font-bold">{qty || 0}</span> {selected?.name || "unit(s)"} every <span className="text-fuchsia-200 font-bold">{subRepeatMins} minutes</span> — the loop keeps firing on the dot for the full <span className="text-fuchsia-200 font-bold">{subDays} days</span> regardless of stream state. Cancel anytime.
+                  </>
+                ) : (
+                  <>
+                    <span className="text-amber-300 font-bold">Live-only mode.</span> Orders only fire while @{subUsername || "target"} is actually broadcasting. If the stream ends and restarts, the loop auto-resumes. Best for verified live-only campaigns.
+                  </>
+                )}
               </p>
+
+              {/* Fire mode toggle — critical fix per user feedback */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSubFireMode("always")}
+                  data-testid="submode-always"
+                  className={`p-3 rounded-md border-2 text-left transition ${subFireMode === "always" ? "border-emerald-400 bg-emerald-500/15" : "border-white/10 bg-white/[0.02] hover:border-white/25"}`}
+                >
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className={`w-2 h-2 rounded-full ${subFireMode === "always" ? "bg-emerald-400 animate-pulse" : "bg-white/30"}`} />
+                    <span className="font-bold text-xs uppercase tracking-wider text-white">Always repeat</span>
+                    <span className="ml-auto text-[9px] font-bold uppercase tracking-widest bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded">Recommended</span>
+                  </div>
+                  <div className="text-[10px] text-white/50 leading-relaxed">Fires on the dot every {subRepeatMins} min. Doesn't care about live status.</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubFireMode("live_only")}
+                  data-testid="submode-liveonly"
+                  className={`p-3 rounded-md border-2 text-left transition ${subFireMode === "live_only" ? "border-amber-400 bg-amber-500/15" : "border-white/10 bg-white/[0.02] hover:border-white/25"}`}
+                >
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className={`w-2 h-2 rounded-full ${subFireMode === "live_only" ? "bg-amber-400 animate-pulse" : "bg-white/30"}`} />
+                    <span className="font-bold text-xs uppercase tracking-wider text-white">Only when live</span>
+                  </div>
+                  <div className="text-[10px] text-white/50 leading-relaxed">Only fires while target is broadcasting.</div>
+                </button>
+              </div>
+
               <div className="grid sm:grid-cols-3 gap-3">
                 <div>
                   <Label className="text-[11px] uppercase tracking-wider text-white/60">TikTok @username</Label>
@@ -3119,7 +3160,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                 </div>
               </div>
               <div className="text-[11px] text-fuchsia-200/70 bg-black/30 rounded-md px-3 py-2">
-                Charged <span className="text-fuchsia-300 font-bold font-mono">${(Number(selected?.rate || 0) * Number(qty || 0) / 1000).toFixed(4)}</span> per burst · Expected max bursts: <span className="text-fuchsia-300 font-bold font-mono">{Math.max(1, Math.floor((subDays * 24 * 60) / subRepeatMins))}</span> if live 24/7. Balance is only debited while live.
+                Charged <span className="text-fuchsia-300 font-bold font-mono">${(Number(selected?.rate || 0) * Number(qty || 0) / 1000).toFixed(4)}</span> per burst · Expected max bursts: <span className="text-fuchsia-300 font-bold font-mono">{Math.max(1, Math.floor((subDays * 24 * 60) / subRepeatMins))}</span>{subFireMode === "live_only" ? " if live 24/7." : "."} Balance is debited each burst.
               </div>
               <button
                 onClick={subscribe}
