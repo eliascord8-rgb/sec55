@@ -2640,6 +2640,20 @@ function AddonsView({ authedApi, balance, reloadBalance, reloadAddons, onGoBuy, 
 }
 
 
+function StatBox({ label, value, accent }) {
+  return (
+    <div
+      className={`px-3 py-2 rounded-lg border ${accent ? "border-emerald-400/50 bg-emerald-500/15" : "border-white/10 bg-white/[0.03]"} text-center min-w-[80px]`}
+    >
+      <div className={`font-display font-black text-lg md:text-xl ${accent ? "text-emerald-300" : "text-white"} leading-tight`}>
+        {value}
+      </div>
+      <div className="text-[9px] uppercase tracking-widest text-white/40 mt-0.5 font-bold">{label}</div>
+    </div>
+  );
+}
+
+
 function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, onGoLive }) {
   const [services, setServices] = useState([]);
   const [loadingSvc, setLoadingSvc] = useState(true);
@@ -2849,6 +2863,79 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
 
   return (
     <div className="space-y-6">
+      {/* Premium header banner — matches the dashboard's emerald theme, gives the page
+          a purposeful landing feel instead of dropping straight into a service list. */}
+      <div
+        className="relative overflow-hidden rounded-xl border border-emerald-500/20 bg-gradient-to-br from-[#0f2a15] via-[#0a1a0a] to-black p-6 md:p-8"
+        data-testid="buy-view-hero"
+      >
+        <div
+          className="absolute inset-0 opacity-60 pointer-events-none"
+          style={{
+            background: "radial-gradient(circle at 15% 30%, rgba(16,185,129,0.22), transparent 55%)",
+          }}
+        />
+        <div className="relative flex flex-col md:flex-row md:items-center md:justify-between gap-5">
+          <div className="max-w-xl">
+            <div className="text-[10px] uppercase tracking-[0.28em] text-emerald-300/80 font-bold mb-2 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              Purchase center
+            </div>
+            <h1 className="font-display font-black text-2xl md:text-4xl leading-tight tracking-tight text-white">
+              Grow anything.
+              <br />
+              <span className="text-emerald-300">In one click.</span>
+            </h1>
+            <p className="text-white/60 text-sm md:text-base mt-3 leading-relaxed">
+              Pick a service, drop a link, and we'll route your order to the fastest provider on the network. Balance-based checkout means orders start in seconds.
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2 md:gap-3 shrink-0">
+            <StatBox label="Services" value={services.length ? `${services.length}+` : "1k+"} />
+            <StatBox label="Balance" value={`$${Number(balance || 0).toFixed(2)}`} accent />
+            <StatBox label="Active auto" value={mySubs.filter((s) => s.status === "active").length} />
+          </div>
+        </div>
+        {/* Quick-action shortcut chips */}
+        <div className="relative mt-5 flex flex-wrap items-center gap-2 text-[11px] font-bold uppercase tracking-widest">
+          <button
+            type="button"
+            onClick={() => setBulkMode((v) => !v)}
+            data-testid="buy-hero-bulk-toggle"
+            className={`px-3 py-1.5 rounded-full border transition ${bulkMode ? "bg-emerald-500 text-black border-emerald-400" : "border-emerald-500/30 text-emerald-200 hover:bg-emerald-500/10"}`}
+          >
+            {bulkMode ? "✓ Bulk mode" : "Bulk mode"}
+          </button>
+          {ownsAutoLive ? (
+            <button
+              type="button"
+              onClick={onGoLive}
+              className="px-3 py-1.5 rounded-full border border-emerald-500/30 text-emerald-200 hover:bg-emerald-500/10 transition"
+            >
+              Auto-Live control panel
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onGoAddons}
+              className="px-3 py-1.5 rounded-full border border-amber-500/40 text-amber-200 hover:bg-amber-500/10 transition"
+            >
+              🔒 Unlock Auto-Live
+            </button>
+          )}
+          {last?.orderId && (
+            <button
+              type="button"
+              onClick={repeatLast}
+              disabled={repeating}
+              className="px-3 py-1.5 rounded-full border border-white/15 text-white/70 hover:bg-white/5 disabled:opacity-40 transition"
+            >
+              {repeating ? "…" : "↻ Repeat last order"}
+            </button>
+          )}
+        </div>
+      </div>
+
       {mySubs.filter((s) => s.status === "active").length > 0 && (
         <div className="bg-fuchsia-500/10 border border-fuchsia-500/40 rounded-md p-4" data-testid="live-subs-panel">
           <div className="flex items-center gap-2 mb-3">

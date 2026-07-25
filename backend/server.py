@@ -2253,7 +2253,7 @@ async def get_theme_pref(user: CurrentUser = Depends(current_user_dep)):
 
 # Fixed poll cadence — we check TikTok every 60s so a re-broadcast is picked
 # up quickly. The user picks how often to actually place an order.
-TIKTOK_CHECK_INTERVAL_SEC = 60          # 1 minute — how often we PING TikTok live-status
+TIKTOK_CHECK_INTERVAL_SEC = 90          # 90 seconds — how often we PING TikTok live-status
 TIKTOK_ALLOWED_REPEAT_MINUTES = [2, 5, 10, 60]
 LIVE_SUB_ALLOWED_DAYS = [7, 14, 30, 60, 90, 365]
 
@@ -2476,6 +2476,41 @@ async def live_sub_my(user: CurrentUser = Depends(current_user_dep)):
     return {"subscriptions": subs, "auto_live_enabled": bool((u or {}).get("auto_live_enabled"))}
 
 
+@client_router.get("/live-sub/{sid}/checks")
+async def live_sub_checks(sid: str, user: CurrentUser = Depends(current_user_dep)):
+    """User can audit every live-status check on their own subscription."""
+    sub = await db.live_subscriptions.find_one({"id": sid, "user_id": user.id}, {"_id": 0, "id": 1})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    cur = db.tiktok_live_checks.find({"sub_id": sid}, {"_id": 0}).sort("checked_at", -1).limit(200)
+    checks = await cur.to_list(200)
+    # Also compute quick stats
+    total = len(checks)
+    live_count = sum(1 for c in checks if c.get("is_live"))
+    return {
+        "checks": checks,
+        "stats": {"total_checks": total, "was_live": live_count, "was_offline": total - live_count},
+    }
+
+
+@api_router.get("/admin/live-sub-checks")
+async def admin_live_sub_checks(
+    x_admin_token: Optional[str] = Header(None),
+    user_id: Optional[str] = None,
+    sub_id: Optional[str] = None,
+    limit: int = 500,
+):
+    """Owner/staff view of every TikTok live-status check across all subs.
+    Filter by user_id OR sub_id. Returns most recent first."""
+    check_admin(x_admin_token)
+    q: dict = {}
+    if user_id: q["user_id"] = user_id
+    if sub_id:  q["sub_id"]  = sub_id
+    limit = max(1, min(int(limit or 500), 2000))
+    cur = db.tiktok_live_checks.find(q, {"_id": 0}).sort("checked_at", -1).limit(limit)
+    return {"checks": await cur.to_list(limit)}
+
+
 class AutoLiveToggleReq(BaseModel):
     enabled: bool
 
@@ -2560,17 +2595,41 @@ async def _process_live_sub_burst(sub: dict):
 
     # ---- 2. Gate: mode-specific check ----
     mode = (sub.get("mode") or "always").lower()
+    live_state = None  # None = not checked (always mode), True/False for live_only
     if mode == "live_only":
         try:
-            is_live = await _is_tiktok_user_live(sub["tiktok_username"])
+            live_state = await _is_tiktok_user_live(sub["tiktok_username"])
         except Exception as e:
             # Scraping failed — FAIL OPEN, fire anyway. Users would rather see
             # an over-delivery than a silent pause.
             logger.warning("[livesub] live check failed for %s (%s) — firing anyway",
                            sub.get("tiktok_username"), e)
-            is_live = True
-        if not is_live:
-            # Genuinely offline — skip this burst but keep polling every 60s
+            live_state = True
+        # Log every check into a small collection so admin can audit
+        try:
+            await db.tiktok_live_checks.insert_one({
+                "id": str(uuid.uuid4()),
+                "sub_id": sub["id"],
+                "user_id": sub["user_id"],
+                "username": sub["username"],
+                "tiktok_username": sub["tiktok_username"],
+                "is_live": bool(live_state),
+                "will_fire": bool(live_state),
+                "checked_at": now.isoformat(),
+                "mode": mode,
+            })
+            # Cap the log at ~10k rows per sub — cheap TTL via id sort trimming
+            n = await db.tiktok_live_checks.count_documents({"sub_id": sub["id"]})
+            if n > 500:
+                old = await db.tiktok_live_checks.find(
+                    {"sub_id": sub["id"]},
+                    {"_id": 0, "id": 1},
+                ).sort("checked_at", 1).limit(n - 500).to_list(n - 500)
+                if old:
+                    await db.tiktok_live_checks.delete_many({"id": {"$in": [o["id"] for o in old]}})
+        except Exception:
+            pass
+        if not live_state:
             logger.info("[livesub] sub %s @%s is offline — skipping burst", sub["id"], sub.get("tiktok_username"))
             return
 

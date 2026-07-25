@@ -1,5 +1,13 @@
 # Better Social — PRD
 
+## Recent Updates (Jul 25, 2026 — Iteration 33 · Fork · Auto-Live audit + Purchase polish)
+- ✅ **TikTok live-status polling: 60s → 90s** per user request. Existing subs pick this up on their next tick.
+- ✅ **Live-status history log** — new `tiktok_live_checks` collection. Every scrape (only in `live_only` mode) records `{sub_id, user_id, tiktok_username, is_live, will_fire, checked_at, mode}`. Cap at 500 rows per sub (auto-trim).
+- ✅ **Endpoints for the log**:
+  - `GET /api/client/live-sub/{sid}/checks` — user views their own sub's check history + stats (`{total_checks, was_live, was_offline}`)
+  - `GET /api/admin/live-sub-checks?user_id=X&sub_id=Y&limit=500` — owner/staff cross-user audit
+- ✅ **Purchase page hero redesign** — new premium header banner: emerald gradient card with "Grow anything. In one click." headline, 3 live stat boxes (services / balance / active auto-subs), quick-action chip row (Bulk mode toggle · Auto-Live shortcut · Repeat last order). Matches the dashboard's dark obsidian + emerald green theme.
+
 ## Recent Updates (Jul 25, 2026 — Iteration 32 · Fork · Notifications + Feature toggles)
 - ✅ **Universal email notifications** — new `notification_service.py` with `notify_user()` helper. Wired into 4 trigger points so far:
   - **Order placed (balance flow)** → `notify_order_placed` sends a branded confirmation with service, quantity, charge, order ID + "View order" CTA.
