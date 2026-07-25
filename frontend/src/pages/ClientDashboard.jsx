@@ -539,18 +539,10 @@ export default function ClientDashboard() {
               {(navTabs.find((t) => t.id === view) || {}).label || "Home"}
             </div>
             <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
-              {/* Balance + inline Buy button — visible on all sizes */}
+              {/* Balance chip — Buy button removed (already in nav) to save topbar space */}
               <div className="flex items-center gap-1.5 px-2 md:px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/30" data-testid="topbar-balance">
                 <CreditCard className="w-3.5 h-3.5 text-emerald-300 hidden sm:inline-block" />
                 <span className="text-xs md:text-sm font-bold text-emerald-300 whitespace-nowrap">{fmtMoney(balance)}</span>
-                <button
-                  onClick={() => changeView("buy")}
-                  data-testid="topbar-buy-btn"
-                  title="Open purchase page"
-                  className="ml-1 pl-2 border-l border-emerald-500/30 text-[10px] md:text-[11px] font-black uppercase tracking-wider text-emerald-200 hover:text-white transition"
-                >
-                  Buy
-                </button>
               </div>
               {/* Daily free-bet claim removed per user request */}
               <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-white/10 relative" data-testid="profile-menu-wrap">
@@ -612,7 +604,7 @@ export default function ClientDashboard() {
                 Classic
               </button>
               <div className="hidden md:block"><LanguagePicker compact /></div>
-              <div className="hidden md:block"><CurrencyPicker compact /></div>
+              {/* Currency picker moved to Settings → Preferences per user request */}
               {user.role === "owner" && (
                 <a href="/admin" data-testid="nav-admin-green" title="Open admin panel"
                    className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition shadow-sm shadow-emerald-500/40">
@@ -2640,7 +2632,7 @@ function AddonsView({ authedApi, balance, reloadBalance, reloadAddons, onGoBuy, 
 }
 
 
-function StatBox({ label, value, accent }) {
+function BuyStatBox({ label, value, accent }) {
   return (
     <div
       className={`px-3 py-2 rounded-lg border ${accent ? "border-emerald-400/50 bg-emerald-500/15" : "border-white/10 bg-white/[0.03]"} text-center min-w-[80px]`}
@@ -2737,7 +2729,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
   };
   useEffect(() => { loadMySubs(); }, []);
 
-  const [subFireMode, setSubFireMode] = useState("always"); // "always" (default) or "live_only"
+  const [subFireMode, setSubFireMode] = useState("live_only"); // "live_only" (default per user request) or "always"
 
   const subscribe = async () => {
     if (!selected) return;
@@ -2891,9 +2883,9 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
             </p>
           </div>
           <div className="grid grid-cols-3 gap-2 md:gap-3 shrink-0">
-            <StatBox label="Services" value={services.length ? `${services.length}+` : "1k+"} />
-            <StatBox label="Balance" value={`$${Number(balance || 0).toFixed(2)}`} accent />
-            <StatBox label="Active auto" value={mySubs.filter((s) => s.status === "active").length} />
+            <BuyStatBox label="Services" value={services.length ? `${services.length}+` : "1k+"} />
+            <BuyStatBox label="Balance" value={`$${Number(balance || 0).toFixed(2)}`} accent />
+            <BuyStatBox label="Active auto" value={mySubs.filter((s) => s.status === "active").length} />
           </div>
         </div>
         {/* Quick-action shortcut chips */}

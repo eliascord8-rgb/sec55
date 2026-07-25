@@ -377,6 +377,14 @@ async def checkout(req: CheckoutRequest, request: Request):
         })
         await db.orders.insert_one(base_doc.copy())
 
+        # Guest / customer email confirmation (best-effort)
+        try:
+            from notification_service import notify_guest_order_placed
+            backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+            asyncio.create_task(notify_guest_order_placed(db, req.customer_email or "", {**base_doc, "service_name": (svc or {}).get("name")}, backend_url))
+        except Exception:
+            pass
+
         # Auto-delete coupon when balance hits zero (or rounds to zero)
         remaining = await db.coupons.find_one({"code": code}, {"_id": 0, "balance": 1})
         if remaining and remaining.get("balance", 0) <= 0.005:
@@ -2511,6 +2519,54 @@ async def admin_live_sub_checks(
     return {"checks": await cur.to_list(limit)}
 
 
+@api_router.get("/admin/user-activity/{user_id}")
+async def admin_user_activity(user_id: str, x_admin_token: Optional[str] = Header(None), limit: int = 200):
+    """Full activity dossier for one user — orders, deposits, virtual-number
+    rentals, auto-live subs, and live-status checks. Admin panel renders this
+    into a scrollable per-user history modal."""
+    check_admin(x_admin_token)
+    limit = max(1, min(int(limit or 200), 500))
+    user = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0}) or {}
+    orders = await db.orders.find(
+        {"user_id": user_id},
+        {"_id": 0, "id": 1, "service_id": 1, "service_name": 1, "link": 1, "quantity": 1, "charge": 1, "price_usd": 1, "status": 1, "payment_method": 1, "source": 1, "smm_order_id": 1, "created_at": 1, "provider_id": 1},
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    txns = await db.transactions.find(
+        {"user_id": user_id},
+        {"_id": 0, "id": 1, "amount": 1, "method": 1, "status": 1, "type": 1, "note": 1, "created_at": 1, "approved_at": 1, "bonus_amount": 1},
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    numbers = await db.number_rentals.find(
+        {"user_id": user_id},
+        {"_id": 0, "id": 1, "operator": 1, "country": 1, "service": 1, "phone_number": 1, "price": 1, "status": 1, "created_at": 1, "expires_at": 1, "sms": 1},
+    ).sort("created_at", -1).limit(limit).to_list(limit) if "number_rentals" in await db.list_collection_names() else []
+    subs = await db.live_subscriptions.find(
+        {"user_id": user_id},
+        {"_id": 0},
+    ).sort("created_at", -1).limit(50).to_list(50)
+    live_checks = await db.tiktok_live_checks.find(
+        {"user_id": user_id},
+        {"_id": 0, "id": 1, "tiktok_username": 1, "is_live": 1, "will_fire": 1, "checked_at": 1, "sub_id": 1},
+    ).sort("checked_at", -1).limit(100).to_list(100)
+    # Quick totals
+    total_spent = round(sum(float(o.get("charge") or o.get("price_usd") or 0) for o in orders), 2)
+    total_deposited = round(sum(float(t.get("amount") or 0) for t in txns if (t.get("type") or "") in ("deposit",) and t.get("status") == "approved"), 2)
+    return {
+        "user": user,
+        "totals": {
+            "orders_count": len(orders),
+            "orders_total_spent": total_spent,
+            "deposits_total": total_deposited,
+            "numbers_count": len(numbers),
+            "auto_live_subs": len(subs),
+        },
+        "orders": orders,
+        "transactions": txns,
+        "number_rentals": numbers,
+        "live_subscriptions": subs,
+        "live_checks": live_checks,
+    }
+
+
 class AutoLiveToggleReq(BaseModel):
     enabled: bool
 
@@ -3165,6 +3221,8 @@ def _verify_nowpayments_signature(body_bytes: bytes, ipn_secret: str, signature:
 class NowpaymentsConfig(BaseModel):
     api_key: str = Field(..., min_length=10, max_length=200)
     ipn_secret: Optional[str] = ""
+    email: Optional[str] = ""
+    password: Optional[str] = ""
 
 
 @api_router.get("/admin/nowpayments-config")
@@ -3176,6 +3234,8 @@ async def admin_get_nowpayments_config(x_admin_token: Optional[str] = Header(Non
         "configured": bool(key),
         "api_key_masked": ("*" * 6 + key[-6:]) if key else "",
         "ipn_secret_set": bool(cfg.get("ipn_secret")),
+        "email": cfg.get("email", ""),
+        "password_set": bool(cfg.get("password")),
     }
 
 
@@ -3185,6 +3245,10 @@ async def admin_set_nowpayments_config(payload: NowpaymentsConfig, x_admin_token
     upd = {"api_key": payload.api_key.strip(), "updated_at": datetime.now(timezone.utc).isoformat()}
     if payload.ipn_secret:
         upd["ipn_secret"] = payload.ipn_secret.strip()
+    if payload.email:
+        upd["email"] = payload.email.strip().lower()
+    if payload.password:
+        upd["password"] = payload.password  # stored as-is; used only server-side for JWT exchange
     await db.nowpayments_config.update_one({"_id": "singleton"}, {"$set": upd}, upsert=True)
     return {"configured": True}
 

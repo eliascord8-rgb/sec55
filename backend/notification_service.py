@@ -233,6 +233,31 @@ async def notify_dm_received(db, user_id: str, from_username: str, preview: str,
         cta_label="Open messages")
 
 
+async def notify_guest_order_placed(db: AsyncIOMotorDatabase, to_email: str, order: dict, backend_url: str) -> dict:
+    """Send an order-confirmation email to a GUEST (no user_id) who paid via coupon/crypto on the landing page."""
+    if not to_email or "@" not in to_email:
+        return {"ok": False, "skipped": "no_email"}
+    charge = float(order.get("price_usd") or order.get("charge") or 0)
+    body = f"""
+<h2 style="color:#fff;font-size:20px;margin:0 0 8px">🛒 Your order is confirmed</h2>
+<p>Thanks for your purchase — we've queued it with our provider network.</p>
+<div style="background:#0f2a15;border:1px solid #10b98133;border-radius:8px;padding:16px;margin:16px 0">
+  <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Order summary</div>
+  <div style="font-size:14px;line-height:1.9">
+    <div><strong style="color:#fff">Service:</strong> {order.get('service_name') or 'SMM'}</div>
+    <div><strong style="color:#fff">Link:</strong> <span style="word-break:break-all;color:#9ca3af">{order.get('link') or ''}</span></div>
+    <div><strong style="color:#fff">Quantity:</strong> {order.get('quantity')}</div>
+    <div><strong style="color:#fff">Amount:</strong> <span style="color:{BRAND_COLOR};font-weight:700">${charge:.2f}</span></div>
+    <div><strong style="color:#fff">Order ID:</strong> <code style="color:#fbbf24">{order.get('id','?')[:12]}</code></div>
+  </div>
+</div>
+<p style="color:#9ca3af;font-size:13px">Track your order at <a href="{backend_url}/status/{order.get('id','')}" style="color:{BRAND_COLOR}">this link</a>. Create an account for future orders + a wallet balance.</p>
+"""
+    html = _wrap_html(body, cta_url=f"{backend_url}/status/{order.get('id','')}", cta_label="Track order")
+    subj = f"[Better Social] Order confirmed — ${charge:.2f}"
+    return await send_email(db, to_email, subj, html)
+
+
 async def notify_account_closed(db, user_id: str, reason: str = ""):
     body = f"""
 <h2 style="color:#fff;font-size:20px;margin:0 0 8px">Your account has been closed</h2>

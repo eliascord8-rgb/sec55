@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Rocket, Zap, Palette, KeyRound, Mail, Save, User, Camera, Link as LinkIcon, Trash2 } from "lucide-react";
+import { Loader2, Rocket, Zap, Palette, KeyRound, Mail, Save, User, Camera, Link as LinkIcon, Trash2, Coins } from "lucide-react";
+import { CurrencyPicker } from "@/context/CurrencyContext";
+import { LanguagePicker } from "@/context/LanguageContext";
 
 // -----------------------------------------------------------------------------
 // AviatorGame — daily crash game. Custom bet, cashout any time before the plane
@@ -183,8 +185,8 @@ export function SettingsView({ authedApi, user }) {
         </h1>
         <p className="text-white/50 text-sm mt-2">Manage your account and preferences.</p>
       </div>
-      <div className="flex gap-2">
-        {[["account", "Account", KeyRound], ["appearance", "Appearance", Palette]].map(([id, label, Icon]) => (
+      <div className="flex gap-2 flex-wrap">
+        {[["account", "Account", KeyRound], ["preferences", "Preferences", Coins], ["appearance", "Appearance", Palette]].map(([id, label, Icon]) => (
           <button key={id} onClick={() => setTab(id)} data-testid={`settings-tab-${id}`}
             className={`px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider inline-flex items-center gap-2 transition ${tab === id ? "bg-emerald-500 text-black" : "bg-[#0d0a14] text-white/70 hover:text-white border border-white/10"}`}>
             <Icon className="w-3.5 h-3.5" /> {label}
@@ -192,7 +194,37 @@ export function SettingsView({ authedApi, user }) {
         ))}
       </div>
       {tab === "account" && <AccountSettings authedApi={authedApi} user={user} />}
+      {tab === "preferences" && <PreferencesSettings />}
       {tab === "appearance" && <AppearanceSettings authedApi={authedApi} />}
+    </div>
+  );
+}
+
+
+function PreferencesSettings() {
+  return (
+    <div className="space-y-4">
+      <div className="bg-[#0d0a14] border border-white/5 rounded-md p-5" data-testid="settings-currency">
+        <div className="flex items-center gap-2 mb-3">
+          <Coins className="w-4 h-4 text-emerald-400" />
+          <div className="font-display font-bold text-sm">Display currency</div>
+        </div>
+        <p className="text-xs text-white/50 mb-4">
+          All balances, order prices and stats are shown in this currency. Payments still process in USD — this is a display-only conversion.
+        </p>
+        <CurrencyPicker compact={false} />
+      </div>
+
+      <div className="bg-[#0d0a14] border border-white/5 rounded-md p-5" data-testid="settings-language">
+        <div className="flex items-center gap-2 mb-3">
+          <Palette className="w-4 h-4 text-emerald-400" />
+          <div className="font-display font-bold text-sm">Language</div>
+        </div>
+        <p className="text-xs text-white/50 mb-4">
+          Choose your preferred interface language.
+        </p>
+        <LanguagePicker compact={false} />
+      </div>
     </div>
   );
 }

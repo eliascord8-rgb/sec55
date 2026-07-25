@@ -3903,9 +3903,27 @@ function UsersPanel({ token }) {
     setDrillUser(u);
     setDrillData(null);
     try {
-      const r = await adminApi(token).get(`/admin/users/${u.id}/orders`);
-      setDrillData(r.data);
-    } catch (e) { toast.error(e.response?.data?.detail || "Failed to load"); }
+      // Prefer the richer activity dossier (orders + txns + numbers + subs + live checks)
+      const r = await adminApi(token).get(`/admin/user-activity/${u.id}`);
+      const d = r.data || {};
+      // Adapt the new shape to the old drill data keys the modal renders
+      setDrillData({
+        ...d,
+        total_deposits: d.totals?.deposits_total || 0,
+        total_spent: d.totals?.orders_total_spent || 0,
+        status_counts: (d.orders || []).reduce((acc, o) => {
+          const s = o.status || "unknown";
+          acc[s] = (acc[s] || 0) + 1;
+          return acc;
+        }, {}),
+      });
+    } catch (e) {
+      // Fallback to legacy endpoint
+      try {
+        const r2 = await adminApi(token).get(`/admin/users/${u.id}/orders`);
+        setDrillData(r2.data);
+      } catch (e2) { toast.error(e2.response?.data?.detail || "Failed to load"); }
+    }
   };
 
   const sendRedirect = async () => {
