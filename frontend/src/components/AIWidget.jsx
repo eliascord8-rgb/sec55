@@ -324,6 +324,22 @@ export default function AIWidget({ open, onOpenChange }) {
       sessionIdRef.current = r.data.session_id;
       setHumanTakeover(!!r.data.human_takeover);
       const reply = r.data.reply;
+      // Handover-pending path: reply is empty because backend skipped LLM.
+      // Make sure the user gets visual feedback that their message went through.
+      if (!reply && !r.data.human_takeover && r.data.needs_handover) {
+        setMessages((prev) => {
+          if (prev.some((m) => m._sys === "waiting")) return prev;
+          return [
+            ...prev,
+            {
+              role: "system",
+              text: "🔔 A team member will jump in shortly — feel free to keep typing, they'll see everything you send.",
+              _sys: "waiting",
+            },
+          ];
+        });
+        if (handoverState === "none") setHandoverState("waiting");
+      }
       if (reply && !r.data.human_takeover) {
         // Use the server's reply_id so the poll dedupes correctly and we don't show duplicates
         setMessages((prev) => [...prev, { role: "assistant", text: reply, _id: r.data.reply_id }]);
@@ -617,6 +633,39 @@ export default function AIWidget({ open, onOpenChange }) {
             + New chat
           </button>
         </div>
+
+        {/* Persistent "Talk to a human" button — visible in chat view until a
+            staffer has taken over. Fires request-handover immediately and
+            switches to waiting-state. Message input keeps working — everything
+            typed after this lands in the admin inbox verbatim. */}
+        {activeTab === "chat" && !humanTakeover && handoverState !== "waiting" && (
+          <div className="px-3 pt-2 pb-1 bg-[#050505]">
+            <button
+              onClick={async () => {
+                const sid = sessionIdRef.current || ensureSession();
+                setHandoverState("waiting");
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    role: "system",
+                    text: "🔔 Paging our team — a human will jump in shortly. Keep typing, they'll see everything.",
+                    _sys: "waiting",
+                  },
+                ]);
+                try {
+                  await api.post("/ai/request-handover", {
+                    session_id: sid,
+                    reason: "user_pressed_talk_to_human",
+                  });
+                } catch { /* non-fatal */ }
+              }}
+              data-testid="ai-chat-talk-human-btn"
+              className="w-full py-2 rounded-md bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-200 text-[11px] font-bold uppercase tracking-widest transition inline-flex items-center justify-center gap-2"
+            >
+              <User className="w-3.5 h-3.5" /> Talk to a human right now
+            </button>
+          </div>
+        )}
 
         {/* Tab bar — hidden until user is inside an active chat/history view.
             The Home view is Crisp-style clean: only the "Send us a message" card. */}

@@ -1018,6 +1018,55 @@ async def get_maintenance():
     }
 
 
+# ============ FEATURE TOGGLES ============
+# Admin can hide entire dashboard sections (Sports, Numbers, Games, Add-ons,
+# Live orders, etc.). Non-privileged users won't see the tab in the sidebar
+# and the direct route becomes a friendly "not available" screen.
+
+DEFAULT_FEATURES = {
+    "sports": True,
+    "numbers": True,
+    "games": True,
+    "addons": True,
+    "live_orders": True,
+    "coupons": True,
+    "invoices": True,
+    "messages": True,
+    "tickets": True,
+    "tos": True,
+}
+
+
+@api_router.get("/features")
+async def get_features():
+    """Public — returns the current feature-toggle map."""
+    cfg = await db.app_settings.find_one({"_id": "singleton"}, {"_id": 0, "features": 1}) or {}
+    stored = cfg.get("features") or {}
+    return {"features": {**DEFAULT_FEATURES, **stored}}
+
+
+class FeaturesUpdate(BaseModel):
+    features: dict
+
+
+@api_router.patch("/admin/features")
+async def admin_set_features(payload: FeaturesUpdate, x_admin_token: Optional[str] = Header(None)):
+    """Owner-only — persist a feature-toggle map. Only known keys are stored."""
+    check_owner(x_admin_token)
+    clean = {}
+    for k, v in (payload.features or {}).items():
+        if k in DEFAULT_FEATURES:
+            clean[k] = bool(v)
+    if not clean:
+        raise HTTPException(status_code=400, detail="No valid feature keys provided")
+    await db.app_settings.update_one(
+        {"_id": "singleton"},
+        {"$set": {"features": {**DEFAULT_FEATURES, **clean}, "features_updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "features": {**DEFAULT_FEATURES, **clean}}
+
+
 class MaintenanceUpdate(BaseModel):
     enabled: bool
     message: Optional[str] = None
@@ -1777,6 +1826,13 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
     }
     await db.orders.insert_one(order_doc.copy())
     new_balance = await _get_user_balance(user.id)
+    # Fire-and-forget order confirmation email
+    try:
+        from notification_service import notify_order_placed
+        backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+        asyncio.create_task(notify_order_placed(db, user.id, order_doc, backend_url))
+    except Exception as _e:
+        logger.warning(f"[notify] order-placed email failed: {_e}")
     return {
         "ok": True,
         "order_id": order_doc["id"],
@@ -4866,6 +4922,13 @@ async def _credit_nowpayments_deposit(tx: dict, payload: dict) -> dict:
             "linked_tx": tx_id,
         })
     logger.info(f"[nowpay] CREDITED tx={tx_id} user={tx.get('username')} amount=${amount} bonus=${bonus}")
+    # Notify the user by email (best-effort — never blocks the credit)
+    try:
+        from notification_service import notify_deposit_credited
+        backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+        asyncio.create_task(notify_deposit_credited(db, tx["user_id"], amount, bonus, backend_url, method="crypto"))
+    except Exception as _e:
+        logger.warning(f"[nowpay] notify email failed: {_e}")
     return {"ok": True, "credited": tx_id, "amount": amount, "bonus": bonus}
 
 
@@ -5608,7 +5671,7 @@ class AdminTicketReply(BaseModel):
 @api_router.post("/admin/tickets/{ticket_id}/reply")
 async def admin_reply_ticket(ticket_id: str, body: AdminTicketReply, x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token, "tickets")
-    t = await db.tickets.find_one({"id": ticket_id}, {"_id": 0, "id": 1})
+    t = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not t:
         raise HTTPException(status_code=404, detail="Ticket not found")
     now = datetime.now(timezone.utc).isoformat()
@@ -5625,6 +5688,20 @@ async def admin_reply_ticket(ticket_id: str, body: AdminTicketReply, x_admin_tok
         {"id": ticket_id},
         {"$set": {"status": "answered", "updated_at": now, "last_reply_by": "staff", "last_reply_author": author_name, "client_unread": True}},
     )
+    # Fire-and-forget email notification to the ticket owner
+    try:
+        from notification_service import notify_ticket_reply
+        backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+        if t.get("user_id"):
+            asyncio.create_task(notify_ticket_reply(
+                db, t["user_id"], ticket_id,
+                t.get("subject") or "Support",
+                author_name,
+                body.message.strip(),
+                backend_url,
+            ))
+    except Exception as _e:
+        logger.warning(f"[notify] ticket-reply email failed: {_e}")
     return {"ok": True, "author_name": author_name}
 
 

@@ -210,6 +210,19 @@ async def send_message(payload: SendMessage, request: Request, user: CurrentUser
         "read": False,
     }
     await db.direct_messages.insert_one(doc.copy())
+    # Fire-and-forget email notification (rate-limited to 1 per 2 min per user)
+    try:
+        import asyncio as _asyncio, os as _os
+        from notification_service import notify_dm_received
+        backend_url = _os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+        # Voice messages get their own event type + email template
+        kind = "voice" if payload.attachment_kind == "voice" else "text"
+        preview = doc["text"] or f"[{payload.attachment_kind or 'attachment'}]"
+        _asyncio.create_task(notify_dm_received(
+            db, payload.to_id, user.username, preview, backend_url, kind=kind,
+        ))
+    except Exception:
+        pass  # notifications are best-effort, never break the DM flow
     return doc
 
 

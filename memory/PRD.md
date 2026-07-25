@@ -1,5 +1,26 @@
 # Better Social — PRD
 
+## Recent Updates (Jul 25, 2026 — Iteration 32 · Fork · Notifications + Feature toggles)
+- ✅ **Universal email notifications** — new `notification_service.py` with `notify_user()` helper. Wired into 4 trigger points so far:
+  - **Order placed (balance flow)** → `notify_order_placed` sends a branded confirmation with service, quantity, charge, order ID + "View order" CTA.
+  - **Deposit credited (NOWPayments)** → `notify_deposit_credited` — includes amount, 70% bonus, total credited + "Place an order" CTA.
+  - **Staff ticket reply** → `notify_ticket_reply` — includes staff name, ticket subject, message preview + "Open ticket" CTA.
+  - **Direct message received** → `notify_dm_received` — text OR voice message (voice gets 🎤 icon), rate-limited to 1 email per 2 minutes per user.
+  - **Account closed** → `notify_account_closed` (helper ready, not yet wired to any endpoint).
+- ✅ **Per-event rate limiting** stored in `db.email_notifications`. DM: 2min, voice: 1min, orders/deposits/tickets: 0 (every occurrence).
+- ✅ **Opt-out prefs** — reads `users.email_prefs.{email_orders, email_tickets, email_dms, email_voice, email_generic}` so users can silence categories later. `account_close` + `deposit` are non-toggleable (billing/security).
+- ✅ **Feature toggles** — new `GET /api/features` (public) + `PATCH /api/admin/features` (owner-only). Persisted in `app_settings.features`. Toggleable keys: sports · numbers · games · addons · live_orders · coupons · invoices · messages · tickets · tos.
+  - `<FeaturesProvider>` polls `/api/features` every 60s.
+  - `useFeatureEnabled(key)` / `useFeatures()` hooks let any component gate.
+  - `ClientDashboard` sidebar + top nav now hide items when their feature flag is off.
+  - Admin: new `<FeatureTogglesPanel>` in Settings — 10 rows with pill switches + inline descriptions.
+- ✅ **AI chat: Persistent "Talk to a human" button** in chat view (above the AI header) — fires handover immediately + puts user in waiting state. Message input stays live so anything typed reaches admin inbox verbatim.
+- ✅ **AI chat: Post-handover feedback fix** — when backend returns empty reply + `needs_handover: true`, frontend now shows a "🔔 A team member will jump in shortly — feel free to keep typing" system message so users aren't confused by silence.
+- ✅ **Home CTAs fixed** — Buy / Deposit / Spin / AI Chat buttons under balance are now proper `<button onClick>` handlers instead of `<a href>` full-page reloads. In-app SPA navigation preserves session.
+- ✅ **Admin auto-elevation confirmed working** for BOTH login paths:
+  - Owner logs in with dashboard credentials → visits `/admin` → `bs_user_token` in localStorage → auto-elevates via `session-from-user`.
+  - Owner logs in via Google → same flow works identically (JWT issued by `/google-status` OR `/google-finalize`).
+
 ## Recent Updates (Jul 25, 2026 — Iteration 31 · Fork · Auto-Live rebuilt)
 - ✅ **Auto-Live rebuilt as a strict timer** (per repeated user complaint). New `mode` field on `live_subscriptions`:
   - `mode: "always"` (default & recommended) — Pure timer. Fires the exact same order (service, quantity, link) every 2/5/10/60 minutes on the dot, for the full duration in days. No TikTok live-status check. This finally fixes the "orders came once then stopped" bug — the live-status scraper kept returning false-negatives after TikTok markup changes and silently killed the loop.

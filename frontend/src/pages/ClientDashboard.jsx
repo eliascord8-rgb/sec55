@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import { useFeatures } from "@/context/FeaturesContext";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
@@ -59,6 +60,8 @@ const POLL_MS = 3000;
 
 export default function ClientDashboard() {
   const { user, loading, logout, authedApi } = useAuth();
+  const { features } = useFeatures();
+  const feat = (k) => features[k] !== false;
   const { t } = useLang();
   const { format: fmtMoney } = useCurrency();
   const nav = useNavigate();
@@ -400,11 +403,11 @@ export default function ClientDashboard() {
   const primaryTabs = [
     { id: "home", label: t("nav_home"), testId: "nav-home" },
     { id: "buy", label: t("nav_buy"), testId: "nav-buy" },
-    ...(ownsAutoLive ? [{ id: "live", label: t("nav_live"), testId: "nav-live", isNew: true }] : []),
-    { id: "addons", label: t("nav_addons"), testId: "nav-addons" },
-    { id: "sports", label: t("nav_sports") || "Sports", testId: "nav-sports", isNew: true },
-    { id: "numbers", label: t("nav_numbers"), testId: "nav-numbers" },
-    { id: "games", label: t("nav_games"), testId: "nav-games" },
+    ...(ownsAutoLive && feat("live_orders") ? [{ id: "live", label: t("nav_live"), testId: "nav-live", isNew: true }] : []),
+    ...(feat("addons") ? [{ id: "addons", label: t("nav_addons"), testId: "nav-addons" }] : []),
+    ...(feat("sports") ? [{ id: "sports", label: t("nav_sports") || "Sports", testId: "nav-sports", isNew: true }] : []),
+    ...(feat("numbers") ? [{ id: "numbers", label: t("nav_numbers"), testId: "nav-numbers" }] : []),
+    ...(feat("games") ? [{ id: "games", label: t("nav_games"), testId: "nav-games" }] : []),
   ];
   // Secondary tabs — collapsed under a "More ▾" dropdown on PC. Full list appears
   // in the mobile drawer.
@@ -764,29 +767,31 @@ export default function ClientDashboard() {
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Wallet</div>
           <nav className="px-3 space-y-0.5">
             <SideLinkV2 icon={CreditCard} label="Add Funds" active={view === "funds"} onClick={() => changeView("funds")} testId="nav-funds" badge={`$${balance.toFixed(2)}`} />
-            <SideLinkV2 icon={Ticket} label="Redeem Coupon" active={view === "redeem"} onClick={() => changeView("redeem")} testId="nav-redeem" />
+            {feat("coupons") && <SideLinkV2 icon={Ticket} label="Redeem Coupon" active={view === "redeem"} onClick={() => changeView("redeem")} testId="nav-redeem" />}
             <SideLinkV2 icon={ArrowUpRight} label="Withdraw" active={view === "withdraw"} onClick={() => changeView("withdraw")} testId="nav-withdraw" badge={withdrawable > 0 ? `$${withdrawable.toFixed(2)}` : null} />
           </nav>
 
+          {feat("messages") && (<>
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Community</div>
           <nav className="px-3 space-y-0.5">
             <SideLinkV2 icon={MessageSquare} label="Messages" active={view === "messages"} onClick={() => changeView("messages")} testId="nav-messages" badge={unreadDms > 0 ? unreadDms : null} badgeKind="alert" />
           </nav>
+          </>)}
 
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Shop</div>
           <nav className="px-3 space-y-0.5">
             <SideLinkV2 icon={ShoppingBag} label="Buy Services" active={view === "buy"} onClick={() => changeView("buy")} testId="nav-buy" />
-            <SideLinkV2 icon={Phone} label="Virtual Numbers" active={view === "numbers"} onClick={() => changeView("numbers")} testId="nav-numbers" badge="NEW" />
-            <SideLinkV2 icon={Dices} label="Games" active={view === "games"} onClick={() => changeView("games")} testId="nav-games" />
-            <SideLinkV2 icon={FileText} label="Invoices" active={view === "invoices"} onClick={() => changeView("invoices")} testId="nav-invoices" badge={unpaidInvoices > 0 ? String(unpaidInvoices) : null} />
+            {feat("numbers") && <SideLinkV2 icon={Phone} label="Virtual Numbers" active={view === "numbers"} onClick={() => changeView("numbers")} testId="nav-numbers" badge="NEW" />}
+            {feat("games") && <SideLinkV2 icon={Dices} label="Games" active={view === "games"} onClick={() => changeView("games")} testId="nav-games" />}
+            {feat("invoices") && <SideLinkV2 icon={FileText} label="Invoices" active={view === "invoices"} onClick={() => changeView("invoices")} testId="nav-invoices" badge={unpaidInvoices > 0 ? String(unpaidInvoices) : null} />}
             <SideLinkV2 icon={LifeBuoy} label="Help Center" active={view === "help"} onClick={() => changeView("help")} testId="nav-help" />
           </nav>
 
           <div className="px-6 pt-6 pb-3 text-[10px] uppercase tracking-[0.25em] text-white/30 font-bold">Support</div>
           <nav className="px-3 space-y-0.5 pb-6">
-            <SideLinkV2 icon={LifeBuoy} label="Tickets" active={view === "tickets"} onClick={() => changeView("tickets")} testId="nav-tickets" badge={unreadTickets > 0 ? unreadTickets : null} badgeKind="alert" />
-            <SideLinkV2 icon={FileText} label="Terms of Service" active={view === "tos"} onClick={() => changeView("tos")} testId="nav-tos" />
+            {feat("tickets") && <SideLinkV2 icon={LifeBuoy} label="Tickets" active={view === "tickets"} onClick={() => changeView("tickets")} testId="nav-tickets" badge={unreadTickets > 0 ? unreadTickets : null} badgeKind="alert" />}
+            {feat("tos") && <SideLinkV2 icon={FileText} label="Terms of Service" active={view === "tos"} onClick={() => changeView("tos")} testId="nav-tos" />}
             <Link
               to="/"
               className="flex items-center gap-3 px-4 py-2.5 rounded-md text-sm text-white/55 hover:text-white hover:bg-white/[0.04] transition"
@@ -830,7 +835,7 @@ export default function ClientDashboard() {
             <div className={`animate-in fade-in duration-200 ${useNewLayout && view !== "home" ? "px-4 md:px-6" : ""}`}>
               {view === "home" && (
                 useNewLayout
-                  ? <NewHomeView authedApi={authedApi} user={user} balance={balance} stats={stats} onOpenAI={() => setAiOpen(true)} />
+                  ? <NewHomeView authedApi={authedApi} user={user} balance={balance} stats={stats} onOpenAI={() => setAiOpen(true)} onGo={changeView} />
                   : <HomeView user={user} stats={stats} />
               )}
               {view === "funds" && (
@@ -1060,7 +1065,7 @@ function TermsOfServiceView() {
 }
 
 
-function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
+function NewHomeView({ authedApi, user, balance, stats, onOpenAI, onGo }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [spinOpen, setSpinOpen] = useState(false);
@@ -1140,16 +1145,36 @@ function NewHomeView({ authedApi, user, balance, stats, onOpenAI }) {
             </div>
           </div>
           <div className="grid grid-cols-4 gap-2 max-w-md mx-auto">
-            <a href="/client/dashboard?tab=buy" className="bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase tracking-wider py-3 rounded-md transition">
+            <button
+              type="button"
+              onClick={() => onGo && onGo("buy")}
+              data-testid="home-cta-buy"
+              className="bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase tracking-wider py-3 rounded-md transition"
+            >
               Buy
-            </a>
-            <a href="/client/dashboard?tab=funds" className="bg-orange-500 hover:bg-orange-400 text-white font-bold text-xs uppercase tracking-wider py-3 rounded-md transition">
+            </button>
+            <button
+              type="button"
+              onClick={() => onGo && onGo("funds")}
+              data-testid="home-cta-deposit"
+              className="bg-orange-500 hover:bg-orange-400 text-white font-bold text-xs uppercase tracking-wider py-3 rounded-md transition"
+            >
               Deposit
-            </a>
-            <button onClick={() => setSpinOpen(true)} data-testid="open-spin-wheel" className="bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs uppercase tracking-wider py-3 rounded-md transition inline-flex items-center justify-center gap-1">
+            </button>
+            <button
+              type="button"
+              onClick={() => setSpinOpen(true)}
+              data-testid="open-spin-wheel"
+              className="bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs uppercase tracking-wider py-3 rounded-md transition inline-flex items-center justify-center gap-1"
+            >
               🎰 Spin
             </button>
-            <button onClick={onOpenAI} className="bg-emerald-500/15 border border-emerald-500/30 hover:bg-emerald-500/25 text-emerald-200 font-bold text-xs uppercase tracking-wider py-3 rounded-md transition">
+            <button
+              type="button"
+              onClick={onOpenAI}
+              data-testid="home-cta-ai-chat"
+              className="bg-emerald-500/15 border border-emerald-500/30 hover:bg-emerald-500/25 text-emerald-200 font-bold text-xs uppercase tracking-wider py-3 rounded-md transition"
+            >
               AI Chat
             </button>
           </div>

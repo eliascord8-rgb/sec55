@@ -1366,6 +1366,7 @@ function SettingsPanel({ token }) {
     <div className="space-y-6">
       <UILayoutTogglePanel token={token} />
       <MaintenancePanel token={token} />
+      <FeatureTogglesPanel token={token} />
       <NewsAnnouncementPanel token={token} />
       <FakeOnlineTogglePanel token={token} />
       <Sim5ConfigPanel token={token} />
@@ -1567,6 +1568,85 @@ function MaintenancePanel({ token }) {
           Save message
         </button>
       </div>
+    </div>
+  );
+}
+
+
+function FeatureTogglesPanel({ token }) {
+  // Owner-only — flip entire dashboard sections on/off. Users won't see the tab
+  // in the sidebar/top nav; direct URL access can still work (server data will
+  // return empty). Handy for temporarily hiding Sports during off-season, etc.
+  const FEATURES = [
+    { key: "sports",      label: "Sports betting",  desc: "Live scores + upcoming matches + bet slip" },
+    { key: "numbers",     label: "Virtual Numbers", desc: "5sim SMS rental service" },
+    { key: "games",       label: "Games",           desc: "Slots, spin wheel, mini-games" },
+    { key: "addons",      label: "Add-ons store",   desc: "Auto-Live unlock + premium features" },
+    { key: "live_orders", label: "Auto-Live orders",desc: "Recurring TikTok live-stream boosts" },
+    { key: "coupons",     label: "Coupons",         desc: "Redeem prepaid balance codes" },
+    { key: "invoices",    label: "Invoices",        desc: "Selly-hosted invoice queue" },
+    { key: "messages",    label: "User DMs",        desc: "User-to-user chat + community shoutbox" },
+    { key: "tickets",     label: "Support tickets", desc: "Formal ticket queue with staff replies" },
+    { key: "tos",         label: "Terms of Service",desc: "TOS page in the sidebar" },
+  ];
+  const [state, setState] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await adminApi(token).get("/features");
+        setState(r.data.features || {});
+      } catch {}
+      setLoading(false);
+    })();
+  }, [token]);
+
+  const toggle = async (key) => {
+    const next = { ...state, [key]: !state[key] };
+    setSaving(true);
+    try {
+      const r = await adminApi(token).patch("/admin/features", { features: next });
+      setState(r.data.features);
+      toast.success(`${next[key] ? "Enabled" : "Disabled"} ${key}`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to save");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="features-panel">
+      <h2 className="font-display font-bold text-lg mb-1">Feature toggles</h2>
+      <p className="text-xs text-white/50 mb-4">
+        Turn entire dashboard sections on/off. Disabled sections disappear from the sidebar and top nav for all clients.
+      </p>
+      {loading ? (
+        <div className="text-xs text-white/40">Loading…</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {FEATURES.map((f) => {
+            const on = state[f.key] !== false;
+            return (
+              <div key={f.key} className="flex items-center gap-3 p-3 rounded-md border border-white/5 bg-[#0d0a14]" data-testid={`feature-row-${f.key}`}>
+                <button
+                  onClick={() => toggle(f.key)}
+                  disabled={saving}
+                  data-testid={`feature-toggle-${f.key}`}
+                  className={`relative w-11 h-6 rounded-full transition shrink-0 ${on ? "bg-emerald-400" : "bg-white/15"} disabled:opacity-50`}
+                >
+                  <span className={`absolute top-0.5 ${on ? "left-[22px]" : "left-0.5"} w-5 h-5 rounded-full bg-white shadow transition-all`} />
+                </button>
+                <div className="min-w-0">
+                  <div className="text-sm font-bold text-white leading-tight">{f.label}</div>
+                  <div className="text-[10px] text-white/50 truncate">{f.desc}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

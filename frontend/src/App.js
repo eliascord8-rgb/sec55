@@ -14,6 +14,7 @@ import GoogleAuthCallback from "@/components/GoogleAuthCallback";
 import { AuthProvider } from "@/context/AuthContext";
 import { LanguageProvider } from "@/context/LanguageContext";
 import { CurrencyProvider } from "@/context/CurrencyContext";
+import { FeaturesProvider } from "@/context/FeaturesContext";
 import { Toaster } from "@/components/ui/sonner";
 
 function App() {
@@ -30,8 +31,9 @@ function App() {
       {!splashDone && <Splash onDone={() => setSplashDone(true)} />}
       <LanguageProvider>
         <CurrencyProvider>
-          <AuthProvider>
-            <BrowserRouter>
+          <FeaturesProvider>
+            <AuthProvider>
+              <BrowserRouter>
               <GoogleAuthCallback />
               <MaintenanceGate>
                 <Routes>
@@ -47,6 +49,7 @@ function App() {
               </MaintenanceGate>
             </BrowserRouter>
           </AuthProvider>
+          </FeaturesProvider>
         </CurrencyProvider>
       </LanguageProvider>
       <Toaster theme="dark" />
