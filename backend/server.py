@@ -2580,21 +2580,88 @@ LIVE_BURST_COUNT = 30                    # max bursts fired while target is live
 LIVE_BURST_INTERVAL_SEC = 2              # 2 seconds between bursts
 
 
+async def _tt_probe_webcast(handle: str, headers: dict) -> Optional[bool]:
+    """Probe TikTok webcast/room/info_by_scene. Returns True/False if we have a
+    definitive answer, or None if the probe couldn't decide (network/parse fail).
+    Returning None lets the caller fall back to the HTML signal instead of
+    prematurely locking in a False.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as c:
+            wc = await c.get(
+                "https://webcast.tiktok.com/webcast/room/info_by_scene/",
+                params={"aid": "1988", "unique_id": handle, "scene": "9999"},
+                headers=headers,
+            )
+    except Exception as e:
+        logger.debug("[livesub] webcast probe network error for %s: %s", handle, e)
+        return None
+    if wc.status_code != 200:
+        return None
+    try:
+        data = wc.json()
+    except Exception:
+        return None
+    inner = (data or {}).get("data") or {}
+    user = inner.get("user") or {}
+    room = inner.get("room") or {}
+    live_room = inner.get("liveRoomInfo") or {}
+    if isinstance(user, dict) and int(user.get("status") or 0) == 2:
+        return True
+    if isinstance(room, dict) and int(room.get("status") or 0) == 2:
+        return True
+    if isinstance(live_room, dict):
+        room_id = live_room.get("liveRoomId") or live_room.get("room_id")
+        try:
+            if room_id and int(str(room_id).strip("\"'")) > 0:
+                if int(live_room.get("status") or 0) == 2:
+                    return True
+        except (TypeError, ValueError):
+            pass
+    # NOTE: we return False only when we have a positive-shaped response with
+    # NO live markers. Empty `data:{}` shape also lands here — that's the
+    # ambiguous "no room info" state which is fine to treat as False.
+    return False
+
+
+async def _tt_probe_html(handle: str, headers: dict) -> Optional[bool]:
+    """Probe /@handle/live HTML for the same signals. Returns True/False/None."""
+    url = f"https://www.tiktok.com/@{handle}/live"
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as c:
+            r = await c.get(url, headers=headers)
+    except Exception as e:
+        logger.debug("[livesub] tiktok html check network error for %s: %s", handle, e)
+        return None
+    if r.status_code >= 400:
+        return None
+    html = r.text[:400_000]
+    # Explicit off-signals — if present, definitively offline
+    off_re = re.compile(r'"(userNotLive|userStatus":\s*1|isLive":\s*false|is_live":\s*false)"?', re.IGNORECASE)
+    if off_re.search(html):
+        return False
+    # Positive signals — REQUIRE a non-zero liveRoomId value AND EITHER status:2 or isLive:true.
+    room_id_re = re.compile(r'"liveRoomId"\s*:\s*"?([1-9]\d{6,})"?')
+    room_id_hit = bool(room_id_re.search(html))
+    status_two_re = re.compile(r'"status"\s*:\s*2(?!\d)')
+    status_two_hit = bool(status_two_re.search(html))
+    is_live_true_re = re.compile(r'"is[_]?[lL]ive"\s*:\s*true')
+    is_live_hit = bool(is_live_true_re.search(html))
+    if room_id_hit and (status_two_hit or is_live_hit):
+        return True
+    return False
+
+
 async def _is_tiktok_user_live(tt_username: str) -> bool:
     """Robust check whether a TikTok user is currently broadcasting live.
-    Rule: return True ONLY when we find an unambiguous positive signal — never
-    match on JSON *key* names (TikTok's SSR HTML embeds those for every
-    account, live or not, which would spam-order every sub).
 
-    Signals, evaluated in order:
-      1. Webcast API `info_by_scene` — user.status == 2 OR room.status == 2
-         OR liveRoomInfo.liveRoomId is a non-zero numeric value. Empty
-         `data: {}` means "not currently broadcasting" → False.
-      2. HTML fallback: regex for `"liveRoomId":"<digits>"` PAIRED with
-         `"status":2` (numeric value 2, appearing after a colon — not the
-         schema key). Any of the explicit "off" markers immediately shortcut
-         to False.
-    Returns False on any error so a network hiccup never spam-orders."""
+    We now query BOTH the webcast API and the HTML page in parallel. TikTok's
+    webcast endpoint sometimes returns cached "old room" data for up to 2
+    minutes after a re-live event, which caused the previous single-signal
+    version to miss the re-live and never resume boosts. If EITHER signal is
+    positive we treat the user as live. Only when BOTH agree "offline" (or one
+    is offline and the other returned None) do we call them offline.
+    """
     handle = tt_username.strip().lstrip("@")
     if not handle:
         return False
@@ -2603,68 +2670,15 @@ async def _is_tiktok_user_live(tt_username: str) -> bool:
         "Accept-Language": "en-US,en;q=0.9",
         "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
     }
-
-    # ---- Signal 1: webcast info_by_scene ----
-    try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as c:
-            wc = await c.get(
-                "https://webcast.tiktok.com/webcast/room/info_by_scene/",
-                params={"aid": "1988", "unique_id": handle, "scene": "9999"},
-                headers=headers,
-            )
-            if wc.status_code == 200:
-                ct = wc.headers.get("content-type", "")
-                data = wc.json() if ct.startswith("application/json") else None
-                if isinstance(data, dict):
-                    inner = data.get("data") or {}
-                    user = inner.get("user") or {}
-                    room = inner.get("room") or {}
-                    live_room = inner.get("liveRoomInfo") or {}
-                    # status 2 means "broadcasting" in TikTok's LIVE state machine
-                    if isinstance(user, dict) and int(user.get("status") or 0) == 2:
-                        return True
-                    if isinstance(room, dict) and int(room.get("status") or 0) == 2:
-                        return True
-                    if isinstance(live_room, dict):
-                        room_id = live_room.get("liveRoomId") or live_room.get("room_id")
-                        try:
-                            if room_id and int(str(room_id).strip("\"'")) > 0:
-                                # room_id present AND status field says broadcasting
-                                if int(live_room.get("status") or 0) == 2:
-                                    return True
-                        except (TypeError, ValueError):
-                            pass
-                    # If data was returned but no positive marker → NOT live
-                    return False
-    except Exception as e:
-        logger.debug("[livesub] webcast probe failed for %s: %s", handle, e)
-
-    # ---- Signal 2: /@handle/live HTML — VALUE regex, never key substrings ----
-    url = f"https://www.tiktok.com/@{handle}/live"
-    try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as c:
-            r = await c.get(url, headers=headers)
-    except Exception as e:
-        logger.debug("[livesub] tiktok html check network error for %s: %s", handle, e)
-        return False
-    if r.status_code >= 400:
-        return False
-    html = r.text[:400_000]
-    # Explicit off-signals — if present, bail out immediately
-    off_re = re.compile(r'"(userNotLive|userStatus":\s*1|isLive":\s*false|is_live":\s*false)"?', re.IGNORECASE)
-    if off_re.search(html):
-        return False
-    # Positive signals — REQUIRE both a non-zero liveRoomId value AND status:2
-    # (both need to be VALUES, not the key strings themselves).
-    room_id_re = re.compile(r'"liveRoomId"\s*:\s*"?([1-9]\d{6,})"?')  # rooms are ≥7 digit numbers
-    room_id_hit = bool(room_id_re.search(html))
-    # `"status":2` — the 2 must be a raw number, not part of "status2" or a longer number
-    status_two_re = re.compile(r'"status"\s*:\s*2(?!\d)')
-    status_two_hit = bool(status_two_re.search(html))
-    is_live_true_re = re.compile(r'"is[_]?[lL]ive"\s*:\s*true')
-    is_live_hit = bool(is_live_true_re.search(html))
-    if room_id_hit and (status_two_hit or is_live_hit):
+    wc_res, html_res = await asyncio.gather(
+        _tt_probe_webcast(handle, headers),
+        _tt_probe_html(handle, headers),
+        return_exceptions=False,
+    )
+    if wc_res is True or html_res is True:
         return True
+    # If BOTH probes failed (None from network errors), fail-closed as offline —
+    # the worker already has its own try/except that fails-open on total exceptions.
     return False
 
 

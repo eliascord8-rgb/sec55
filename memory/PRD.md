@@ -1,6 +1,15 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 40 · Re-Live Detection Fix + LiveSubRow on Live-Orders tab)
+- 🐛 **Auto-Live now catches re-lives fast**. User reported: "went live → bots joined → stopped stream → went live again 2 min later → bots didn't come back". Fix:
+  - `_is_tiktok_user_live` now queries the webcast API AND the `/@handle/live` HTML **in parallel** and returns LIVE if EITHER signal is positive. Previously the webcast endpoint's stale-cache response (up to ~2 min after a re-live) short-circuited detection to False without ever consulting the HTML fallback.
+  - `TIKTOK_CHECK_INTERVAL_SEC` reduced from 90s → **45s** so re-lives are caught in ~75s worst case instead of ~120s.
+- ✨ **`LiveSubRow` is now rendered on the Live-Orders tab too**, with the red/green status dot, "Next check in Ns" live countdown, mode chip, check tallies, always-visible history strip, and expandable audit table (up to 100 rows). The user was looking at that tab and not seeing the red/green history box that was only on Buy → now it's everywhere.
+- 🐛 `waiting_for_live` subs are treated as "Active" in the Live-Orders section (previously fell into "history").
+
+
+
 ## Recent Updates (Feb 2026 — Iteration 39 · Auto-Live overhaul + Chat mod-bot + /clear N)
 - 🐛 **Auto-Live no longer wastes balance** — when user creates a `live_only` subscription for an OFFLINE target, the initial SMM burst is now skipped, sub marked `waiting_for_live`, initial red check logged. Fixes user's #1 complaint ("wastes balance if he is offline").
 - 🚀 **Rapid-fire when live** — in `live_only` mode, once the target is detected LIVE the worker fires up to **30 bursts spaced 2 seconds apart** in the same 90s check window (with balance + live-status spot-checks every 10 bursts to abort mid-window if streamer drops or funds run out).
