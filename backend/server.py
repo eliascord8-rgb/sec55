@@ -4060,8 +4060,37 @@ async def admin_credit_partial_deposit(tx_id: str, body: PartialCreditReq, x_adm
 from bson import ObjectId as _ObjectId  # noqa: E402
 
 
+# Secret fields are never sent to the browser; the editor shows a placeholder
+# and the update endpoint drops unchanged placeholders so they aren't clobbered.
+DBADMIN_SECRET_KEYS = {
+    "password_hash", "password", "api_key", "ipn_secret", "bot_token",
+    "shared_secret", "smtp_password", "elastic_api_key", "payment_api_key",
+    "jwt_secret", "secret",
+}
+DBADMIN_REDACTED = "•••REDACTED•••"
+
+
+def _dbadmin_redact(obj):
+    if isinstance(obj, dict):
+        return {
+            k: (DBADMIN_REDACTED if k.lower() in DBADMIN_SECRET_KEYS and v not in (None, "") else _dbadmin_redact(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_dbadmin_redact(v) for v in obj]
+    return obj
+
+
+def _dbadmin_strip_redacted(obj):
+    if isinstance(obj, dict):
+        return {k: _dbadmin_strip_redacted(v) for k, v in obj.items() if v != DBADMIN_REDACTED}
+    if isinstance(obj, list):
+        return [_dbadmin_strip_redacted(v) for v in obj]
+    return obj
+
+
 def _dbadmin_sanitize(doc: dict) -> dict:
-    return jsonlib.loads(jsonlib.dumps(doc, default=str))
+    return _dbadmin_redact(jsonlib.loads(jsonlib.dumps(doc, default=str)))
 
 
 def _dbadmin_id_query(doc_id: str) -> dict:
@@ -4125,7 +4154,7 @@ async def dbadmin_insert_doc(coll: str, body: DbAdminDocBody, x_admin_token: Opt
 @api_router.put("/dbadmin/{coll}/doc/{doc_id}")
 async def dbadmin_update_doc(coll: str, doc_id: str, body: DbAdminDocBody, x_admin_token: Optional[str] = Header(None)):
     check_owner(x_admin_token)
-    doc = dict(body.doc)
+    doc = _dbadmin_strip_redacted(dict(body.doc))
     doc.pop("_id", None)
     r = await db[coll].update_one(_dbadmin_id_query(doc_id), {"$set": doc})
     if r.matched_count == 0:
