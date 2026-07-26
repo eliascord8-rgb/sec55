@@ -1,5 +1,19 @@
 # Better Social — PRD
 
+
+## Recent Updates (Feb 2026 — Iteration 37 · Fork · Bulk Gift + PayPal UI + Sports Bet UI + Global Chat FAB)
+- ✅ **Admin OrdersPanel fixed** — table now shows `@username`, `service_name`, and `$price` with fallbacks for old & new order schemas. Previously most cells rendered blank.
+- ✅ **Admin User Statistics drill-down modal restored** — `StatCard` component was referenced but never defined, causing a React crash on click. Now defined, modal renders 4 tiles (Deposits / Spent / Orders / Transactions) + recent orders/transactions lists.
+- ✅ **Bulk Gift Orders** (Admin → Bulk Gift tab):
+  - New `POST /api/admin/bulk-order` — accepts `{ user_ids[], services[{service_id:int, quantity:int}], link, note? }`. Fires one order per (user × service) as `payment_method="admin_gift"`, `source="admin_bulk"`, `charge=0.0`. Free (no balance deduction).
+  - New `BulkGiftPanel` UI with searchable user picker (checkbox multi-select), searchable service picker with per-service qty, one target URL, admin note field, and per-result success/failure log.
+- ✅ **PayPal in Add Funds** — new "Pay with PayPal" button next to Crypto. Calls existing `/api/client/funds/paypal-checkout`, redirects to hosted PayPal URL. Return-handler in ClientDashboard toasts on `?paypal=success` and polls balance for the next minute until IPN lands.
+- ✅ **Sports Betting UI live** — `SportsView.jsx` was "read-only" placeholder. Now full betslip: 1/X/2 odds buttons per match, right-side sticky slip (combined odds, potential win, stake presets $0.5–$20), Place Bet POST /api/client/sports/bet, My Bets tab with cashout button (85% refund).
+- ✅ **LiveChatFAB global** — mounted in `App.js` inside `<MaintenanceGate>`, `md:hidden` restriction dropped. FAB now appears on every route (dashboard, sports, admin, guest, etc.) at all screen sizes.
+- ✅ **Classic ⇄ New layout switch removed** — force `useNewLayout=true` and dropped both toggle buttons (top-bar + old view). Only the green theme dashboard exists now.
+- 🧪 Testing agent Iteration 37: 100% of new UI flows PASS. Backend 14/15 feature tests PASS. The one "failure" is a route-naming contract mismatch (`POST /client/orders` vs implemented `POST /client/order-with-balance`) — pre-existing, not a regression. Auth-hardening defects (cookies, CORS wildcard, brute-force lockout) also carried from earlier iterations.
+
+
 ## Recent Updates (Jul 26, 2026 — Iteration 34 · Fork · Sports Betting Ships)
 - ✅ **Free live-scores API** — `sports_livescores` now falls back to **SofaScore** (public JSON, no key, no KYC) when RapidAPI fails. Returns `source: "rapidapi"` or `source: "sofascore"` so frontend can label the data source.
 - ✅ **Full betting system MVP** shipped end-to-end:
