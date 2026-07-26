@@ -2570,13 +2570,13 @@ async def get_theme_pref(user: CurrentUser = Depends(current_user_dep)):
 
 # Fixed poll cadence — we check TikTok every 60s so a re-broadcast is picked
 # up quickly. The user picks how often to actually place an order.
-TIKTOK_CHECK_INTERVAL_SEC = 90          # 90 seconds — how often we PING TikTok live-status
+TIKTOK_CHECK_INTERVAL_SEC = 45          # 45 seconds — how often we PING TikTok live-status
 TIKTOK_ALLOWED_REPEAT_MINUTES = [2, 5, 10, 60]
 LIVE_SUB_ALLOWED_DAYS = [7, 14, 30, 60, 90, 365]
 # When mode=live_only AND target is LIVE, fire up to N rapid-fire bursts per
 # check window, one every LIVE_BURST_INTERVAL_SEC seconds. Cap total spend per
 # window and stops early if balance runs out or target goes offline.
-LIVE_BURST_COUNT = 30                    # max bursts fired while target is live per 90s window
+LIVE_BURST_COUNT = 30                    # max bursts fired while target is live per check window
 LIVE_BURST_INTERVAL_SEC = 2              # 2 seconds between bursts
 
 
