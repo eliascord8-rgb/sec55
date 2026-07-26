@@ -2375,8 +2375,8 @@ function LiveOrdersView({ authedApi, ownsAutoLive, onGoAddons, onGoBuy }) {
     } catch (e) { toast.error(e.response?.data?.detail || "Cancel failed"); }
   };
 
-  const active = subs.filter((s) => s.status === "active");
-  const inactive = subs.filter((s) => s.status !== "active");
+  const active = subs.filter((s) => s.status === "active" || s.status === "waiting_for_live");
+  const inactive = subs.filter((s) => s.status !== "active" && s.status !== "waiting_for_live");
 
   if (!ownsAutoLive && !autoEnabled) {
     return (
@@ -2443,42 +2443,7 @@ function LiveOrdersView({ authedApi, ownsAutoLive, onGoAddons, onGoBuy }) {
         ) : (
           <div className="space-y-2" data-testid="live-active-list">
             {active.map((s) => (
-              <div key={s.id} className="bg-[#0d0a14] border border-fuchsia-500/30 rounded-md p-4" data-testid={`live-row-${s.id}`}>
-                <div className="flex items-start justify-between gap-3 flex-wrap">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-fuchsia-400 animate-pulse" />
-                      <a href={`https://www.tiktok.com/@${s.tiktok_username}/live`} target="_blank" rel="noopener noreferrer" className="font-bold text-fuchsia-200 hover:underline">@{s.tiktok_username}</a>
-                    </div>
-                    <div className="text-xs text-white/60 mt-1">{s.service_name} — <span className="font-mono">{s.quantity_per_burst}</span> per burst · every <span className="text-fuchsia-300 font-bold">{s.repeat_every_minutes || 5}min</span> · ${(s.charge_per_burst || 0).toFixed(3)} each</div>
-                  </div>
-                  <button
-                    onClick={() => cancel(s.id)}
-                    data-testid={`live-cancel-${s.id}`}
-                    className="px-3 py-1.5 rounded-md bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30 text-[11px] font-black uppercase tracking-wider transition"
-                  >
-                    Cancel
-                  </button>
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3 text-[10px]">
-                  <div className="bg-black/40 rounded p-2">
-                    <div className="text-white/40 uppercase tracking-widest">Bursts</div>
-                    <div className="text-emerald-300 font-bold text-sm">{s.total_bursts || 0}</div>
-                  </div>
-                  <div className="bg-black/40 rounded p-2">
-                    <div className="text-white/40 uppercase tracking-widest">Spent</div>
-                    <div className="text-emerald-300 font-bold text-sm">${(s.total_spent || 0).toFixed(2)}</div>
-                  </div>
-                  <div className="bg-black/40 rounded p-2">
-                    <div className="text-white/40 uppercase tracking-widest">Last burst</div>
-                    <div className="text-white/80 font-mono text-[11px]">{s.last_burst_at ? new Date(s.last_burst_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}</div>
-                  </div>
-                  <div className="bg-black/40 rounded p-2">
-                    <div className="text-white/40 uppercase tracking-widest">Expires</div>
-                    <div className="text-white/80 font-mono text-[11px]">{s.expires_at ? new Date(s.expires_at).toLocaleDateString() : "—"}</div>
-                  </div>
-                </div>
-              </div>
+              <LiveSubRow key={s.id} sub={s} onCancel={() => cancel(s.id)} authedApi={authedApi} />
             ))}
           </div>
         )}
@@ -2665,10 +2630,10 @@ function LiveSubRow({ sub, onCancel, authedApi }) {
   const [checks, setChecks] = useState([]);
   const [expanded, setExpanded] = useState(false);
   const [stats, setStats] = useState({ total_checks: 0, was_live: 0, was_offline: 0 });
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [nextCheckIn, setNextCheckIn] = useState(null);
 
   const loadChecks = async () => {
-    setLoading(true);
     try {
       const r = await authedApi().get(`/client/live-sub/${sub.id}/checks`);
       setChecks(r.data.checks || []);
@@ -2679,39 +2644,75 @@ function LiveSubRow({ sub, onCancel, authedApi }) {
 
   useEffect(() => {
     loadChecks();
-    const int = setInterval(loadChecks, 30000); // refresh every 30s
+    const int = setInterval(loadChecks, 20000); // refresh every 20s
     return () => clearInterval(int);
     // eslint-disable-next-line
   }, [sub.id]);
 
+  // Countdown to next check based on sub.next_check_at
+  useEffect(() => {
+    const tick = () => {
+      if (!sub.next_check_at) { setNextCheckIn(null); return; }
+      const ms = new Date(sub.next_check_at).getTime() - Date.now();
+      setNextCheckIn(ms > 0 ? Math.ceil(ms / 1000) : 0);
+    };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [sub.next_check_at]);
+
   const latest = checks[0];
   const isOnline = !!latest?.is_live;
-  const statusLabel = sub.status === "waiting_for_live" ? "Waiting for live" : sub.status === "paused" ? "Paused" : "Active";
-  const statusColor = sub.status === "waiting_for_live" ? "text-amber-300" : sub.status === "paused" ? "text-red-300" : "text-emerald-300";
+  const hasChecks = checks.length > 0;
+  const statusLabel = sub.status === "waiting_for_live"
+    ? (hasChecks ? "Streamer offline — waiting" : "Waiting for first check")
+    : sub.status === "paused" ? "Paused"
+    : hasChecks && isOnline ? "🔴 LIVE — boosting"
+    : "Active";
+  const statusColor = sub.status === "paused"
+    ? "text-red-300"
+    : hasChecks && !isOnline
+    ? "text-red-300"
+    : hasChecks && isOnline
+    ? "text-emerald-300"
+    : "text-amber-300";
+  const dotColor = !hasChecks
+    ? "bg-amber-400"
+    : isOnline ? "bg-emerald-400" : "bg-red-400";
   const isLiveMode = (sub.mode || "").toLowerCase() === "live_only";
 
   // Last 30 checks (newest right side)
   const strip = checks.slice(0, 30).reverse();
 
   return (
-    <div className="bg-black/40 rounded-sm p-3 text-xs" data-testid={`live-sub-${sub.id}`}>
+    <div className="bg-[#0d0a14] border border-fuchsia-500/30 rounded-md p-4" data-testid={`live-sub-${sub.id}`}>
+      {/* Top row — status headline */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-1.5">
-          <span className={`w-2.5 h-2.5 rounded-full ${isOnline ? "bg-emerald-400" : "bg-red-400"} ${isOnline ? "animate-pulse" : ""}`}
-                title={isOnline ? "Streamer is LIVE" : "Streamer is offline"} />
-          <span className="font-mono text-fuchsia-200">@{sub.tiktok_username}</span>
+        <div className="flex items-center gap-2">
+          <span
+            className={`w-3 h-3 rounded-full ${dotColor} ${(hasChecks && isOnline) ? "animate-pulse" : ""}`}
+            title={hasChecks ? (isOnline ? "LIVE" : "offline") : "waiting for first check"}
+            data-testid={`live-sub-dot-${sub.id}`}
+          />
+          <a
+            href={`https://www.tiktok.com/@${sub.tiktok_username}/live`}
+            target="_blank" rel="noopener noreferrer"
+            className="font-bold text-fuchsia-200 hover:underline text-sm"
+          >
+            @{sub.tiktok_username}
+          </a>
         </div>
-        <span className="text-white/60 truncate max-w-[220px]">{sub.service_name}</span>
-        <span className="text-white/50">{sub.quantity_per_burst}/burst</span>
-        <span className="text-emerald-300 font-mono">${(sub.total_spent || 0).toFixed(2)} · {sub.total_bursts || 0} bursts</span>
-        <span className={`text-[10px] uppercase tracking-widest font-bold ${statusColor}`}>{statusLabel}</span>
-        <span className="text-white/40 ml-auto">expires {sub.expires_at ? new Date(sub.expires_at).toLocaleDateString() : "-"}</span>
+        <span className={`text-[11px] uppercase tracking-widest font-black ${statusColor}`}>{statusLabel}</span>
+        <span className="text-white/60 truncate max-w-[220px] text-xs">{sub.service_name}</span>
+        <span className="text-white/50 text-xs">{sub.quantity_per_burst}/burst</span>
+        <span className="text-emerald-300 font-mono text-xs">${(sub.total_spent || 0).toFixed(2)} · {sub.total_bursts || 0} bursts</span>
+        <span className="text-white/40 ml-auto text-xs">expires {sub.expires_at ? new Date(sub.expires_at).toLocaleDateString() : "-"}</span>
         <button
           onClick={() => setExpanded((v) => !v)}
           data-testid={`live-sub-history-toggle-${sub.id}`}
           className="text-[11px] uppercase tracking-widest text-fuchsia-200 hover:text-white font-bold"
         >
-          {expanded ? "Hide history" : "History"}
+          {expanded ? "Hide" : "History"}
         </button>
         <button onClick={onCancel} data-testid={`live-sub-cancel-${sub.id}`}
                 className="text-red-300 hover:text-red-200 text-[11px] font-bold uppercase tracking-wider">
@@ -2719,45 +2720,57 @@ function LiveSubRow({ sub, onCancel, authedApi }) {
         </button>
       </div>
 
+      {/* Meta row — countdown + mode */}
+      <div className="mt-2 flex items-center gap-3 flex-wrap text-[10px]">
+        <span className="uppercase tracking-widest text-white/40">
+          {isLiveMode ? "Live-only · rapid-fire 30×/2s when live" : `Timer · every ${sub.repeat_every_minutes || 5}min`}
+        </span>
+        <span className="uppercase tracking-widest text-white/40 flex items-center gap-1">
+          <RefreshCw className="w-3 h-3" />
+          {nextCheckIn == null ? "Next check —" : nextCheckIn <= 0 ? "Next check now…" : `Next check in ${nextCheckIn}s`}
+        </span>
+        <span className="uppercase tracking-widest text-white/40">Total checks: <span className="text-white font-mono">{stats.total_checks}</span></span>
+        <span className="uppercase tracking-widest text-emerald-300/70">{stats.was_live} live ✓</span>
+        <span className="uppercase tracking-widest text-red-300/70">{stats.was_offline} offline ✗</span>
+      </div>
+
       {/* Compact history strip — always visible */}
-      <div className="mt-2 flex items-center gap-1.5" data-testid={`live-sub-strip-${sub.id}`}>
-        <span className="text-[9px] uppercase tracking-widest text-white/40">Last checks</span>
+      <div className="mt-3 flex items-center gap-2 flex-wrap" data-testid={`live-sub-strip-${sub.id}`}>
+        <span className="text-[9px] uppercase tracking-widest text-white/40">Last 30 checks →</span>
         {loading && checks.length === 0 && <Loader2 className="w-3 h-3 animate-spin text-fuchsia-300" />}
-        {!loading && checks.length === 0 && <span className="text-[10px] text-white/40">no checks yet</span>}
-        <div className="flex items-center gap-0.5 flex-wrap">
+        {!loading && checks.length === 0 && (
+          <span className="text-[10px] text-amber-300 italic">no checks yet · first ping within 90s</span>
+        )}
+        <div className="flex items-center gap-1 flex-wrap">
           {strip.map((c) => (
             <span
               key={c.id}
-              title={`${c.is_live ? "🟢 LIVE" : "🔴 OFFLINE"} · ${new Date(c.checked_at).toLocaleString()}`}
-              className={`w-2 h-2 rounded-full ${c.is_live ? "bg-emerald-400" : "bg-red-400/70"}`}
+              title={`${c.is_live ? "LIVE" : "offline"} · ${new Date(c.checked_at).toLocaleString()}`}
+              className={`w-2.5 h-2.5 rounded-sm ${c.is_live ? "bg-emerald-400" : "bg-red-400"}`}
             />
           ))}
         </div>
-        <span className="ml-2 text-[10px] text-white/40 font-mono">{stats.was_live}✓ / {stats.was_offline}✗</span>
       </div>
 
       {/* Expanded table */}
       {expanded && (
-        <div className="mt-3 bg-black/40 border border-fuchsia-500/20 rounded-sm p-2 max-h-64 overflow-y-auto">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-[10px] uppercase tracking-widest text-white/50">
-              Live-check history ({stats.total_checks} total · {stats.was_live} online · {stats.was_offline} offline)
-            </div>
-            <div className="text-[9px] text-white/40">
-              {isLiveMode ? `Rapid-fire mode · 30 bursts / 2s when live` : `Timer mode · every ${sub.repeat_every_minutes}min`}
-            </div>
+        <div className="mt-3 bg-black/40 border border-fuchsia-500/20 rounded-sm p-3 max-h-72 overflow-y-auto" data-testid={`live-sub-history-${sub.id}`}>
+          <div className="text-[10px] uppercase tracking-widest text-white/50 mb-2">
+            Live-check history — {stats.total_checks} total · {stats.was_live} online · {stats.was_offline} offline
           </div>
           {checks.length === 0 ? (
-            <div className="text-[11px] text-white/40 text-center py-4">No checks recorded yet — first check runs within 90s.</div>
+            <div className="text-[11px] text-white/40 text-center py-4">
+              No checks recorded yet — background worker will ping TikTok live-status within 90s and log the first row here.
+            </div>
           ) : (
             <div className="space-y-1">
-              {checks.slice(0, 60).map((c) => (
+              {checks.slice(0, 100).map((c) => (
                 <div key={c.id} className="flex items-center gap-2 text-[11px]" data-testid={`live-sub-check-${c.id}`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${c.is_live ? "bg-emerald-400" : "bg-red-400"}`} />
-                  <span className={`font-black uppercase tracking-widest text-[9px] w-14 ${c.is_live ? "text-emerald-300" : "text-red-300"}`}>
+                  <span className={`w-2 h-2 rounded-full ${c.is_live ? "bg-emerald-400" : "bg-red-400"}`} />
+                  <span className={`font-black uppercase tracking-widest text-[9px] w-16 ${c.is_live ? "text-emerald-300" : "text-red-300"}`}>
                     {c.is_live ? "LIVE" : "OFFLINE"}
                   </span>
-                  <span className="text-white/50 font-mono text-[10px]">
+                  <span className="text-white/60 font-mono text-[10px]">
                     {new Date(c.checked_at).toLocaleString()}
                   </span>
                   {c.note && <span className="text-white/40 text-[10px] truncate">{c.note}</span>}
