@@ -1903,7 +1903,14 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
         }
         await db.orders.insert_one(order_doc.copy())
         new_balance = await _get_user_balance(user.id)
-        return {"ok": True, "manual": True, "charge": charge, "balance": new_balance}
+        return {
+            "ok": True,
+            "manual": True,
+            "order_id": order_doc["id"],
+            "smm_order_id": None,
+            "charge": charge,
+            "balance": new_balance,
+        }
 
     # Place order via SMM provider through the helper exposed on app.state
     place_smm_order = request.app.state.place_smm_order

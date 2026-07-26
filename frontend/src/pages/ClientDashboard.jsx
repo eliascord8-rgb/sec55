@@ -3610,10 +3610,21 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                   </button>
                   <div className="text-right shrink-0 flex items-center gap-3">
                     <div>
-                      <div className="font-display font-bold text-[#FF007F] text-sm">
-                        ${Number(s.rate).toFixed(3)}
-                      </div>
-                      <div className="text-[10px] uppercase tracking-wider text-white/40">/ 1000</div>
+                      {s.manual ? (
+                        <>
+                          <div className="font-display font-bold text-[#FF007F] text-sm">
+                            ${Number(s.price_flat || 0).toFixed(2)}
+                          </div>
+                          <div className="text-[10px] uppercase tracking-wider text-white/40">flat</div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="font-display font-bold text-[#FF007F] text-sm">
+                            ${Number(s.rate).toFixed(3)}
+                          </div>
+                          <div className="text-[10px] uppercase tracking-wider text-white/40">/ 1000</div>
+                        </>
+                      )}
                     </div>
                     {multiMode && (
                       <button

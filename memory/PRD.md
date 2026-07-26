@@ -1,6 +1,15 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 38 · Multi-Service Atomic Orders + Manual Order UX)
+- ✅ **Multi-service cart on Buy page** — user clicks "Multi order" chip in the hero, then "Add" on each service in the catalog to build a cart. One target URL applies to every service. Per-item qty inputs, per-item comments for custom-text services, live total, insufficient-balance guard.
+- ✅ **New `POST /api/client/orders/multi`** endpoint — accepts `{ link, items: [{ service_id, quantity, comments? }] }` (max 15). Pre-checks all services & total cost against balance before any provider call. Fires each order sequentially, per-item results returned. Marks orders `source='dashboard_multi'`, `multi_batch=true`. Sends one roll-up email summary.
+- 🐛 **Fixed**: manual single-order response now returns `order_id` + `smm_order_id: null`. Previously the UI showed `Order ID #undefined` for flat-priced manual services.
+- 🐛 **Fixed**: catalog now shows `$X.XX flat` for manual services instead of misleading `$0.000 / 1000`.
+- 🧪 Testing agent iteration 38: 6/7 backend + all frontend UI passed. The single "failed" case is the SMM provider rejecting service #7242 (external issue — endpoint behaviour is correct: rejected item → item-level fail, successful item → placed & debited).
+
+
+
 ## Recent Updates (Feb 2026 — Iteration 37 · Fork · Bulk Gift + PayPal UI + Sports Bet UI + Global Chat FAB)
 - ✅ **Admin OrdersPanel fixed** — table now shows `@username`, `service_name`, and `$price` with fallbacks for old & new order schemas. Previously most cells rendered blank.
 - ✅ **Admin User Statistics drill-down modal restored** — `StatCard` component was referenced but never defined, causing a React crash on click. Now defined, modal renders 4 tiles (Deposits / Spent / Orders / Transactions) + recent orders/transactions lists.
