@@ -49,7 +49,6 @@ import { AviatorGame, SettingsView } from "./SettingsAndAviator";
 import SportsView from "./SportsView";
 import GuestLanding from "./GuestLanding";
 import GoalNotifier from "@/components/GoalNotifier";
-import LiveChatFAB from "@/components/LiveChatFAB";
 import BrandLoader from "@/components/BrandLoader";
 import NewsModal from "@/components/NewsModal";
 import { LanguagePicker, useLang } from "@/context/LanguageContext";
@@ -361,23 +360,28 @@ export default function ClientDashboard() {
       toast.info("Deposit cancelled. You can start a new one anytime.");
       window.history.replaceState({}, "", "/client/dashboard");
     }
+    // PayPal return handler — /client/dashboard?paypal=success | cancel
+    if (params.get("paypal") === "success") {
+      toast.success("PayPal payment received! Balance will auto-credit within 1–2 minutes once PayPal confirms.", { duration: 9000 });
+      setView("funds");
+      window.history.replaceState({}, "", "/client/dashboard");
+      // Poll balance for the next few minutes so it appears the moment IPN lands.
+      const p1 = setTimeout(() => loadBalance(), 5000);
+      const p2 = setTimeout(() => loadBalance(), 20000);
+      const p3 = setTimeout(() => loadBalance(), 60000);
+      return () => { clearTimeout(p1); clearTimeout(p2); clearTimeout(p3); };
+    }
+    if (params.get("paypal") === "cancel") {
+      toast.info("PayPal deposit cancelled. You can try again anytime.");
+      window.history.replaceState({}, "", "/client/dashboard");
+    }
     // eslint-disable-next-line
   }, []);
 
-  // Fetch the admin-controlled layout flag once, then honor any per-user
-  // localStorage override (set via the top-bar "Classic ⇄ New" switch button).
+  // Green Theme is now the only supported layout — classic switcher removed.
   useEffect(() => {
-    (async () => {
-      let adminDefault = true; // Green Theme is now the site-wide default
-      try {
-        const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ui-config`);
-        const d = await r.json();
-        adminDefault = d.use_new_home_layout !== false; // treat missing as true
-      } catch {}
-      const userPref = localStorage.getItem("bs_layout_pref"); // "new" | "classic" | null
-      const effective = userPref === "new" ? true : userPref === "classic" ? false : adminDefault;
-      setUseNewLayout(effective);
-    })();
+    setUseNewLayout(true);
+    try { localStorage.removeItem("bs_layout_pref"); } catch {}
   }, []);
 
   // Keep <body> class in sync with the active layout so the page background
@@ -389,13 +393,6 @@ export default function ClientDashboard() {
     else document.body.classList.remove(cls);
     return () => document.body.classList.remove(cls);
   }, [useNewLayout]);
-
-  const toggleLayoutPref = () => {
-    const next = !useNewLayout;
-    localStorage.setItem("bs_layout_pref", next ? "new" : "classic");
-    setUseNewLayout(next);
-    toast.success(next ? "Switched to the new layout." : "Switched back to the classic layout.");
-  };
 
   const ownsAutoLive = addonsOwned.includes("auto_live");
   // Primary tabs — always visible on the top bar for PC users. Kept intentionally
@@ -599,10 +596,6 @@ export default function ClientDashboard() {
                   </>
                 )}
               </div>
-              <button onClick={toggleLayoutPref} data-testid="switch-layout-btn" title="Switch to classic layout" className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/15 transition">
-                <Grid3x3 className="w-3.5 h-3.5" />
-                Classic
-              </button>
               <div className="hidden md:block"><LanguagePicker compact /></div>
               {/* Currency picker moved to Settings → Preferences per user request */}
               {user.role === "owner" && (
@@ -715,10 +708,6 @@ export default function ClientDashboard() {
                 <div className="text-white/70 leading-tight">{user.role || "member"}</div>
               </div>
             </div>
-            <button onClick={toggleLayoutPref} data-testid="switch-layout-btn-classic" title="Switch to new layout" className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-white/80 border border-white/20 hover:bg-white/10 transition">
-              <Grid3x3 className="w-3.5 h-3.5" />
-              New
-            </button>
             {user.role === "owner" && (
               <a href="/admin" data-testid="nav-admin-classic" title="Open admin panel"
                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition">
@@ -1699,8 +1688,8 @@ function FundsView({ authedApi, balance, reloadBalance }) {
   const [txns, setTxns] = useState([]);
   const [pending, setPending] = useState([]);
   const [creating, setCreating] = useState(false);
+  const [gateway, setGateway] = useState("bitcoin");
   const [verifyingId, setVerifyingId] = useState(null);
-  const [gateway] = useState("bitcoin");
 
   const loadTxns = async () => {
     try {
@@ -1797,6 +1786,22 @@ function FundsView({ authedApi, balance, reloadBalance }) {
     }
   };
 
+  const payPaypal = async () => {
+    const a = Number(amount) || 0;
+    if (a < 1) {
+      toast.error("Min $1 for PayPal checkout");
+      return;
+    }
+    setCreating(true);
+    try {
+      const r = await authedApi().post("/client/funds/paypal-checkout", { amount: a });
+      window.location.href = r.data.checkout_url;
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "PayPal is not configured yet. Please use crypto or ask an admin to set the PayPal receiver email.");
+      setCreating(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -1817,10 +1822,10 @@ function FundsView({ authedApi, balance, reloadBalance }) {
         <div className="bg-[#0d0a14] border border-emerald-500/30 rounded-sm p-5">
           <div className="text-[10px] uppercase tracking-[0.2em] text-white/40">Payment options</div>
           <div className="font-display font-bold text-lg mt-2 text-emerald-300">
-            Crypto · Visa · Mastercard
+            Crypto · PayPal · Visa · Mastercard
           </div>
           <div className="text-[11px] text-white/40 mt-1">
-            Instant credit after Selly confirms payment
+            Balance auto-credits after confirmation
           </div>
         </div>
       </div>
@@ -1893,8 +1898,17 @@ function FundsView({ authedApi, balance, reloadBalance }) {
             {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <span className="text-base">₿</span>}
             Pay ${Number(amount) || 0} with Crypto (300+ coins · No KYC)
           </button>
+          <button
+            onClick={payPaypal}
+            disabled={creating || Number(amount) < 1}
+            data-testid="funds-pay-paypal"
+            className="w-full py-3.5 rounded-sm font-bold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-40 bg-gradient-to-r from-[#009cde] via-[#003087] to-[#012169] text-white hover:scale-[1.01] transition shadow-lg shadow-blue-500/20"
+          >
+            {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <span className="text-base font-black italic">P</span>}
+            Pay ${Number(amount) || 0} with PayPal
+          </button>
           <div className="text-[10px] text-center text-white/40 uppercase tracking-wider">
-            Min $0.10 · Instant credit after payment confirmation
+            Crypto: instant · PayPal: 1–2 min · auto-credited after confirmation
           </div>
         </div>
       </div>

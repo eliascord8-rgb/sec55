@@ -1,0 +1,70 @@
+{
+  "summary": "Iteration 37 feature testing completed against the public URL. Backend feature/regression suite passed 14/15: admin orders and user dossier, manual bulk gift including user_not_found, PayPal checkout contract, sports feeds/odds/bet/cashout, transactions, coupon redemption, actual dashboard manual-order flow, live chat send, and ticket creation passed. The requested POST /api/client/orders regression failed with 405 because only GET is registered; the implemented purchase endpoint is POST /api/client/order-with-balance. User and admin UI flows passed, including guest/login, no layout switcher, Funds PayPal handling, sports odds/betslip, global desktop chat FAB, admin order logs, four-card drill-down modal, and Bulk Gift selection/search.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/client/orders",
+        "issue": "Returns HTTP 405 Method Not Allowed. The regression contract explicitly requests order placement at this route, but server.py registers only GET /client/orders; order placement currently exists at POST /client/order-with-balance.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Carried auth-hardening defect reproduced: successful login has an empty Set-Cookie header and does not issue a secure HttpOnly access cookie.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "CORS middleware / all API endpoints",
+        "issue": "Carried auth-hardening defect reproduced: credentialed CORS responds Access-Control-Allow-Origin: * because backend CORS_ORIGINS is wildcard.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Carried auth-hardening defect reproduced: six invalid-password attempts with valid captchas all returned 401; no lockout occurred after five failures.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Order placement API contract",
+        "issue": "The dashboard's implemented order flow uses POST /api/client/order-with-balance, while the requested regression endpoint POST /api/client/orders is absent and returns 405.",
+        "affected_selectors": []
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_37_dashboard_features.py",
+    "/app/test_reports/pytest/iter37_results.xml",
+    "/app/backend/tests/test_iteration_34_admin_sports.py",
+    "/app/test_reports/pytest/iter37_preexisting_results.xml"
+  ],
+  "action_items": [
+    "Align the order-placement contract: register POST /api/client/orders or update the stated API contract and all callers/tests to POST /api/client/order-with-balance.",
+    "Resolve the carried authentication security gaps: secure HttpOnly cookie issuance, explicit trusted CORS origins when credentials are enabled, and persistent five-failure lockout.",
+    "Retest the order route and auth-hardening suite after fixes."
+  ],
+  "critical_code_review_comments": [
+    "server.py exposes GET /client/orders at line 1233 and POST /client/order-with-balance at line 1839, explaining the reproduced 405 for the requested POST /client/orders contract.",
+    "server.py:7069-7075 enables credentials while taking allow_origins from CORS_ORIGINS, currently '*'; this directly matches the wildcard CORS failure.",
+    "auth_and_chat.py accepts access_token cookies but login does not set one, and no login-attempt tracking was found; auth remains bearer-token/localStorage-only without the requested lockout defense.",
+    "server.py (7,083 lines), Admin.jsx (6,234 lines), and ClientDashboard.jsx (4,238 lines) greatly exceed the 700-line maintainability threshold and should be split into focused routers/components.",
+    "Bulk Gift checkbox inputs do not carry their own data-testid values; only wrapper rows do. Add direct test IDs to interactive checkboxes for unambiguous automation."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_37_dashboard_features.py",
+    "/app/test_reports/iteration_37.json"
+  ],
+  "success_rate": {
+    "backend": "93.3% for iteration 37 feature/regression suite (14/15); carried auth-hardening subset 25% (1/4)",
+    "frontend": "100% of executed requested UI flows passed after selector corrections"
+  },
+  "seed_data_creation": "Used existing testbugfix1/Balkin only. Temporarily created one manual admin gift order, sports bets/transactions, coupon/redemption transaction, one manual dashboard order, one chat message, and one support ticket; test records were cleaned. UI Bulk Gift was configured but Send was not clicked, so it created no order.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Core iteration 37 UI is healthy: admin order rows render @username/$price, drill-down has four StatCards without a StatCard crash, Bulk Gift filters and enables Send, Funds PayPal POST handles 503, sports upcoming showed fixtures with 1/X/2 controls and populated the slip, and live-chat FAB opened on guest/home/funds/admin. Re-run the iteration 37 pytest after resolving POST /client/orders. Auth failures are the same known defects from iterations 34-35 and were reproduced again per the auth playbook request.",
+  "rca_of_the_issue": "The order regression failure is a route-contract mismatch: GET /client/orders lists orders, while creation was implemented under a differently named POST /client/order-with-balance endpoint, so FastAPI correctly returns 405 to POST /client/orders. Auth failures stem from token-body/localStorage login with no response cookie, wildcard CORS configuration in backend/.env, and absence of persistent failed-login tracking/lockout logic."
+}

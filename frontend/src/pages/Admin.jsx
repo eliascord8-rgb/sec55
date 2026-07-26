@@ -325,6 +325,15 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
               Orders
             </TabsTrigger>
             )}
+            {can("orders") && (
+            <TabsTrigger
+              value="bulk"
+              data-testid="tab-bulk"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Bulk Gift
+            </TabsTrigger>
+            )}
             {role === "owner" && (
             <TabsTrigger
               value="services"
@@ -455,6 +464,9 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
 
           <TabsContent value="orders">
             <OrdersPanel token={token} />
+          </TabsContent>
+          <TabsContent value="bulk">
+            <BulkGiftPanel token={token} />
           </TabsContent>
           <TabsContent value="services">
             <ServicesPanel token={token} />
@@ -602,6 +614,258 @@ function OrdersPanel({ token }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, tone = "white" }) {
+  const toneCls = {
+    emerald: "text-emerald-300 border-emerald-500/30 bg-emerald-500/5",
+    amber:   "text-amber-300 border-amber-500/30 bg-amber-500/5",
+    cyan:    "text-[#00E5FF] border-[#00E5FF]/30 bg-[#00E5FF]/5",
+    white:   "text-white border-white/10 bg-white/[0.03]",
+  }[tone] || "text-white border-white/10 bg-white/[0.03]";
+  return (
+    <div className={`rounded-sm px-3 py-2 border ${toneCls}`}>
+      <div className="text-[9px] uppercase tracking-widest text-white/50">{label}</div>
+      <div className="font-display font-black text-base mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+function BulkGiftPanel({ token }) {
+  const [users, setUsers] = useState([]);
+  const [services, setServices] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedUsers, setSelectedUsers] = useState([]); // array of user ids
+  const [selectedServices, setSelectedServices] = useState([]); // array of { service_id, quantity }
+  const [userQuery, setUserQuery] = useState("");
+  const [serviceQuery, setServiceQuery] = useState("");
+  const [link, setLink] = useState("");
+  const [note, setNote] = useState("");
+  const [sending, setSending] = useState(false);
+  const [lastResult, setLastResult] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [ru, rs] = await Promise.all([
+          adminApi(token).get("/admin/users"),
+          adminApi(token).get("/admin/services"),
+        ]);
+        setUsers(ru.data.users || []);
+        setServices((rs.data.services || rs.data.items || []).filter((s) => s.enabled !== false));
+      } catch (e) {
+        toast.error("Failed to load bulk gift data");
+      } finally { setLoading(false); }
+    })();
+  }, [token]);
+
+  const toggleUser = (uid) => {
+    setSelectedUsers((prev) => prev.includes(uid) ? prev.filter((x) => x !== uid) : [...prev, uid]);
+  };
+  const selectAllUsers = () => setSelectedUsers(filteredUsers.map((u) => u.id));
+  const clearUsers = () => setSelectedUsers([]);
+
+  const toggleService = (sid) => {
+    setSelectedServices((prev) => {
+      const exists = prev.find((s) => s.service_id === sid);
+      if (exists) return prev.filter((s) => s.service_id !== sid);
+      const svc = services.find((x) => (x.service_id || x.id) === sid);
+      const defaultQty = Number(svc?.min || svc?.default_quantity || 100);
+      return [...prev, { service_id: sid, quantity: defaultQty }];
+    });
+  };
+  const updateSvcQty = (sid, qty) => setSelectedServices((prev) => prev.map((s) => s.service_id === sid ? { ...s, quantity: Math.max(1, Number(qty) || 1) } : s));
+
+  const filteredUsers = (users || []).filter((u) => {
+    const q = userQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (u.username || "").toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q);
+  });
+  const filteredServices = (services || []).filter((s) => {
+    const q = serviceQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (s.custom_name || s.name || "").toLowerCase().includes(q) || String(s.service_id || s.id || "").includes(q);
+  });
+
+  const send = async () => {
+    if (!selectedUsers.length) { toast.error("Pick at least one recipient"); return; }
+    if (!selectedServices.length) { toast.error("Pick at least one service"); return; }
+    const url = link.trim();
+    if (!url || url.length < 3) { toast.error("Enter a target URL"); return; }
+    if (!window.confirm(`Fire ${selectedServices.length} service(s) to ${selectedUsers.length} user(s)? This is a FREE gift.`)) return;
+    setSending(true);
+    setLastResult(null);
+    try {
+      const r = await adminApi(token).post("/admin/bulk-order", {
+        user_ids: selectedUsers,
+        services: selectedServices,
+        link: url,
+        note: note || undefined,
+      });
+      setLastResult(r.data);
+      toast.success(`Bulk gift: ${r.data.sent} sent, ${r.data.failed} failed`);
+      if (r.data.failed === 0) {
+        // Reset selections on full success
+        setSelectedServices([]);
+        setLink("");
+        setNote("");
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to send bulk gift");
+    } finally { setSending(false); }
+  };
+
+  if (loading) return <div className="flex items-center justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-emerald-400" /></div>;
+
+  return (
+    <div className="space-y-4" data-testid="bulk-gift-panel">
+      <div className="bg-[#1a1525] border border-emerald-500/30 rounded-sm p-4">
+        <h2 className="font-display font-bold text-lg mb-1 text-emerald-300">Bulk Gift Orders</h2>
+        <p className="text-xs text-white/50">Send multiple SMM services to one or many users, all against a single target URL. No balance is charged — this is a marketing/goodwill gift.</p>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        {/* Users */}
+        <div className="bg-[#0d0a14] border border-white/10 rounded-sm p-4 flex flex-col min-h-[400px]">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-display font-bold text-sm">Recipients ({selectedUsers.length})</h3>
+            <div className="flex gap-2 text-[10px] uppercase tracking-widest">
+              <button onClick={selectAllUsers} data-testid="bulk-select-all-users" className="text-emerald-300 hover:text-emerald-200">All shown</button>
+              <button onClick={clearUsers} data-testid="bulk-clear-users" className="text-white/50 hover:text-white">Clear</button>
+            </div>
+          </div>
+          <input
+            value={userQuery}
+            onChange={(e) => setUserQuery(e.target.value)}
+            placeholder="Search @username or email…"
+            data-testid="bulk-user-search"
+            className="w-full bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm text-white mb-2 outline-none focus:border-emerald-400"
+          />
+          <div className="flex-1 overflow-y-auto max-h-[400px] space-y-1">
+            {filteredUsers.length === 0 && <div className="text-white/40 text-xs text-center py-4">No users match</div>}
+            {filteredUsers.map((u) => (
+              <label key={u.id} className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-xs ${selectedUsers.includes(u.id) ? "bg-emerald-500/15 border border-emerald-500/30" : "hover:bg-white/5 border border-transparent"}`} data-testid={`bulk-user-${u.id}`}>
+                <input
+                  type="checkbox"
+                  checked={selectedUsers.includes(u.id)}
+                  onChange={() => toggleUser(u.id)}
+                  className="accent-emerald-400"
+                />
+                <span className="font-bold text-white">@{u.username}</span>
+                <span className="text-white/40 text-[10px] truncate flex-1">{u.email || ""}</span>
+                <span className="text-[9px] uppercase tracking-widest text-white/40">{u.role || "user"}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Services */}
+        <div className="bg-[#0d0a14] border border-white/10 rounded-sm p-4 flex flex-col min-h-[400px]">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-display font-bold text-sm">Services ({selectedServices.length})</h3>
+          </div>
+          <input
+            value={serviceQuery}
+            onChange={(e) => setServiceQuery(e.target.value)}
+            placeholder="Search service…"
+            data-testid="bulk-service-search"
+            className="w-full bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm text-white mb-2 outline-none focus:border-emerald-400"
+          />
+          <div className="flex-1 overflow-y-auto max-h-[400px] space-y-1">
+            {filteredServices.length === 0 && <div className="text-white/40 text-xs text-center py-4">No services</div>}
+            {filteredServices.map((s) => {
+              const sid = s.service_id || s.id;
+              const sel = selectedServices.find((x) => x.service_id === sid);
+              return (
+                <div key={sid} className={`px-2 py-1.5 rounded text-xs ${sel ? "bg-emerald-500/15 border border-emerald-500/30" : "hover:bg-white/5 border border-transparent"}`} data-testid={`bulk-service-${sid}`}>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!!sel}
+                      onChange={() => toggleService(sid)}
+                      className="accent-emerald-400"
+                    />
+                    <span className="text-white flex-1 truncate">{s.custom_name || s.name}</span>
+                    <span className="text-[10px] text-white/40 font-mono">#{sid}</span>
+                  </label>
+                  {sel && (
+                    <div className="mt-1.5 pl-6 flex items-center gap-2">
+                      <label className="text-[10px] uppercase tracking-widest text-white/50">Qty</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={sel.quantity}
+                        onChange={(e) => updateSvcQty(sid, e.target.value)}
+                        data-testid={`bulk-qty-${sid}`}
+                        className="w-24 bg-black/40 border border-white/10 rounded px-2 py-0.5 text-xs text-white outline-none focus:border-emerald-400"
+                      />
+                      {s.min && s.max && <span className="text-[9px] text-white/40">min {s.min} · max {s.max}</span>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* URL + Note + Send */}
+      <div className="bg-[#0d0a14] border border-white/10 rounded-sm p-4 space-y-3">
+        <div>
+          <label className="text-[10px] uppercase tracking-widest text-white/50 block mb-1">Target URL (applied to every order)</label>
+          <input
+            value={link}
+            onChange={(e) => setLink(e.target.value)}
+            placeholder="https://instagram.com/username or https://tiktok.com/@handle/video/..."
+            data-testid="bulk-link"
+            className="w-full bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm text-white outline-none focus:border-emerald-400"
+          />
+        </div>
+        <div>
+          <label className="text-[10px] uppercase tracking-widest text-white/50 block mb-1">Admin note (optional, stored on each order)</label>
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="e.g. Welcome-back boost"
+            data-testid="bulk-note"
+            className="w-full bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm text-white outline-none focus:border-emerald-400"
+          />
+        </div>
+        <div className="flex items-center justify-between">
+          <div className="text-xs text-white/50">
+            Will fire <span className="text-emerald-300 font-black">{selectedUsers.length * selectedServices.length}</span> order(s)
+            {selectedUsers.length > 0 && selectedServices.length > 0 && (
+              <span className="text-white/40"> · {selectedUsers.length} user(s) × {selectedServices.length} service(s)</span>
+            )}
+          </div>
+          <button
+            onClick={send}
+            disabled={sending || !selectedUsers.length || !selectedServices.length || !link.trim()}
+            data-testid="bulk-send"
+            className="inline-flex items-center gap-2 px-6 py-2.5 rounded-sm font-black text-sm uppercase tracking-widest bg-gradient-to-r from-emerald-500 to-emerald-400 text-black hover:from-emerald-400 hover:to-emerald-300 disabled:opacity-40 disabled:cursor-not-allowed transition"
+          >
+            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            Send Bulk Gift
+          </button>
+        </div>
+      </div>
+
+      {lastResult && (
+        <div className="bg-[#0d0a14] border border-emerald-500/30 rounded-sm p-4" data-testid="bulk-result">
+          <h3 className="font-display font-bold text-sm mb-2 text-emerald-300">Last dispatch — {lastResult.sent} OK · {lastResult.failed} failed</h3>
+          <div className="max-h-64 overflow-y-auto space-y-1 text-[11px] font-mono">
+            {(lastResult.results || []).map((r, i) => (
+              <div key={i} className={`px-2 py-1 rounded ${r.ok ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"}`}>
+                <span className="font-bold">{r.ok ? "OK" : "FAIL"}</span> · @{r.username || r.user_id} · svc#{r.service_id || "?"}
+                {r.smm_order_id && <span className="ml-2 text-emerald-300/70">→ SMM #{r.smm_order_id}</span>}
+                {r.error && <span className="ml-2 text-red-300/80">— {r.error}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

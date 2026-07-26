@@ -6,7 +6,6 @@ import { useAuth } from "@/context/AuthContext";
 import { useLang, LanguagePicker } from "@/context/LanguageContext";
 import { CurrencyPicker } from "@/context/CurrencyContext";
 import GoalNotifier from "@/components/GoalNotifier";
-import LiveChatFAB from "@/components/LiveChatFAB";
 
 // Green-themed guest landing shown on /client/dashboard when the user is NOT
 // signed in.  Renders a compact green header with Sign-in / Sign-up buttons
@@ -75,7 +74,6 @@ export default function GuestLanding() {
 
       {authOpen && <AuthModal mode={authOpen} onClose={() => setAuthOpen(null)} switchMode={setAuthOpen} />}
       <GoalNotifier />
-      <LiveChatFAB />
     </div>
   );
 }

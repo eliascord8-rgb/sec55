@@ -56,7 +56,7 @@ export default function LiveChatFAB() {
         onClick={() => setOpen(true)}
         data-testid="live-chat-fab"
         title="Open live community chat"
-        className="md:hidden fixed bottom-24 right-4 z-30 w-14 h-14 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black shadow-lg shadow-emerald-500/40 flex items-center justify-center transition"
+        className="fixed bottom-24 right-4 z-30 w-14 h-14 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black shadow-lg shadow-emerald-500/40 flex items-center justify-center transition"
       >
         <MessageCircle className="w-6 h-6" strokeWidth={2.5} />
         {unread > 0 && (
@@ -68,11 +68,11 @@ export default function LiveChatFAB() {
 
       {/* Bottom-sheet chat — full-height mobile panel */}
       {open && (
-        <div className="md:hidden fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-end" onClick={() => setOpen(false)}>
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-end md:items-center md:justify-end md:pr-6 md:pb-6" onClick={() => setOpen(false)}>
           <div
             data-testid="live-chat-mobile-panel"
             onClick={(e) => e.stopPropagation()}
-            className="w-full bg-[#0d2b12] border-t border-emerald-500/30 rounded-t-2xl shadow-2xl h-[85vh] flex flex-col"
+            className="w-full md:w-[420px] md:h-[600px] bg-[#0d2b12] border-t md:border border-emerald-500/30 rounded-t-2xl md:rounded-2xl shadow-2xl h-[85vh] flex flex-col"
           >
             <div className="flex items-center gap-2 px-4 py-3 border-b border-emerald-500/20 shrink-0">
               <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />

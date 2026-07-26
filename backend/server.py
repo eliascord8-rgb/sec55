@@ -1107,6 +1107,129 @@ async def admin_orders(x_admin_token: Optional[str] = Header(None)):
     return {"orders": orders}
 
 
+# ============ ADMIN BULK GIFT ORDERS ============
+# Admin fires the same set of SMM services against a target URL for one or many
+# users. Bypasses balance (this is a gift/marketing bump). Each (user × service)
+# combo becomes its own order row so users see them in their own history.
+
+class BulkGiftItem(BaseModel):
+    service_id: int = Field(..., description="Curated service ID (matches int stored in DB)")
+    quantity: int = Field(..., ge=1, le=1_000_000)
+
+
+class BulkGiftRequest(BaseModel):
+    user_ids: List[str] = Field(..., min_length=1, max_length=200, description="One or many recipient user IDs")
+    services: List[BulkGiftItem] = Field(..., min_length=1, max_length=20)
+    link: str = Field(..., min_length=3, max_length=500, description="Target URL for every order in this bulk")
+    comments: Optional[str] = Field(default="", max_length=8000)
+    note: Optional[str] = Field(default="", max_length=200, description="Admin-only note stored on the order")
+
+
+@api_router.post("/admin/bulk-order")
+async def admin_bulk_order(payload: BulkGiftRequest, request: Request, x_admin_token: Optional[str] = Header(None)):
+    """Fire one order per (user × service) — free gift, no balance deducted."""
+    check_admin(x_admin_token, "orders")
+    place_smm_order = request.app.state.place_smm_order
+    now = datetime.now(timezone.utc).isoformat()
+    link = payload.link.strip()
+    comments = (payload.comments or "").strip() or None
+
+    results = []
+    ok_count = 0
+    fail_count = 0
+
+    for uid in payload.user_ids:
+        user_doc = await db.users.find_one({"id": uid}, {"_id": 0, "id": 1, "username": 1, "email": 1})
+        if not user_doc:
+            results.append({"user_id": uid, "ok": False, "error": "user_not_found"})
+            fail_count += 1
+            continue
+
+        for item in payload.services:
+            svc = await db.curated_services.find_one({"service_id": item.service_id, "enabled": True}, {"_id": 0})
+            if not svc:
+                results.append({"user_id": uid, "username": user_doc.get("username"), "service_id": item.service_id, "ok": False, "error": "service_not_available"})
+                fail_count += 1
+                continue
+
+            is_manual = bool(svc.get("manual"))
+            order_id = str(uuid.uuid4())
+
+            if is_manual:
+                order_doc = {
+                    "id": order_id,
+                    "smm_order_id": None,
+                    "service_id": item.service_id,
+                    "service_name": (svc.get("custom_name") or svc.get("name") or ""),
+                    "link": link,
+                    "quantity": int(item.quantity),
+                    "charge": 0.0,
+                    "customer_email": "",
+                    "user_id": uid,
+                    "username": user_doc.get("username"),
+                    "payment_method": "admin_gift",
+                    "source": "admin_bulk",
+                    "status": "awaiting_manual_fulfillment",
+                    "manual": True,
+                    "delivery_minutes": svc.get("delivery_minutes"),
+                    "created_at": now,
+                    "comments": comments,
+                    "provider_id": None,
+                    "admin_note": payload.note or None,
+                    "is_gift": True,
+                }
+                await db.orders.insert_one(order_doc.copy())
+                ok_count += 1
+                results.append({"user_id": uid, "username": user_doc.get("username"), "service_id": item.service_id, "ok": True, "order_id": order_id, "manual": True})
+                continue
+
+            try:
+                smm_resp = await place_smm_order(
+                    item.service_id, link, int(item.quantity),
+                    comments=comments, provider_id=svc.get("provider_id"),
+                )
+            except HTTPException as he:
+                results.append({"user_id": uid, "username": user_doc.get("username"), "service_id": item.service_id, "ok": False, "error": str(he.detail)})
+                fail_count += 1
+                continue
+            except Exception as e:
+                results.append({"user_id": uid, "username": user_doc.get("username"), "service_id": item.service_id, "ok": False, "error": f"provider_exception:{e}"})
+                fail_count += 1
+                continue
+
+            smm_order_id = smm_resp.get("order")
+            if not smm_order_id:
+                results.append({"user_id": uid, "username": user_doc.get("username"), "service_id": item.service_id, "ok": False, "error": f"provider:{smm_resp.get('error') or smm_resp}"})
+                fail_count += 1
+                continue
+
+            order_doc = {
+                "id": order_id,
+                "smm_order_id": smm_order_id,
+                "service_id": item.service_id,
+                "service_name": (svc.get("custom_name") or svc.get("name") or ""),
+                "link": link,
+                "quantity": int(item.quantity),
+                "charge": 0.0,
+                "customer_email": "",
+                "user_id": uid,
+                "username": user_doc.get("username"),
+                "payment_method": "admin_gift",
+                "source": "admin_bulk",
+                "status": "Pending",
+                "created_at": now,
+                "comments": comments,
+                "provider_id": svc.get("provider_id"),
+                "admin_note": payload.note or None,
+                "is_gift": True,
+            }
+            await db.orders.insert_one(order_doc.copy())
+            ok_count += 1
+            results.append({"user_id": uid, "username": user_doc.get("username"), "service_id": item.service_id, "ok": True, "order_id": order_id, "smm_order_id": smm_order_id})
+
+    return {"ok": True, "sent": ok_count, "failed": fail_count, "results": results}
+
+
 @client_router.get("/orders")
 async def my_orders(user: CurrentUser = Depends(current_user_dep), limit: int = 20):
     """The current user's recent orders — used by the classic dashboard."""
