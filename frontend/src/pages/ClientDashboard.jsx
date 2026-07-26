@@ -40,6 +40,7 @@ import {
   Phone,
   Copy,
   RefreshCw,
+  X,
 } from "lucide-react";
 import SlotsView from "./SlotsView";
 import MessagesView from "./MessagesView";
@@ -2674,6 +2675,12 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkTargets, setBulkTargets] = useState("");
   const [bulkResult, setBulkResult] = useState(null);
+  // Multi-service cart: fire N services against ONE URL in one click
+  const [multiMode, setMultiMode] = useState(false);
+  const [multiCart, setMultiCart] = useState([]); // [{ service_id, name, min, max, rate, quantity, comments, needs_custom_text, is_manual, price_flat }]
+  const [multiLink, setMultiLink] = useState("");
+  const [multiPlacing, setMultiPlacing] = useState(false);
+  const [multiResult, setMultiResult] = useState(null);
   const [subMode, setSubMode] = useState(false);
   const [subUsername, setSubUsername] = useState("");
   const [subDays, setSubDays] = useState(7);
@@ -2867,6 +2874,73 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
     }
   };
 
+  // === MULTI-ORDER (cart) ==================================================
+  const multiTotal = multiCart.reduce((acc, item) => {
+    if (item.is_manual) return acc + Number(item.price_flat || 0);
+    return acc + (Number(item.rate) * Number(item.quantity || 0)) / 1000;
+  }, 0);
+  const multiValid = multiCart.length > 0 && multiLink.trim().length > 3 && multiTotal <= balance &&
+    multiCart.every((it) => it.is_manual || (it.quantity >= (it.min || 1) && it.quantity <= (it.max || 1e9))) &&
+    multiCart.every((it) => !it.needs_custom_text || (it.comments || "").trim().length > 0);
+
+  const addToMultiCart = (svc) => {
+    if (!svc) return;
+    setMultiCart((prev) => {
+      if (prev.some((it) => it.service_id === svc.service)) {
+        toast.info("Already in cart");
+        return prev;
+      }
+      return [
+        ...prev,
+        {
+          service_id: svc.service,
+          name: svc.name,
+          min: Number(svc.min || 1),
+          max: Number(svc.max || 100000),
+          rate: Number(svc.rate || 0),
+          quantity: Number(svc.min || 100),
+          comments: "",
+          needs_custom_text: !!svc.needs_custom_text,
+          is_manual: !!svc.manual,
+          price_flat: Number(svc.price_flat || 0),
+        },
+      ];
+    });
+    toast.success(`Added "${svc.name}" to cart`);
+  };
+  const removeFromMultiCart = (sid) => setMultiCart((prev) => prev.filter((it) => it.service_id !== sid));
+  const updateMultiItem = (sid, patch) => setMultiCart((prev) => prev.map((it) => it.service_id === sid ? { ...it, ...patch } : it));
+  const clearMultiCart = () => setMultiCart([]);
+
+  const placeMultiOrder = async () => {
+    if (!multiValid) return;
+    setMultiPlacing(true);
+    setMultiResult(null);
+    try {
+      const items = multiCart.map((it) => ({
+        service_id: it.service_id,
+        quantity: Number(it.quantity),
+        comments: it.needs_custom_text ? (it.comments || "").trim() : undefined,
+      }));
+      const r = await authedApi().post("/client/orders/multi", { link: multiLink.trim(), items });
+      setMultiResult(r.data);
+      const okN = r.data.placed;
+      const failN = r.data.failed;
+      if (failN === 0) {
+        toast.success(`✅ All ${okN} orders placed! Charged $${r.data.total_charged.toFixed(2)}`);
+        setMultiCart([]);
+        setMultiLink("");
+      } else {
+        toast.warning(`${okN} placed · ${failN} failed. See details below.`);
+      }
+      reloadBalance();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Multi-order failed");
+    } finally {
+      setMultiPlacing(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Premium header banner — matches the dashboard's emerald theme, gives the page
@@ -2912,6 +2986,14 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
           >
             {bulkMode ? "✓ Bulk mode" : "Bulk mode"}
           </button>
+          <button
+            type="button"
+            onClick={() => setMultiMode((v) => !v)}
+            data-testid="buy-hero-multi-toggle"
+            className={`px-3 py-1.5 rounded-full border transition ${multiMode ? "bg-fuchsia-500 text-black border-fuchsia-400" : "border-fuchsia-500/30 text-fuchsia-200 hover:bg-fuchsia-500/10"}`}
+          >
+            {multiMode ? `✓ Multi (${multiCart.length})` : "Multi order"}
+          </button>
           {ownsAutoLive ? (
             <button
               type="button"
@@ -2941,6 +3023,144 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
           )}
         </div>
       </div>
+
+      {multiMode && (
+        <div className="bg-fuchsia-500/10 border border-fuchsia-500/40 rounded-md p-4" data-testid="multi-cart-panel">
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-fuchsia-400 animate-pulse" />
+              <div className="text-[10px] uppercase tracking-widest text-fuchsia-300 font-bold">
+                Multi-service cart ({multiCart.length})
+              </div>
+            </div>
+            <div className="flex gap-2">
+              {multiCart.length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearMultiCart}
+                  data-testid="multi-cart-clear"
+                  className="text-[10px] uppercase tracking-widest text-white/50 hover:text-white"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
+          {multiCart.length === 0 ? (
+            <div className="text-center text-xs text-white/40 py-6">
+              Pick a service from the catalog below and click <span className="text-fuchsia-300 font-black">Add</span>. Combine likes + views + shares for one URL, pay once.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+              {multiCart.map((it) => {
+                const itemTotal = it.is_manual ? Number(it.price_flat || 0) : (Number(it.rate) * Number(it.quantity || 0)) / 1000;
+                const qtyBad = !it.is_manual && (it.quantity < (it.min || 1) || it.quantity > (it.max || 1e9));
+                const commentsBad = it.needs_custom_text && !(it.comments || "").trim();
+                return (
+                  <div key={it.service_id} className="bg-black/40 border border-fuchsia-500/20 rounded-sm p-3" data-testid={`multi-cart-item-${it.service_id}`}>
+                    <div className="flex items-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-white truncate">{it.name}</div>
+                        <div className="text-[10px] text-white/40 mt-0.5">
+                          {it.is_manual ? `Flat $${Number(it.price_flat).toFixed(2)}` : `$${Number(it.rate).toFixed(3)}/1000 · min ${it.min} · max ${it.max}`}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeFromMultiCart(it.service_id)}
+                        data-testid={`multi-cart-remove-${it.service_id}`}
+                        className="text-white/40 hover:text-red-300 shrink-0"
+                        aria-label="Remove"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                    {!it.is_manual && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <label className="text-[10px] uppercase tracking-widest text-white/50">Qty</label>
+                        <input
+                          type="number"
+                          min={it.min}
+                          max={it.max}
+                          value={it.quantity}
+                          onChange={(e) => updateMultiItem(it.service_id, { quantity: Math.max(1, Number(e.target.value) || 0) })}
+                          data-testid={`multi-cart-qty-${it.service_id}`}
+                          className={`w-28 bg-black/50 border rounded px-2 py-1 text-xs text-white outline-none focus:border-fuchsia-400 ${qtyBad ? "border-red-500" : "border-white/10"}`}
+                        />
+                        <div className="ml-auto text-xs">
+                          <span className="text-white/40">= </span>
+                          <span className="font-mono font-black text-emerald-300">${itemTotal.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    )}
+                    {it.needs_custom_text && (
+                      <div className="mt-2">
+                        <input
+                          type="text"
+                          placeholder="Custom comments / usernames (required)…"
+                          value={it.comments}
+                          onChange={(e) => updateMultiItem(it.service_id, { comments: e.target.value })}
+                          data-testid={`multi-cart-comments-${it.service_id}`}
+                          className={`w-full bg-black/50 border rounded px-2 py-1 text-xs text-white outline-none focus:border-fuchsia-400 ${commentsBad ? "border-red-500" : "border-white/10"}`}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {multiCart.length > 0 && (
+            <div className="mt-3 space-y-2">
+              <label className="text-[10px] uppercase tracking-widest text-white/50 block">Target URL (applies to every service in the cart)</label>
+              <input
+                type="text"
+                value={multiLink}
+                onChange={(e) => setMultiLink(e.target.value)}
+                placeholder="https://instagram.com/user OR https://tiktok.com/@handle/video/…"
+                data-testid="multi-cart-link"
+                className="w-full bg-black/50 border border-fuchsia-500/30 rounded-sm px-3 py-2 text-sm text-white outline-none focus:border-fuchsia-400"
+              />
+              <div className="flex items-center justify-between flex-wrap gap-3 pt-1">
+                <div className="text-xs text-white/60">
+                  Total: <span className="font-mono font-black text-emerald-300">${multiTotal.toFixed(2)}</span>
+                  {multiTotal > balance && <span className="ml-2 text-red-300 text-[10px] uppercase tracking-widest">Insufficient balance</span>}
+                </div>
+                <button
+                  type="button"
+                  onClick={placeMultiOrder}
+                  disabled={!multiValid || multiPlacing}
+                  data-testid="multi-cart-place"
+                  className="inline-flex items-center gap-2 px-5 py-2 rounded-sm text-xs font-black uppercase tracking-widest bg-gradient-to-r from-fuchsia-500 to-fuchsia-400 text-black hover:from-fuchsia-400 hover:to-fuchsia-300 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  {multiPlacing ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  Place {multiCart.length} order{multiCart.length > 1 ? "s" : ""} · ${multiTotal.toFixed(2)}
+                </button>
+              </div>
+
+              {multiResult && (
+                <div className="mt-3 bg-black/40 border border-fuchsia-500/20 rounded-sm p-3" data-testid="multi-cart-result">
+                  <div className="text-[10px] uppercase tracking-widest font-black text-fuchsia-200 mb-2">
+                    Last dispatch — {multiResult.placed} placed · {multiResult.failed} failed · ${Number(multiResult.total_charged || 0).toFixed(2)} charged
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-1 text-[11px] font-mono">
+                    {(multiResult.results || []).map((r, i) => (
+                      <div key={i} className={`px-2 py-1 rounded ${r.ok ? "bg-emerald-500/10 text-emerald-200" : "bg-red-500/10 text-red-200"}`}>
+                        <span className="font-bold">{r.ok ? "OK" : "FAIL"}</span> · {r.service_name || `svc#${r.service_id}`}
+                        {r.smm_order_id && <span className="ml-2 text-emerald-300/70">→ SMM #{r.smm_order_id}</span>}
+                        {r.charge > 0 && <span className="ml-2 text-white/40">${Number(r.charge).toFixed(2)}</span>}
+                        {r.error && <span className="ml-2 text-red-300/80">— {r.error}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {mySubs.filter((s) => s.status === "active").length > 0 && (
         <div className="bg-fuchsia-500/10 border border-fuchsia-500/40 rounded-md p-4" data-testid="live-subs-panel">
@@ -3373,25 +3593,41 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
             )}
             <div className="max-h-[60vh] overflow-y-auto divide-y divide-white/5">
               {filtered.slice(0, 80).map((s) => (
-                <button
+                <div
                   key={s.service}
-                  onClick={() => setSelected(s)}
-                  data-testid={`buy-svc-${s.service}`}
                   className="w-full text-left px-5 py-3 hover:bg-white/[0.03] transition flex items-center justify-between gap-3"
                 >
-                  <div className="min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => (multiMode ? addToMultiCart(s) : setSelected(s))}
+                    data-testid={`buy-svc-${s.service}`}
+                    className="min-w-0 flex-1 text-left"
+                  >
                     <div className="text-[10px] uppercase tracking-wider text-white/40 truncate">
                       {s.category}
                     </div>
                     <div className="text-sm font-medium text-white/90 truncate">{s.name}</div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="font-display font-bold text-[#FF007F] text-sm">
-                      ${Number(s.rate).toFixed(3)}
+                  </button>
+                  <div className="text-right shrink-0 flex items-center gap-3">
+                    <div>
+                      <div className="font-display font-bold text-[#FF007F] text-sm">
+                        ${Number(s.rate).toFixed(3)}
+                      </div>
+                      <div className="text-[10px] uppercase tracking-wider text-white/40">/ 1000</div>
                     </div>
-                    <div className="text-[10px] uppercase tracking-wider text-white/40">/ 1000</div>
+                    {multiMode && (
+                      <button
+                        type="button"
+                        onClick={() => addToMultiCart(s)}
+                        data-testid={`buy-svc-add-${s.service}`}
+                        disabled={multiCart.some((it) => it.service_id === s.service)}
+                        className="px-2.5 py-1 rounded text-[10px] uppercase tracking-widest font-black bg-fuchsia-500 text-black hover:bg-fuchsia-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {multiCart.some((it) => it.service_id === s.service) ? "In cart" : "Add"}
+                      </button>
+                    )}
                   </div>
-                </button>
+                </div>
               ))}
             </div>
             {filtered.length > 80 && (

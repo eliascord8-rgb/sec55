@@ -1975,6 +1975,183 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
     }
 
 
+class MultiOrderItem(BaseModel):
+    service_id: int
+    quantity: int = Field(..., gt=0)
+    comments: Optional[str] = None
+
+
+class MultiOrderRequest(BaseModel):
+    link: str = Field(..., min_length=4, max_length=400)
+    items: List[MultiOrderItem] = Field(..., min_length=1, max_length=15)
+
+
+@client_router.post("/orders/multi")
+async def place_multi_order(body: MultiOrderRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Place N orders for the same target URL in one atomic call.
+
+    Prices are calculated for every item first. If total > balance the whole
+    request is rejected before any provider call. Balance is debited only for
+    items that succeed; the response contains per-item results so the UI can
+    show partial-success clearly.
+    """
+    db: AsyncIOMotorDatabase = request.app.state.db
+    place_smm_order = request.app.state.place_smm_order
+    link = body.link.strip()
+
+    # 1) Resolve all services + charges up-front
+    priced = []  # list of (item, svc_doc, charge, is_manual, comments)
+    for item in body.items:
+        svc = await db.curated_services.find_one({"service_id": item.service_id, "enabled": True}, {"_id": 0})
+        if not svc:
+            raise HTTPException(status_code=404, detail=f"Service #{item.service_id} not available")
+        is_manual = bool(svc.get("manual"))
+        if is_manual:
+            charge = round(float(svc.get("price_flat") or 0), 2)
+            if charge <= 0:
+                raise HTTPException(status_code=400, detail=f"Service #{item.service_id} price not set")
+        else:
+            rate = float(svc.get("custom_rate", 0))
+            if rate <= 0:
+                raise HTTPException(status_code=400, detail=f"Service #{item.service_id} price not set")
+            mn = int(svc.get("min", 1) or 1)
+            mx = int(svc.get("max", 100000) or 100000)
+            if item.quantity < mn or item.quantity > mx:
+                raise HTTPException(status_code=400, detail=f"Service #{item.service_id}: qty must be between {mn} and {mx}")
+            charge = round((rate * item.quantity) / 1000.0, 4)
+        needs_custom = bool(svc.get("needs_custom_text"))
+        comments = (item.comments or "").strip() or None
+        if needs_custom and not comments:
+            raise HTTPException(status_code=400, detail=f"Service #{item.service_id} needs custom comments")
+        priced.append((item, svc, charge, is_manual, comments))
+
+    total_charge = round(sum(p[2] for p in priced), 4)
+    balance = await _get_user_balance(user.id)
+    if balance < total_charge:
+        raise HTTPException(status_code=402, detail=f"Not enough balance — total ${total_charge:.2f}, you have ${balance:.2f}")
+
+    # 2) Fire each order sequentially. Per-item failures don't abort the run.
+    now = datetime.now(timezone.utc).isoformat()
+    results = []
+    debited = 0.0
+    order_ids: List[str] = []
+
+    for (item, svc, charge, is_manual, comments) in priced:
+        order_id = str(uuid.uuid4())
+        base_doc = {
+            "id": order_id,
+            "service_id": item.service_id,
+            "service_name": (svc.get("custom_name") or svc.get("name") or ""),
+            "link": link,
+            "quantity": item.quantity,
+            "charge": charge,
+            "customer_email": "",
+            "user_id": user.id,
+            "username": user.username,
+            "payment_method": "balance",
+            "source": "dashboard_multi",
+            "created_at": now,
+            "comments": comments,
+            "provider_id": svc.get("provider_id"),
+            "multi_batch": True,
+        }
+
+        if is_manual:
+            # Debit immediately for manual orders
+            await db.transactions.insert_one({
+                "id": str(uuid.uuid4()),
+                "user_id": user.id,
+                "username": user.username,
+                "amount": -charge,
+                "method": "balance",
+                "status": "approved",
+                "type": "order",
+                "service_id": item.service_id,
+                "created_at": now,
+                "approved_at": now,
+            })
+            debited += charge
+            order_doc = {
+                **base_doc,
+                "smm_order_id": None,
+                "status": "awaiting_manual_fulfillment",
+                "manual": True,
+                "delivery_minutes": svc.get("delivery_minutes"),
+            }
+            await db.orders.insert_one(order_doc.copy())
+            order_ids.append(order_id)
+            results.append({"service_id": item.service_id, "service_name": order_doc["service_name"], "ok": True, "order_id": order_id, "smm_order_id": None, "charge": charge, "manual": True})
+            continue
+
+        # Provider call
+        try:
+            smm_resp = await place_smm_order(item.service_id, link, item.quantity, comments=comments, provider_id=svc.get("provider_id"))
+        except HTTPException as he:
+            results.append({"service_id": item.service_id, "service_name": base_doc["service_name"], "ok": False, "error": str(he.detail), "charge": 0})
+            continue
+        except Exception as e:
+            results.append({"service_id": item.service_id, "service_name": base_doc["service_name"], "ok": False, "error": f"provider_exception:{e}", "charge": 0})
+            continue
+
+        smm_order_id = smm_resp.get("order")
+        if not smm_order_id:
+            results.append({"service_id": item.service_id, "service_name": base_doc["service_name"], "ok": False, "error": f"provider:{smm_resp.get('error') or smm_resp}", "charge": 0})
+            continue
+
+        # Debit for successful order
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user.id,
+            "username": user.username,
+            "amount": -charge,
+            "method": "balance",
+            "status": "approved",
+            "type": "order",
+            "service_id": item.service_id,
+            "smm_order_id": smm_order_id,
+            "created_at": now,
+            "approved_at": now,
+        })
+        debited += charge
+        order_doc = {**base_doc, "smm_order_id": smm_order_id, "status": "Pending"}
+        await db.orders.insert_one(order_doc.copy())
+        order_ids.append(order_id)
+        results.append({"service_id": item.service_id, "service_name": base_doc["service_name"], "ok": True, "order_id": order_id, "smm_order_id": smm_order_id, "charge": charge})
+
+    new_balance = await _get_user_balance(user.id)
+    ok_count = sum(1 for r in results if r.get("ok"))
+    fail_count = len(results) - ok_count
+
+    # Send a single roll-up email if at least one order succeeded.
+    try:
+        if ok_count > 0:
+            from notification_service import notify_order_placed
+            backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+            first_ok = next((r for r in results if r.get("ok")), None)
+            if first_ok:
+                summary_doc = {
+                    "id": first_ok["order_id"],
+                    "service_name": f"{ok_count} services (multi-order)",
+                    "quantity": sum(p[0].quantity for i, p in enumerate(priced) if results[i].get("ok")),
+                    "charge": round(debited, 4),
+                    "link": link,
+                    "created_at": now,
+                }
+                asyncio.create_task(notify_order_placed(db, user.id, summary_doc, backend_url))
+    except Exception as _e:
+        logger.warning(f"[notify] multi-order email failed: {_e}")
+
+    return {
+        "ok": True,
+        "placed": ok_count,
+        "failed": fail_count,
+        "total_charged": round(debited, 4),
+        "balance": new_balance,
+        "order_ids": order_ids,
+        "results": results,
+    }
+
+
 class BulkOrderRequest(BaseModel):
     service_id: int
     quantity: int = Field(..., ge=1, le=1000000)
