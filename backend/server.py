@@ -2937,11 +2937,11 @@ async def admin_toggle_auto_live(uid: str, body: AutoLiveToggleReq, x_admin_toke
 @client_router.post("/live-sub/{sid}/cancel")
 async def live_sub_cancel(sid: str, user: CurrentUser = Depends(current_user_dep)):
     r = await db.live_subscriptions.update_one(
-        {"id": sid, "user_id": user.id, "status": "active"},
+        {"id": sid, "user_id": user.id, "status": {"$in": ["active", "waiting_for_live", "paused"]}},
         {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat()}},
     )
     if r.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Not found or not active")
+        raise HTTPException(status_code=404, detail="Not found or already cancelled")
     return {"ok": True}
 
 

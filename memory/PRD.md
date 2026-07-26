@@ -1,6 +1,18 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 39 · Auto-Live overhaul + Chat mod-bot + /clear N)
+- 🐛 **Auto-Live no longer wastes balance** — when user creates a `live_only` subscription for an OFFLINE target, the initial SMM burst is now skipped, sub marked `waiting_for_live`, initial red check logged. Fixes user's #1 complaint ("wastes balance if he is offline").
+- 🚀 **Rapid-fire when live** — in `live_only` mode, once the target is detected LIVE the worker fires up to **30 bursts spaced 2 seconds apart** in the same 90s check window (with balance + live-status spot-checks every 10 bursts to abort mid-window if streamer drops or funds run out).
+- 📊 **Live-check history for everybody** — every 90s check on every subscription (both modes) now writes a row into `tiktok_live_checks`. New `LiveSubRow` component on Buy tab shows red/green dot + strip of last 30 checks + expandable audit table with the last 60. Refreshes every 30s.
+- 🔊 **Removed the "🔴 boosted" chat announce** — subscriptions no longer spam the public shoutbox with system messages when a target goes live.
+- 💬 **`/clear N` command** — owners can `/clear` (all) or `/clear 50` (delete only the latest 50 messages).
+- 🤖 **BetterBot chat auto-mod** — when someone posts "help / support / contact / problem / not working / stuck / @admin" etc., the bot auto-replies with a friendly pointer to Live Chat + Ticket. Per-user 5-minute cooldown so it doesn't spam.
+- 🐛 Cancel endpoint now accepts `active | waiting_for_live | paused` (was hard-coded to `active` only → 404 for the new waiting state).
+- 🧪 Testing agent iter39: 4/6 backend + LiveSubRow UI passed. Cancel-404 fixed after retest.
+
+
+
 ## Recent Updates (Feb 2026 — Iteration 38 · Multi-Service Atomic Orders + Manual Order UX)
 - ✅ **Multi-service cart on Buy page** — user clicks "Multi order" chip in the hero, then "Add" on each service in the catalog to build a cart. One target URL applies to every service. Per-item qty inputs, per-item comments for custom-text services, live total, insufficient-balance guard.
 - ✅ **New `POST /api/client/orders/multi`** endpoint — accepts `{ link, items: [{ service_id, quantity, comments? }] }` (max 15). Pre-checks all services & total cost against balance before any provider call. Fires each order sequentially, per-item results returned. Marks orders `source='dashboard_multi'`, `multi_batch=true`. Sends one roll-up email summary.
