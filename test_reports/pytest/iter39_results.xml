@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="6" time="8.440" timestamp="2026-07-26T13:05:45.410883+00:00" hostname="agent-env-75149dea-ebcd-41d3-a0bd-c2723504496b"><testcase classname="backend.tests.test_iteration_39_live_sub_chat" name="test_live_only_offline_create_skips_initial_burst" time="1.520" /><testcase classname="backend.tests.test_iteration_39_live_sub_chat" name="test_live_check_history_stats_and_desc_sort" time="0.047" /><testcase classname="backend.tests.test_iteration_39_live_sub_chat" name="test_cancel_waiting_for_live_subscription" time="0.042"><failure message="AssertionError: {&quot;detail&quot;:&quot;Not found or not active&quot;}&#10;assert 404 == 200&#10; +  where 404 = &lt;Response [404]&gt;.status_code">backend/tests/test_iteration_39_live_sub_chat.py:255: in test_cancel_waiting_for_live_subscription
+    assert response.status_code == 200, response.text
+E   AssertionError: {"detail":"Not found or not active"}
+E   assert 404 == 200
+E    +  where 404 = &lt;Response [404]&gt;.status_code</failure></testcase><testcase classname="backend.tests.test_iteration_39_live_sub_chat" name="test_always_mode_initial_contract_and_no_live_notify" time="0.047" /><testcase classname="backend.tests.test_iteration_39_live_sub_chat" name="test_owner_clear_n_deletes_only_latest_messages" time="0.048"><failure message="AssertionError: assert '#x1F9F9 Chat clear...t 3 messages)' == 'Chat cleared...t 3 messages)'&#10;  &#10;  - Chat cleared by @Balkin (last 3 messages)&#10;  + #x1F9F9 Chat cleared by @Balkin (last 3 messages)&#10;  ? ++">backend/tests/test_iteration_39_live_sub_chat.py:335: in test_owner_clear_n_deletes_only_latest_messages
+    assert system_doc["text"] == f"Chat cleared by @{auth_context['owner']['username']} (last 3 messages)"
+E   AssertionError: assert '#x1F9F9 Chat clear...t 3 messages)' == 'Chat cleared...t 3 messages)'
+E     
+E     - Chat cleared by @Balkin (last 3 messages)
+E     + #x1F9F9 Chat cleared by @Balkin (last 3 messages)
+E     ? ++</failure></testcase><testcase classname="backend.tests.test_iteration_39_live_sub_chat" name="test_betterbot_help_reply_and_cooldown" time="6.540" /></testsuite></testsuites>

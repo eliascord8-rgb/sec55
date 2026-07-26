@@ -2661,6 +2661,117 @@ function BuyStatBox({ label, value, accent }) {
 }
 
 
+function LiveSubRow({ sub, onCancel, authedApi }) {
+  const [checks, setChecks] = useState([]);
+  const [expanded, setExpanded] = useState(false);
+  const [stats, setStats] = useState({ total_checks: 0, was_live: 0, was_offline: 0 });
+  const [loading, setLoading] = useState(false);
+
+  const loadChecks = async () => {
+    setLoading(true);
+    try {
+      const r = await authedApi().get(`/client/live-sub/${sub.id}/checks`);
+      setChecks(r.data.checks || []);
+      setStats(r.data.stats || { total_checks: 0, was_live: 0, was_offline: 0 });
+    } catch { /* keep quiet */ }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => {
+    loadChecks();
+    const int = setInterval(loadChecks, 30000); // refresh every 30s
+    return () => clearInterval(int);
+    // eslint-disable-next-line
+  }, [sub.id]);
+
+  const latest = checks[0];
+  const isOnline = !!latest?.is_live;
+  const statusLabel = sub.status === "waiting_for_live" ? "Waiting for live" : sub.status === "paused" ? "Paused" : "Active";
+  const statusColor = sub.status === "waiting_for_live" ? "text-amber-300" : sub.status === "paused" ? "text-red-300" : "text-emerald-300";
+  const isLiveMode = (sub.mode || "").toLowerCase() === "live_only";
+
+  // Last 30 checks (newest right side)
+  const strip = checks.slice(0, 30).reverse();
+
+  return (
+    <div className="bg-black/40 rounded-sm p-3 text-xs" data-testid={`live-sub-${sub.id}`}>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1.5">
+          <span className={`w-2.5 h-2.5 rounded-full ${isOnline ? "bg-emerald-400" : "bg-red-400"} ${isOnline ? "animate-pulse" : ""}`}
+                title={isOnline ? "Streamer is LIVE" : "Streamer is offline"} />
+          <span className="font-mono text-fuchsia-200">@{sub.tiktok_username}</span>
+        </div>
+        <span className="text-white/60 truncate max-w-[220px]">{sub.service_name}</span>
+        <span className="text-white/50">{sub.quantity_per_burst}/burst</span>
+        <span className="text-emerald-300 font-mono">${(sub.total_spent || 0).toFixed(2)} · {sub.total_bursts || 0} bursts</span>
+        <span className={`text-[10px] uppercase tracking-widest font-bold ${statusColor}`}>{statusLabel}</span>
+        <span className="text-white/40 ml-auto">expires {sub.expires_at ? new Date(sub.expires_at).toLocaleDateString() : "-"}</span>
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          data-testid={`live-sub-history-toggle-${sub.id}`}
+          className="text-[11px] uppercase tracking-widest text-fuchsia-200 hover:text-white font-bold"
+        >
+          {expanded ? "Hide history" : "History"}
+        </button>
+        <button onClick={onCancel} data-testid={`live-sub-cancel-${sub.id}`}
+                className="text-red-300 hover:text-red-200 text-[11px] font-bold uppercase tracking-wider">
+          Cancel
+        </button>
+      </div>
+
+      {/* Compact history strip — always visible */}
+      <div className="mt-2 flex items-center gap-1.5" data-testid={`live-sub-strip-${sub.id}`}>
+        <span className="text-[9px] uppercase tracking-widest text-white/40">Last checks</span>
+        {loading && checks.length === 0 && <Loader2 className="w-3 h-3 animate-spin text-fuchsia-300" />}
+        {!loading && checks.length === 0 && <span className="text-[10px] text-white/40">no checks yet</span>}
+        <div className="flex items-center gap-0.5 flex-wrap">
+          {strip.map((c) => (
+            <span
+              key={c.id}
+              title={`${c.is_live ? "🟢 LIVE" : "🔴 OFFLINE"} · ${new Date(c.checked_at).toLocaleString()}`}
+              className={`w-2 h-2 rounded-full ${c.is_live ? "bg-emerald-400" : "bg-red-400/70"}`}
+            />
+          ))}
+        </div>
+        <span className="ml-2 text-[10px] text-white/40 font-mono">{stats.was_live}✓ / {stats.was_offline}✗</span>
+      </div>
+
+      {/* Expanded table */}
+      {expanded && (
+        <div className="mt-3 bg-black/40 border border-fuchsia-500/20 rounded-sm p-2 max-h-64 overflow-y-auto">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-[10px] uppercase tracking-widest text-white/50">
+              Live-check history ({stats.total_checks} total · {stats.was_live} online · {stats.was_offline} offline)
+            </div>
+            <div className="text-[9px] text-white/40">
+              {isLiveMode ? `Rapid-fire mode · 30 bursts / 2s when live` : `Timer mode · every ${sub.repeat_every_minutes}min`}
+            </div>
+          </div>
+          {checks.length === 0 ? (
+            <div className="text-[11px] text-white/40 text-center py-4">No checks recorded yet — first check runs within 90s.</div>
+          ) : (
+            <div className="space-y-1">
+              {checks.slice(0, 60).map((c) => (
+                <div key={c.id} className="flex items-center gap-2 text-[11px]" data-testid={`live-sub-check-${c.id}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${c.is_live ? "bg-emerald-400" : "bg-red-400"}`} />
+                  <span className={`font-black uppercase tracking-widest text-[9px] w-14 ${c.is_live ? "text-emerald-300" : "text-red-300"}`}>
+                    {c.is_live ? "LIVE" : "OFFLINE"}
+                  </span>
+                  <span className="text-white/50 font-mono text-[10px]">
+                    {new Date(c.checked_at).toLocaleString()}
+                  </span>
+                  {c.note && <span className="text-white/40 text-[10px] truncate">{c.note}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, onGoLive }) {
   const [services, setServices] = useState([]);
   const [loadingSvc, setLoadingSvc] = useState(true);
@@ -3162,27 +3273,17 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
         </div>
       )}
 
-      {mySubs.filter((s) => s.status === "active").length > 0 && (
+      {mySubs.filter((s) => s.status === "active" || s.status === "waiting_for_live").length > 0 && (
         <div className="bg-fuchsia-500/10 border border-fuchsia-500/40 rounded-md p-4" data-testid="live-subs-panel">
           <div className="flex items-center gap-2 mb-3">
             <span className="w-2 h-2 rounded-full bg-fuchsia-400 animate-pulse" />
             <div className="text-[10px] uppercase tracking-widest text-fuchsia-300 font-bold">
-              Auto-Live subscriptions ({mySubs.filter((s) => s.status === "active").length} active)
+              Auto-Live subscriptions ({mySubs.filter((s) => s.status === "active" || s.status === "waiting_for_live").length} active)
             </div>
           </div>
           <div className="space-y-2">
-            {mySubs.filter((s) => s.status === "active").map((s) => (
-              <div key={s.id} className="flex flex-wrap items-center gap-3 bg-black/40 rounded-sm p-3 text-xs" data-testid={`live-sub-${s.id}`}>
-                <span className="font-mono text-fuchsia-200">@{s.tiktok_username}</span>
-                <span className="text-white/60">{s.service_name}</span>
-                <span className="text-white/50">{s.quantity_per_burst}/burst</span>
-                <span className="text-emerald-300 font-mono">${(s.total_spent || 0).toFixed(2)} spent · {s.total_bursts || 0} bursts</span>
-                <span className="text-white/40 ml-auto">expires {s.expires_at ? new Date(s.expires_at).toLocaleDateString() : "-"}</span>
-                <button onClick={() => cancelSub(s.id)} data-testid={`live-sub-cancel-${s.id}`}
-                  className="text-red-300 hover:text-red-200 text-[11px] font-bold uppercase tracking-wider">
-                  Cancel
-                </button>
-              </div>
+            {mySubs.filter((s) => s.status === "active" || s.status === "waiting_for_live").map((s) => (
+              <LiveSubRow key={s.id} sub={s} onCancel={() => cancelSub(s.id)} authedApi={authedApi} />
             ))}
           </div>
         </div>

@@ -2573,6 +2573,11 @@ async def get_theme_pref(user: CurrentUser = Depends(current_user_dep)):
 TIKTOK_CHECK_INTERVAL_SEC = 90          # 90 seconds — how often we PING TikTok live-status
 TIKTOK_ALLOWED_REPEAT_MINUTES = [2, 5, 10, 60]
 LIVE_SUB_ALLOWED_DAYS = [7, 14, 30, 60, 90, 365]
+# When mode=live_only AND target is LIVE, fire up to N rapid-fire bursts per
+# check window, one every LIVE_BURST_INTERVAL_SEC seconds. Cap total spend per
+# window and stops early if balance runs out or target goes offline.
+LIVE_BURST_COUNT = 30                    # max bursts fired while target is live per 90s window
+LIVE_BURST_INTERVAL_SEC = 2              # 2 seconds between bursts
 
 
 async def _is_tiktok_user_live(tt_username: str) -> bool:
@@ -2737,52 +2742,92 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
     }
     await db.live_subscriptions.insert_one(doc.copy())
 
-    # Fire the FIRST order immediately (regardless of live status) so the user
-    # gets a concrete confirmation the subscription is working. The recurring
-    # gate kicks in after this initial burst.
-    try:
-        resp = await place_smm_order(
-            body.service_id,
-            f"https://www.tiktok.com/@{handle}/live",
-            body.quantity_per_burst,
-            provider_id=svc.get("provider_id"),
-        )
-        smm_order_id = resp.get("order")
-        await db.orders.insert_one({
-            "id": str(uuid.uuid4()),
-            "smm_order_id": smm_order_id,
-            "service_id": body.service_id,
-            "service_name": svc.get("custom_name") or svc.get("name") or "",
-            "link": f"https://www.tiktok.com/@{handle}/live",
-            "quantity": body.quantity_per_burst,
-            "charge": charge_per_burst,
-            "customer_email": "",
-            "user_id": user.id,
-            "username": user.username,
-            "payment_method": "balance",
-            "source": "auto_live",
-            "status": "Pending",
-            "created_at": now.isoformat(),
-            "provider_id": svc.get("provider_id"),
-            "subscription_id": doc["id"],
-        })
-        await db.live_subscriptions.update_one(
-            {"id": doc["id"]},
-            {
-                "$set": {"last_burst_at": now.isoformat()},
-                "$inc": {"total_bursts": 1, "total_spent": charge_per_burst},
-            },
-        )
-        doc["last_burst_at"] = now.isoformat()
-        doc["total_bursts"] = 1
-        doc["total_spent"] = charge_per_burst
-        first_order_id = smm_order_id
-    except Exception as e:
-        logger.warning("[livesub] initial burst failed for sub=%s: %s", doc["id"], e)
-        first_order_id = None
+    # Fire the FIRST order right away UNLESS mode=live_only AND target is offline.
+    # This is the fix for "wasting balance when I subscribe while streamer is
+    # not live". We log an initial check either way so history is populated
+    # immediately for every subscription.
+    first_order_id = None
+    should_fire_initial = True
+    if body.mode == "live_only":
+        try:
+            is_live_now = await _is_tiktok_user_live(handle)
+        except Exception as e:
+            logger.warning("[livesub] initial live-check failed for %s: %s — firing anyway", handle, e)
+            is_live_now = True  # fail-open
+        # Log this first check into the history collection
+        try:
+            await db.tiktok_live_checks.insert_one({
+                "id": str(uuid.uuid4()),
+                "sub_id": doc["id"],
+                "user_id": user.id,
+                "username": user.username,
+                "tiktok_username": handle,
+                "is_live": bool(is_live_now),
+                "will_fire": bool(is_live_now),
+                "checked_at": now.isoformat(),
+                "mode": "live_only",
+                "note": "initial check on create",
+            })
+        except Exception:
+            pass
+        if not is_live_now:
+            should_fire_initial = False
+            await db.live_subscriptions.update_one(
+                {"id": doc["id"]},
+                {"$set": {"status": "waiting_for_live", "waiting_since": now.isoformat()}},
+            )
+            doc["status"] = "waiting_for_live"
+
+    if should_fire_initial:
+        try:
+            resp = await place_smm_order(
+                body.service_id,
+                f"https://www.tiktok.com/@{handle}/live",
+                body.quantity_per_burst,
+                provider_id=svc.get("provider_id"),
+            )
+            smm_order_id = resp.get("order")
+            await db.orders.insert_one({
+                "id": str(uuid.uuid4()),
+                "smm_order_id": smm_order_id,
+                "service_id": body.service_id,
+                "service_name": svc.get("custom_name") or svc.get("name") or "",
+                "link": f"https://www.tiktok.com/@{handle}/live",
+                "quantity": body.quantity_per_burst,
+                "charge": charge_per_burst,
+                "customer_email": "",
+                "user_id": user.id,
+                "username": user.username,
+                "payment_method": "balance",
+                "source": "auto_live",
+                "status": "Pending",
+                "created_at": now.isoformat(),
+                "provider_id": svc.get("provider_id"),
+                "subscription_id": doc["id"],
+            })
+            await db.transactions.insert_one({
+                "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+                "amount": -charge_per_burst, "method": "balance", "status": "approved",
+                "type": "live_sub_burst", "note": f"Auto burst @{handle} — {body.quantity_per_burst} (initial)",
+                "live_sub_id": doc["id"], "created_at": now.isoformat(), "approved_at": now.isoformat(),
+            })
+            await db.live_subscriptions.update_one(
+                {"id": doc["id"]},
+                {
+                    "$set": {"last_burst_at": now.isoformat()},
+                    "$inc": {"total_bursts": 1, "total_spent": charge_per_burst},
+                },
+            )
+            doc["last_burst_at"] = now.isoformat()
+            doc["total_bursts"] = 1
+            doc["total_spent"] = charge_per_burst
+            first_order_id = smm_order_id
+        except Exception as e:
+            logger.warning("[livesub] initial burst failed for sub=%s: %s", doc["id"], e)
+            first_order_id = None
 
     doc.pop("_id", None)
-    return {"ok": True, "subscription": doc, "first_order_id": first_order_id}
+    return {"ok": True, "subscription": doc, "first_order_id": first_order_id, "initial_skipped_offline": not should_fire_initial}
 
 
 @client_router.get("/live-sub/my")
@@ -2912,9 +2957,9 @@ async def _live_sub_worker_loop():
                 {"status": "active", "expires_at": {"$lt": now.isoformat()}},
                 {"$set": {"status": "expired", "ended_at": now.isoformat()}},
             )
-            # Then: due for a burst
+            # Then: due for a burst — include both active and waiting_for_live
             due = await db.live_subscriptions.find(
-                {"status": "active", "next_check_at": {"$lte": now.isoformat()}},
+                {"status": {"$in": ["active", "waiting_for_live"]}, "next_check_at": {"$lte": now.isoformat()}},
                 {"_id": 0},
             ).limit(100).to_list(100)
             for sub in due:
@@ -2927,104 +2972,58 @@ async def _live_sub_worker_loop():
         await asyncio.sleep(30)  # loop wakes every 30s; per-sub gate is `next_check_at` (default 60s)
 
 
-async def _process_live_sub_burst(sub: dict):
-    """Fire an SMM order burst per the subscription's schedule.
-    Behaviour by mode:
-      • mode="always" (default) — Strict timer. Fire every `repeat_every_minutes`
-        no matter what TikTok reports. This is what users actually want — the
-        original live-only mode kept silently stopping after streams ended.
-      • mode="live_only" — Legacy. Only fires while TikTok reports the target
-        as currently broadcasting. If detection fails, we FAIL OPEN and still
-        fire (better to over-deliver than to silently pause a paid feature).
-    """
-    now = datetime.now(timezone.utc)
-    # Always reschedule up-front so nothing can get stuck
-    default_next = (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat()
-    await db.live_subscriptions.update_one(
-        {"id": sub["id"]},
-        {"$set": {"last_check_at": now.isoformat(), "next_check_at": default_next}},
-    )
-    repeat_every_sec = int(sub.get("repeat_every_minutes") or 5) * 60
+async def _log_live_check(sub: dict, is_live: bool, note: str = "") -> None:
+    """Append one live-status check row so users see red/green history."""
+    try:
+        await db.tiktok_live_checks.insert_one({
+            "id": str(uuid.uuid4()),
+            "sub_id": sub["id"],
+            "user_id": sub["user_id"],
+            "username": sub.get("username"),
+            "tiktok_username": sub["tiktok_username"],
+            "is_live": bool(is_live),
+            "will_fire": bool(is_live),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "mode": sub.get("mode") or "always",
+            "note": note or None,
+        })
+        # Trim the per-sub log to the latest 500 rows.
+        n = await db.tiktok_live_checks.count_documents({"sub_id": sub["id"]})
+        if n > 500:
+            old = await db.tiktok_live_checks.find(
+                {"sub_id": sub["id"]},
+                {"_id": 0, "id": 1},
+            ).sort("checked_at", 1).limit(n - 500).to_list(n - 500)
+            if old:
+                await db.tiktok_live_checks.delete_many({"id": {"$in": [o["id"] for o in old]}})
+    except Exception as _e:
+        logger.warning("[livesub] failed to log check for sub=%s: %s", sub.get("id"), _e)
 
-    # ---- 1. Gate: has enough time passed since the last burst? ----
-    last_burst_iso = sub.get("last_burst_at")
-    if last_burst_iso:
-        try:
-            last_burst = datetime.fromisoformat(last_burst_iso.replace("Z", "+00:00"))
-            elapsed = (now - last_burst).total_seconds()
-        except Exception:
-            elapsed = repeat_every_sec + 1
-        if elapsed < repeat_every_sec:
-            # Not yet time — quiet skip
-            return
 
-    # ---- 2. Gate: mode-specific check ----
-    mode = (sub.get("mode") or "always").lower()
-    live_state = None  # None = not checked (always mode), True/False for live_only
-    if mode == "live_only":
-        try:
-            live_state = await _is_tiktok_user_live(sub["tiktok_username"])
-        except Exception as e:
-            # Scraping failed — FAIL OPEN, fire anyway. Users would rather see
-            # an over-delivery than a silent pause.
-            logger.warning("[livesub] live check failed for %s (%s) — firing anyway",
-                           sub.get("tiktok_username"), e)
-            live_state = True
-        # Log every check into a small collection so admin can audit
-        try:
-            await db.tiktok_live_checks.insert_one({
-                "id": str(uuid.uuid4()),
-                "sub_id": sub["id"],
-                "user_id": sub["user_id"],
-                "username": sub["username"],
-                "tiktok_username": sub["tiktok_username"],
-                "is_live": bool(live_state),
-                "will_fire": bool(live_state),
-                "checked_at": now.isoformat(),
-                "mode": mode,
-            })
-            # Cap the log at ~10k rows per sub — cheap TTL via id sort trimming
-            n = await db.tiktok_live_checks.count_documents({"sub_id": sub["id"]})
-            if n > 500:
-                old = await db.tiktok_live_checks.find(
-                    {"sub_id": sub["id"]},
-                    {"_id": 0, "id": 1},
-                ).sort("checked_at", 1).limit(n - 500).to_list(n - 500)
-                if old:
-                    await db.tiktok_live_checks.delete_many({"id": {"$in": [o["id"] for o in old]}})
-        except Exception:
-            pass
-        if not live_state:
-            logger.info("[livesub] sub %s @%s is offline — skipping burst", sub["id"], sub.get("tiktok_username"))
-            return
-
-    # ---- 3. Balance check ----
-    balance = await _get_user_balance(sub["user_id"])
+async def _fire_one_burst(sub: dict, link: str, tag: str = "burst") -> bool:
+    """Fire one SMM order, debit balance, persist order row. Returns True on success."""
     charge = float(sub.get("charge_per_burst") or 0)
+    balance = await _get_user_balance(sub["user_id"])
     if balance < charge:
-        # Pause the sub — user will re-fund and can resume by creating a new one
         await db.live_subscriptions.update_one(
-            {"id": sub["id"]}, {"$set": {"status": "paused", "paused_reason": "insufficient_balance", "paused_at": now.isoformat()}}
+            {"id": sub["id"]}, {"$set": {"status": "paused", "paused_reason": "insufficient_balance", "paused_at": datetime.now(timezone.utc).isoformat()}}
         )
-        logger.info("[livesub] sub %s paused — user balance too low", sub["id"])
-        return
-
-    # ---- 4. Place the SMM order ----
-    link = f"https://www.tiktok.com/@{sub['tiktok_username']}/live"
+        logger.info("[livesub] sub %s paused — user balance too low ($%.4f < $%.4f)", sub["id"], balance, charge)
+        return False
     try:
         resp = await place_smm_order(sub["service_id"], link, int(sub["quantity_per_burst"]), provider_id=sub.get("provider_id"))
     except Exception as e:
-        logger.warning("[livesub] provider order failed for sub=%s: %s", sub["id"], e)
-        return
+        logger.warning("[livesub] provider order failed for sub=%s (%s): %s", sub["id"], tag, e)
+        return False
     if not resp.get("order"):
-        logger.warning("[livesub] provider returned no order id for sub=%s: %s", sub["id"], str(resp)[:150])
-        return
-    # ---- 5. Charge + persist the order row ----
+        logger.warning("[livesub] provider returned no order id for sub=%s (%s): %s", sub["id"], tag, str(resp)[:150])
+        return False
+    burst_iso = datetime.now(timezone.utc).isoformat()
     await db.transactions.insert_one({
         "id": str(uuid.uuid4()), "user_id": sub["user_id"], "username": sub["username"],
         "amount": -charge, "method": "balance", "status": "approved",
-        "type": "live_sub_burst", "note": f"Auto burst @{sub['tiktok_username']} — {sub['quantity_per_burst']}",
-        "live_sub_id": sub["id"], "created_at": now.isoformat(), "approved_at": now.isoformat(),
+        "type": "live_sub_burst", "note": f"Auto burst @{sub['tiktok_username']} — {sub['quantity_per_burst']} ({tag})",
+        "live_sub_id": sub["id"], "created_at": burst_iso, "approved_at": burst_iso,
     })
     await db.orders.insert_one({
         "id": str(uuid.uuid4()),
@@ -3040,46 +3039,123 @@ async def _process_live_sub_burst(sub: dict):
         "source": "live_sub",
         "live_sub_id": sub["id"],
         "status": "Pending",
-        "created_at": now.isoformat(),
+        "created_at": burst_iso,
         "provider_id": sub.get("provider_id"),
+        "burst_tag": tag,
     })
     await db.live_subscriptions.update_one(
         {"id": sub["id"]},
         {
-            "$set": {
-                "last_burst_at": now.isoformat(),
-                # Schedule the NEXT check `repeat_every_minutes` from now so
-                # we don't waste cycles polling in between.
-                "next_check_at": (now + timedelta(seconds=repeat_every_sec)).isoformat(),
-            },
+            "$set": {"last_burst_at": burst_iso},
             "$inc": {"total_bursts": 1, "total_spent": charge},
         },
     )
-    # Announce to the public chat as a discreet system message (username masked,
-    # never reveals the buyer). The dashboard polls public-chat, so all users
-    # see a small live indicator on the sidebar — cheap social-proof signal.
-    # We announce on the FIRST worker-triggered burst per sub (i.e. the first
-    # time the target has been detected live after the sub was created).
+    logger.info("[livesub] burst OK sub=%s @%s qty=%s order=%s tag=%s", sub["id"], sub["tiktok_username"], sub["quantity_per_burst"], resp.get("order"), tag)
+    return True
+
+
+async def _process_live_sub_burst(sub: dict):
+    """Fire an SMM order burst per the subscription's schedule.
+
+    Behaviour by mode:
+      • mode="always"    — Strict timer. Fire ONE burst every `repeat_every_minutes`
+                          regardless of live state.  Live status is still checked
+                          + logged so history stays populated.
+      • mode="live_only" — Check TikTok live status. If OFFLINE, skip and just
+                          log a red check. If LIVE, fire up to LIVE_BURST_COUNT
+                          orders spaced LIVE_BURST_INTERVAL_SEC seconds apart in
+                          the same check window (rapid fire).
+    """
+    now = datetime.now(timezone.utc)
+    default_next = (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat()
+    await db.live_subscriptions.update_one(
+        {"id": sub["id"]},
+        {"$set": {"last_check_at": now.isoformat(), "next_check_at": default_next}},
+    )
+
+    mode = (sub.get("mode") or "always").lower()
+    link = f"https://www.tiktok.com/@{sub['tiktok_username']}/live"
+
+    # === ALWAYS mode ===================================================
+    if mode == "always":
+        # Log the live-state read anyway so history shows red/green markers.
+        try:
+            is_live_now = await _is_tiktok_user_live(sub["tiktok_username"])
+        except Exception:
+            is_live_now = True
+        await _log_live_check(sub, is_live_now, note="always mode (fires anyway)")
+
+        # Strict schedule gate: has enough time passed since last burst?
+        repeat_every_sec = int(sub.get("repeat_every_minutes") or 5) * 60
+        last_burst_iso = sub.get("last_burst_at")
+        if last_burst_iso:
+            try:
+                last_burst = datetime.fromisoformat(last_burst_iso.replace("Z", "+00:00"))
+                if (now - last_burst).total_seconds() < repeat_every_sec:
+                    return  # not yet time
+            except Exception:
+                pass
+        ok = await _fire_one_burst(sub, link, tag="always_timer")
+        if ok:
+            await db.live_subscriptions.update_one(
+                {"id": sub["id"]},
+                {"$set": {"next_check_at": (datetime.now(timezone.utc) + timedelta(seconds=repeat_every_sec)).isoformat()}},
+            )
+        return
+
+    # === LIVE_ONLY mode ================================================
+    # Check TikTok live status. If offline → log red check, skip. If live → rapid-fire.
     try:
-        masked_buyer = _mask_username(sub.get("username") or "")
-        # `sub` was fetched BEFORE this burst's increment. total_bursts == 1
-        # means the create-time initial burst has already happened but this
-        # is the first live-detected refill.
-        already_announced = bool(sub.get("live_notified"))
-        if not already_announced:
-            await db.public_chat.insert_one({
-                "id": str(uuid.uuid4()),
-                "user_id": None,
-                "username": "BetterSocial",
-                "role": "system",
-                "text": f"🔴 A creator just went live — @{masked_buyer} boosted them automatically",
-                "kind": "live_notify",
-                "created_at": now.isoformat(),
-            })
-            await db.live_subscriptions.update_one({"id": sub["id"]}, {"$set": {"live_notified": True}})
-    except Exception:
-        pass
-    logger.info("[livesub] burst OK sub=%s @%s qty=%s order=%s", sub["id"], sub["tiktok_username"], sub["quantity_per_burst"], resp.get("order"))
+        is_live_now = await _is_tiktok_user_live(sub["tiktok_username"])
+    except Exception as e:
+        logger.warning("[livesub] live check failed for %s (%s) — firing anyway",
+                       sub.get("tiktok_username"), e)
+        is_live_now = True  # fail-open
+    await _log_live_check(sub, is_live_now, note="periodic live_only check")
+
+    if not is_live_now:
+        # Streamer offline — no burst. If sub was 'waiting_for_live' keep waiting,
+        # otherwise flip active→waiting_for_live so the UI shows the offline dot.
+        if sub.get("status") == "active":
+            await db.live_subscriptions.update_one(
+                {"id": sub["id"]}, {"$set": {"status": "waiting_for_live", "waiting_since": now.isoformat()}}
+            )
+        logger.info("[livesub] sub %s @%s is offline — skipping burst", sub["id"], sub.get("tiktok_username"))
+        return
+
+    # Streamer is live! Flip status back to active if we were waiting.
+    if sub.get("status") == "waiting_for_live":
+        await db.live_subscriptions.update_one(
+            {"id": sub["id"]}, {"$set": {"status": "active"}, "$unset": {"waiting_since": ""}}
+        )
+
+    # Rapid-fire up to LIVE_BURST_COUNT orders, spaced LIVE_BURST_INTERVAL_SEC seconds apart.
+    # Spot-check TikTok every 10 bursts so we stop the moment the stream ends.
+    fired = 0
+    for i in range(LIVE_BURST_COUNT):
+        # Refresh sub doc every 10 bursts to catch balance-based pauses / cancellations
+        if i > 0 and i % 10 == 0:
+            fresh = await db.live_subscriptions.find_one({"id": sub["id"]}, {"_id": 0})
+            if not fresh or fresh.get("status") in ("cancelled", "expired", "paused"):
+                logger.info("[livesub] rapid-fire aborted (sub=%s status=%s)", sub["id"], (fresh or {}).get("status"))
+                break
+            # Re-verify still live
+            try:
+                still_live = await _is_tiktok_user_live(sub["tiktok_username"])
+            except Exception:
+                still_live = True
+            await _log_live_check(sub, still_live, note=f"rapid-fire spot-check @ burst #{i}")
+            if not still_live:
+                logger.info("[livesub] rapid-fire stopped — streamer went offline mid-window (sub=%s)", sub["id"])
+                break
+        ok = await _fire_one_burst(sub, link, tag=f"live_burst_{i+1}")
+        if not ok:
+            break
+        fired += 1
+        # Sleep between bursts (skip after last one)
+        if i < LIVE_BURST_COUNT - 1:
+            await asyncio.sleep(LIVE_BURST_INTERVAL_SEC)
+    logger.info("[livesub] rapid-fire window complete for sub=%s @%s — fired %s/%s bursts", sub["id"], sub.get("tiktok_username"), fired, LIVE_BURST_COUNT)
 
 
 @app.on_event("startup")
@@ -3854,10 +3930,21 @@ async def public_chat_send(payload: PublicChatMessage, user: CurrentUser = Depen
             )
 
         if cmd == "/clear":
-            r = await db.public_chat.delete_many({})
+            # /clear         → delete every message in the room
+            # /clear <N>     → delete the latest N messages only (1..1000)
+            n_arg = parts[1] if len(parts) >= 2 else None
+            if n_arg and n_arg.isdigit():
+                n = max(1, min(1000, int(n_arg)))
+                # Grab the ids of the last N messages ordered by created_at DESC
+                ids = [d["id"] for d in await db.public_chat.find({}, {"_id": 0, "id": 1}).sort("created_at", -1).limit(n).to_list(n)]
+                r = await db.public_chat.delete_many({"id": {"$in": ids}})
+                label = f"last {r.deleted_count} messages"
+            else:
+                r = await db.public_chat.delete_many({})
+                label = f"{r.deleted_count} messages"
             await db.public_chat.insert_one({
                 "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
-                "role": role, "text": f"🧹 Chat cleared by @{user.username} ({r.deleted_count} messages)",
+                "role": role, "text": f"🧹 Chat cleared by @{user.username} ({label})",
                 "kind": "system", "created_at": datetime.now(timezone.utc).isoformat(),
             })
             return {"ok": True, "command": "clear", "deleted": r.deleted_count}
@@ -3937,6 +4024,42 @@ async def public_chat_send(payload: PublicChatMessage, user: CurrentUser = Depen
         await _award_chat_xp(user.id, 3)
     except Exception as _e:
         logger.warning(f"[xp] award failed for {user.id}: {_e}")
+
+    # ---- Auto-moderation reply bot ----
+    # If the user's message hints at needing help / support / contact, drop a
+    # friendly system reply pointing them at Live Chat + Ticket. Runs at most
+    # once every 5 minutes per user so we don't spam the room.
+    try:
+        text_low = text.lower()
+        HELP_KEYWORDS = ("help", "support", "contact", "how do i", "how can i", "problem", "issue", "not working", "stuck", "please help", "assistance", "@admin", "@owner", "@staff")
+        if any(kw in text_low for kw in HELP_KEYWORDS):
+            last_bot = await db.public_chat.find_one(
+                {"kind": "bot_help", "reply_to_user_id": user.id},
+                sort=[("created_at", -1)],
+                projection={"created_at": 1},
+            )
+            fresh = True
+            if last_bot and last_bot.get("created_at"):
+                try:
+                    gap = (datetime.now(timezone.utc) - datetime.fromisoformat(last_bot["created_at"])).total_seconds()
+                    if gap < 300:  # 5 minute cooldown per user
+                        fresh = False
+                except Exception:
+                    pass
+            if fresh:
+                await db.public_chat.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "user_id": None,
+                    "username": "BetterBot",
+                    "role": "system",
+                    "text": f"👋 Hey @{user.username} — need a hand? Reach us any time via the 💬 Live Chat widget (bottom-right) or open a 🎟️ Ticket from Help → Contact. A human staff member replies fast.",
+                    "kind": "bot_help",
+                    "reply_to_user_id": user.id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                })
+    except Exception as _e:
+        logger.warning(f"[bot_help] auto-reply failed: {_e}")
+
     if (await db.public_chat.estimated_document_count()) > 600:
         cutoff = await db.public_chat.find({}, {"_id": 0, "created_at": 1}).sort("created_at", -1).skip(500).limit(1).to_list(1)
         if cutoff:

@@ -1,0 +1,67 @@
+{
+  "summary": "Iteration 39 focused backend/UI testing completed against the public URL. Backend passed 4/6 requested flows: offline live_only creation correctly skipped the provider, preserved balance, logged the initial red check, and returned waiting_for_live; history stats/sort passed; always mode retained initial-fire semantics without live_notify rows; BetterBot inserted one help reply and respected its five-minute cooldown. Two contract regressions remain: waiting_for_live cancellation returns 404, and /clear 3 prefixes the required system text with an emoji. LiveSubRow rendered status, strip, toggle, and audit history, but the status dot title is not the requested exact LIVE/offline value.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/client/live-sub/{sid}/cancel",
+        "issue": "A real live_only subscription created offline has status waiting_for_live, but cancel returns HTTP 404 'Not found or not active' instead of cancelling it.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/public-chat/send (/clear N)",
+        "issue": "The command correctly deletes only the latest N rows and inserts one audit row, but text is '🧹 Chat cleared by @Balkin (last 3 messages)' instead of the specified exact 'Chat cleared by @Balkin (last 3 messages)'."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "LiveSubRow status dot",
+        "issue": "Offline dot title is 'Streamer is offline' (and live is 'Streamer is LIVE') rather than the requested exact title 'offline' / 'LIVE'.",
+        "selector": "[data-testid^='live-sub-'] span[title*='Streamer is']",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Cancel waiting Auto-Live subscription",
+        "issue": "The UI exposes Cancel for waiting_for_live rows, but the backend only matches status active, so clicking it would receive 404.",
+        "affected_selectors": ["[data-testid^='live-sub-cancel-']"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_39_live_sub_chat.py",
+    "/app/test_reports/pytest/iter39_results.xml"
+  ],
+  "action_items": [
+    "Update live_sub_cancel to match both active and waiting_for_live statuses, then verify persistence as cancelled.",
+    "Remove the leading broom emoji from the /clear N system audit text if exact response copy is required.",
+    "Set the LiveSubRow status-dot title to exact 'LIVE' or 'offline'.",
+    "Retest the focused iteration 39 suite and UI cancel flow after fixes."
+  ],
+  "critical_code_review_comments": [
+    "server.py:2939-2941 filters cancellation by status='active' even though creation now deliberately produces waiting_for_live; this is the direct RCA for the 404 regression.",
+    "server.py:3947 hardcodes the broom emoji before the required /clear audit text.",
+    "ClientDashboard.jsx:2701 uses descriptive status titles instead of the stated exact title contract.",
+    "The initial live_only detector paths fail open on unexpected exceptions (server.py:2754-2756 and 3110-3113), which can still spend money during a detector exception despite the stated goal that an uncertain/offline state must not waste provider balance; consider fail-closed for live_only.",
+    "server.py (7,390 lines) and ClientDashboard.jsx (4,586 lines) remain far above the 700-line maintainability threshold. Frontend lint reports 39 pre-existing errors/warnings; the new LiveSubRow also silently swallows check-load errors, leaving users with no visible error state."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_39_live_sub_chat.py",
+    "/app/backend/tests/seed_iter39_ui.py",
+    "/app/test_reports/iteration_39.json"
+  ],
+  "success_rate": {
+    "backend": "66.7% (4/6 focused tests passed)",
+    "frontend": "85% of focused assertions passed; row/status/strip/toggle/history passed, exact title and cancel integration failed"
+  },
+  "seed_data_creation": "Created a temporary automated TikTok Live service, offline live_only and always subscriptions, synthetic history checks, five chat rows, and help messages. Backend fixtures cleaned their records. Created and then removed one synthetic waiting_for_live UI subscription with three checks. No successful SMM provider order was placed; the always-mode provider attempt used a deliberately missing provider.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run only /app/backend/tests/test_iteration_39_live_sub_chat.py. The last JUnit contains 4 passes and 2 failures. Note that the /clear failure is exact-copy only; deletion count and count delta passed. BetterBot first reply, GET visibility, and cooldown passed. UI was verified with a temporary seeded row, which was removed. The seed helper remains only to reproduce UI history if needed.",
+  "rca_of_the_issue": "Cancellation regression is caused by a stale Mongo filter restricted to status active after creation introduced waiting_for_live. The /clear copy mismatch and status-dot title mismatch are hardcoded string differences. The first interactive modal login attempt failed because the CAPTCHA locator's inner text omitted the answer input value in automation; API login with the same supplied credential succeeded and was used for UI verification."
+}
