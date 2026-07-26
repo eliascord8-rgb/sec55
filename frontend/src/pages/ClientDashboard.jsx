@@ -2667,9 +2667,10 @@ function LiveSubRow({ sub, onCancel, authedApi }) {
   const statusLabel = sub.status === "waiting_for_live"
     ? (hasChecks ? "Streamer offline — waiting" : "Waiting for first check")
     : sub.status === "paused" ? "Paused"
+    : sub.status === "refunded" ? "Refunded"
     : hasChecks && isOnline ? "🔴 LIVE — boosting"
     : "Active";
-  const statusColor = sub.status === "paused"
+  const statusColor = sub.status === "paused" || sub.status === "refunded"
     ? "text-red-300"
     : hasChecks && !isOnline
     ? "text-red-300"
@@ -2723,8 +2724,13 @@ function LiveSubRow({ sub, onCancel, authedApi }) {
       {/* Meta row — countdown + mode */}
       <div className="mt-2 flex items-center gap-3 flex-wrap text-[10px]">
         <span className="uppercase tracking-widest text-white/40">
-          {isLiveMode ? "Live-only · rapid-fire 30×/2s when live" : `Timer · every ${sub.repeat_every_minutes || 5}min`}
+          {isLiveMode ? `Live-only · every ${sub.repeat_every_minutes || 5}min while live + instant on re-live` : `Timer · every ${sub.repeat_every_minutes || 5}min`}
         </span>
+        {sub.status === "refunded" && (
+          <span className="uppercase tracking-widest text-red-300/80" data-testid={`live-sub-refund-reason-${sub.id}`}>
+            Refunded ${(sub.refund_amount || 0).toFixed(2)} — {sub.refund_reason || "not live within 5 minutes"}
+          </span>
+        )}
         <span className="uppercase tracking-widest text-white/40 flex items-center gap-1">
           <RefreshCw className="w-3 h-3" />
           {nextCheckIn == null ? "Next check —" : nextCheckIn <= 0 ? "Next check now…" : `Next check in ${nextCheckIn}s`}
@@ -3568,7 +3574,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                     <span className={`w-2 h-2 rounded-full ${subFireMode === "live_only" ? "bg-amber-400 animate-pulse" : "bg-white/30"}`} />
                     <span className="font-bold text-xs uppercase tracking-wider text-white">Only when live</span>
                   </div>
-                  <div className="text-[10px] text-white/50 leading-relaxed">Only fires while target is broadcasting.</div>
+                  <div className="text-[10px] text-white/50 leading-relaxed">Fires only while live: instant order on every re-live + every {subRepeatMins} min while live. Auto-refund if not live within 5 min.</div>
                 </button>
               </div>
 

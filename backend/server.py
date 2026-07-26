@@ -2573,55 +2573,49 @@ async def get_theme_pref(user: CurrentUser = Depends(current_user_dep)):
 TIKTOK_CHECK_INTERVAL_SEC = 45          # 45 seconds — how often we PING TikTok live-status
 TIKTOK_ALLOWED_REPEAT_MINUTES = [2, 5, 10, 60]
 LIVE_SUB_ALLOWED_DAYS = [7, 14, 30, 60, 90, 365]
-# When mode=live_only AND target is LIVE, fire up to N rapid-fire bursts per
-# check window, one every LIVE_BURST_INTERVAL_SEC seconds. Cap total spend per
-# window and stops early if balance runs out or target goes offline.
-LIVE_BURST_COUNT = 30                    # max bursts fired while target is live per check window
-LIVE_BURST_INTERVAL_SEC = 2              # 2 seconds between bursts
+# When mode=live_only AND target is LIVE: fire instantly on every offline→live
+# transition, then one order per `repeat_every_minutes` while they stay live.
+# If the target never goes live within 5 minutes of ordering → cancel + refund.
 
 
-async def _tt_probe_webcast(handle: str, headers: dict) -> Optional[bool]:
-    """Probe TikTok webcast/room/info_by_scene. Returns True/False if we have a
-    definitive answer, or None if the probe couldn't decide (network/parse fail).
-    Returning None lets the caller fall back to the HTML signal instead of
-    prematurely locking in a False.
+async def _tt_probe_apilive(handle: str, headers: dict) -> Optional[bool]:
+    """Probe TikTok's api-live/user/room endpoint (the one the official web
+    player uses). user.status == 2 means LIVE, 4 means offline/ended.
+    Returns True/False when definitive, None when the probe couldn't decide.
     """
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as c:
-            wc = await c.get(
-                "https://webcast.tiktok.com/webcast/room/info_by_scene/",
-                params={"aid": "1988", "unique_id": handle, "scene": "9999"},
+            r = await c.get(
+                "https://www.tiktok.com/api-live/user/room/",
+                params={"aid": "1988", "sourceType": "54", "uniqueId": handle},
                 headers=headers,
             )
     except Exception as e:
-        logger.debug("[livesub] webcast probe network error for %s: %s", handle, e)
+        logger.debug("[livesub] api-live probe network error for %s: %s", handle, e)
         return None
-    if wc.status_code != 200:
+    if r.status_code != 200:
         return None
     try:
-        data = wc.json()
+        data = r.json()
     except Exception:
+        return None
+    try:
+        if int(data.get("statusCode") or 0) != 0:
+            return None
+    except (TypeError, ValueError):
         return None
     inner = (data or {}).get("data") or {}
     user = inner.get("user") or {}
-    room = inner.get("room") or {}
-    live_room = inner.get("liveRoomInfo") or {}
-    if isinstance(user, dict) and int(user.get("status") or 0) == 2:
-        return True
-    if isinstance(room, dict) and int(room.get("status") or 0) == 2:
-        return True
-    if isinstance(live_room, dict):
-        room_id = live_room.get("liveRoomId") or live_room.get("room_id")
-        try:
-            if room_id and int(str(room_id).strip("\"'")) > 0:
-                if int(live_room.get("status") or 0) == 2:
-                    return True
-        except (TypeError, ValueError):
-            pass
-    # NOTE: we return False only when we have a positive-shaped response with
-    # NO live markers. Empty `data:{}` shape also lands here — that's the
-    # ambiguous "no room info" state which is fine to treat as False.
-    return False
+    live_room = inner.get("liveRoom") or {}
+    st = user.get("status") if isinstance(user, dict) else None
+    if st is None and isinstance(live_room, dict):
+        st = live_room.get("status")
+    if st is None:
+        return None
+    try:
+        return int(st) == 2
+    except (TypeError, ValueError):
+        return None
 
 
 async def _tt_probe_html(handle: str, headers: dict) -> Optional[bool]:
@@ -2655,12 +2649,12 @@ async def _tt_probe_html(handle: str, headers: dict) -> Optional[bool]:
 async def _is_tiktok_user_live(tt_username: str) -> bool:
     """Robust check whether a TikTok user is currently broadcasting live.
 
-    We now query BOTH the webcast API and the HTML page in parallel. TikTok's
-    webcast endpoint sometimes returns cached "old room" data for up to 2
-    minutes after a re-live event, which caused the previous single-signal
-    version to miss the re-live and never resume boosts. If EITHER signal is
-    positive we treat the user as live. Only when BOTH agree "offline" (or one
-    is offline and the other returned None) do we call them offline.
+    Primary signal: TikTok's api-live/user/room JSON endpoint (user.status
+    2 = live, 4 = offline). This is what the web player itself uses and is
+    authoritative. The old webcast/info_by_scene endpoint was retired by
+    TikTok (now returns status_code 10013 "Url does not match") which caused
+    every check to report OFFLINE. HTML scraping remains as fallback only
+    when the JSON probe can't decide (network/blocked).
     """
     handle = tt_username.strip().lstrip("@")
     if not handle:
@@ -2670,15 +2664,17 @@ async def _is_tiktok_user_live(tt_username: str) -> bool:
         "Accept-Language": "en-US,en;q=0.9",
         "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
     }
-    wc_res, html_res = await asyncio.gather(
-        _tt_probe_webcast(handle, headers),
+    api_res, html_res = await asyncio.gather(
+        _tt_probe_apilive(handle, headers),
         _tt_probe_html(handle, headers),
         return_exceptions=False,
     )
-    if wc_res is True or html_res is True:
-        return True
-    # If BOTH probes failed (None from network errors), fail-closed as offline —
-    # the worker already has its own try/except that fails-open on total exceptions.
+    if api_res is not None:
+        return api_res
+    if html_res is not None:
+        return html_res
+    # Both probes failed (network errors) — fail-closed as offline; the
+    # live_only worker holds the previous known state on total failure.
     return False
 
 
@@ -2752,6 +2748,8 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
         "status": "active",
         "total_bursts": 0,
         "total_spent": 0.0,
+        "ever_live": False,
+        "last_live_state": None,
         "created_at": now.isoformat(),
     }
     await db.live_subscriptions.insert_one(doc.copy())
@@ -2788,9 +2786,15 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
             should_fire_initial = False
             await db.live_subscriptions.update_one(
                 {"id": doc["id"]},
-                {"$set": {"status": "waiting_for_live", "waiting_since": now.isoformat()}},
+                {"$set": {"status": "waiting_for_live", "waiting_since": now.isoformat(), "last_live_state": False}},
             )
             doc["status"] = "waiting_for_live"
+        else:
+            await db.live_subscriptions.update_one(
+                {"id": doc["id"]}, {"$set": {"ever_live": True, "last_live_state": True}}
+            )
+            doc["ever_live"] = True
+            doc["last_live_state"] = True
 
     if should_fire_initial:
         try:
@@ -2986,7 +2990,7 @@ async def _live_sub_worker_loop():
         await asyncio.sleep(30)  # loop wakes every 30s; per-sub gate is `next_check_at` (default 60s)
 
 
-async def _log_live_check(sub: dict, is_live: bool, note: str = "") -> None:
+async def _log_live_check(sub: dict, is_live: bool, note: str = "", will_fire: Optional[bool] = None) -> None:
     """Append one live-status check row so users see red/green history."""
     try:
         await db.tiktok_live_checks.insert_one({
@@ -2996,7 +3000,7 @@ async def _log_live_check(sub: dict, is_live: bool, note: str = "") -> None:
             "username": sub.get("username"),
             "tiktok_username": sub["tiktok_username"],
             "is_live": bool(is_live),
-            "will_fire": bool(is_live),
+            "will_fire": bool(is_live) if will_fire is None else bool(will_fire),
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "mode": sub.get("mode") or "always",
             "note": note or None,
@@ -3012,6 +3016,48 @@ async def _log_live_check(sub: dict, is_live: bool, note: str = "") -> None:
                 await db.tiktok_live_checks.delete_many({"id": {"$in": [o["id"] for o in old]}})
     except Exception as _e:
         logger.warning("[livesub] failed to log check for sub=%s: %s", sub.get("id"), _e)
+
+
+LIVE_SUB_NEVER_LIVE_REFUND_SEC = 300     # cancel + refund if never live within 5 min of ordering
+
+
+async def _refund_and_cancel_live_sub(sub: dict, reason: str) -> None:
+    """Cancel a live_only sub, refund everything spent back to balance, email the user."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    spent = round(float(sub.get("total_spent") or 0), 4)
+    if spent > 0:
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()), "user_id": sub["user_id"], "username": sub.get("username"),
+            "amount": spent, "method": "balance", "status": "approved",
+            "type": "live_sub_refund", "note": f"Auto-Live refund @{sub['tiktok_username']} — {reason}",
+            "live_sub_id": sub["id"], "created_at": now_iso, "approved_at": now_iso,
+        })
+    await db.live_subscriptions.update_one(
+        {"id": sub["id"]},
+        {"$set": {"status": "refunded", "ended_at": now_iso, "refund_reason": reason, "refund_amount": spent}},
+    )
+    await _log_live_check(sub, False, note=f"cancelled & refunded ${spent:.2f} — {reason}", will_fire=False)
+    logger.info("[livesub] sub %s cancelled+refunded $%.4f — %s", sub["id"], spent, reason)
+    try:
+        u = await db.users.find_one({"id": sub["user_id"]}, {"_id": 0, "email": 1, "username": 1})
+        if u and u.get("email"):
+            from email_service import send_email, _wrap
+            amount_line = (
+                f"<p><b>${spent:.2f}</b> has been refunded to your account balance.</p>"
+                if spent > 0 else "<p>No balance was charged, so there is nothing to refund.</p>"
+            )
+            html = _wrap(
+                f"<h2 style='margin-top:0;'>Auto-Live order refunded</h2>"
+                f"<p>Hi {u.get('username') or ''},</p>"
+                f"<p>Your Auto-Live order for <b>@{sub['tiktok_username']}</b> "
+                f"({sub.get('service_name') or 'TikTok Live service'}) was cancelled.</p>"
+                f"<p><b>Reason:</b> {reason}</p>"
+                f"{amount_line}"
+                f"<p>You can start a new Auto-Live order any time once the streamer is broadcasting.</p>"
+            )
+            await send_email(db, u["email"], "Better Social — Auto-Live order refunded", html)
+    except Exception as e:
+        logger.warning("[livesub] refund email failed for sub=%s: %s", sub["id"], e)
 
 
 async def _fire_one_burst(sub: dict, link: str, tag: str = "burst") -> bool:
@@ -3075,10 +3121,10 @@ async def _process_live_sub_burst(sub: dict):
       • mode="always"    — Strict timer. Fire ONE burst every `repeat_every_minutes`
                           regardless of live state.  Live status is still checked
                           + logged so history stays populated.
-      • mode="live_only" — Check TikTok live status. If OFFLINE, skip and just
-                          log a red check. If LIVE, fire up to LIVE_BURST_COUNT
-                          orders spaced LIVE_BURST_INTERVAL_SEC seconds apart in
-                          the same check window (rapid fire).
+      • mode="live_only" — Check TikTok live status. OFFLINE → skip + log red
+                          check (cancel+refund if never live within 5 min).
+                          LIVE → instant order on every re-live transition,
+                          then one order per repeat interval while live.
     """
     now = datetime.now(timezone.utc)
     default_next = (now + timedelta(seconds=TIKTOK_CHECK_INTERVAL_SEC)).isoformat()
@@ -3118,58 +3164,75 @@ async def _process_live_sub_burst(sub: dict):
         return
 
     # === LIVE_ONLY mode ================================================
-    # Check TikTok live status. If offline → log red check, skip. If live → rapid-fire.
+    # OFFLINE → never fire, log a red check. If the sub has NEVER been live
+    #           and 5 minutes passed since ordering → cancel + refund + email.
+    # LIVE    → fire immediately on every offline→live transition, then one
+    #           order per `repeat_every_minutes` while they stay live.
+    was_live = bool(sub.get("last_live_state"))
     try:
         is_live_now = await _is_tiktok_user_live(sub["tiktok_username"])
     except Exception as e:
-        logger.warning("[livesub] live check failed for %s (%s) — firing anyway",
+        logger.warning("[livesub] live check failed for %s (%s) — holding previous state",
                        sub.get("tiktok_username"), e)
-        is_live_now = True  # fail-open
-    await _log_live_check(sub, is_live_now, note="periodic live_only check")
+        is_live_now = was_live  # hold last known state, never fire blind
 
     if not is_live_now:
-        # Streamer offline — no burst. If sub was 'waiting_for_live' keep waiting,
-        # otherwise flip active→waiting_for_live so the UI shows the offline dot.
+        await _log_live_check(sub, False, note="offline — no order sent", will_fire=False)
+        updates = {"last_live_state": False}
         if sub.get("status") == "active":
-            await db.live_subscriptions.update_one(
-                {"id": sub["id"]}, {"$set": {"status": "waiting_for_live", "waiting_since": now.isoformat()}}
-            )
-        logger.info("[livesub] sub %s @%s is offline — skipping burst", sub["id"], sub.get("tiktok_username"))
+            updates["status"] = "waiting_for_live"
+            updates["waiting_since"] = now.isoformat()
+        await db.live_subscriptions.update_one({"id": sub["id"]}, {"$set": updates})
+        # 5-minute never-live refund window
+        never_live = not sub.get("ever_live") and not sub.get("last_burst_at")
+        if never_live:
+            try:
+                created = datetime.fromisoformat(str(sub.get("created_at")).replace("Z", "+00:00"))
+            except Exception:
+                created = now
+            if (now - created).total_seconds() >= LIVE_SUB_NEVER_LIVE_REFUND_SEC:
+                fresh = await db.live_subscriptions.find_one({"id": sub["id"]}, {"_id": 0})
+                await _refund_and_cancel_live_sub(
+                    fresh or sub,
+                    reason="The TikTok account did not go live within 5 minutes of your order",
+                )
+        else:
+            logger.info("[livesub] sub %s @%s is offline — waiting for re-live", sub["id"], sub.get("tiktok_username"))
         return
 
-    # Streamer is live! Flip status back to active if we were waiting.
-    if sub.get("status") == "waiting_for_live":
-        await db.live_subscriptions.update_one(
-            {"id": sub["id"]}, {"$set": {"status": "active"}, "$unset": {"waiting_since": ""}}
-        )
-
-    # Rapid-fire up to LIVE_BURST_COUNT orders, spaced LIVE_BURST_INTERVAL_SEC seconds apart.
-    # Spot-check TikTok every 10 bursts so we stop the moment the stream ends.
-    fired = 0
-    for i in range(LIVE_BURST_COUNT):
-        # Refresh sub doc every 10 bursts to catch balance-based pauses / cancellations
-        if i > 0 and i % 10 == 0:
-            fresh = await db.live_subscriptions.find_one({"id": sub["id"]}, {"_id": 0})
-            if not fresh or fresh.get("status") in ("cancelled", "expired", "paused"):
-                logger.info("[livesub] rapid-fire aborted (sub=%s status=%s)", sub["id"], (fresh or {}).get("status"))
-                break
-            # Re-verify still live
+    # Streamer is LIVE.
+    just_came_online = (not was_live) or sub.get("status") == "waiting_for_live"
+    fire_tag = None
+    if just_came_online:
+        fire_tag = "re_live"
+    else:
+        repeat_every_sec = int(sub.get("repeat_every_minutes") or 5) * 60
+        last_burst_iso = sub.get("last_burst_at")
+        due = True
+        if last_burst_iso:
             try:
-                still_live = await _is_tiktok_user_live(sub["tiktok_username"])
+                last_burst = datetime.fromisoformat(last_burst_iso.replace("Z", "+00:00"))
+                due = (now - last_burst).total_seconds() >= repeat_every_sec
             except Exception:
-                still_live = True
-            await _log_live_check(sub, still_live, note=f"rapid-fire spot-check @ burst #{i}")
-            if not still_live:
-                logger.info("[livesub] rapid-fire stopped — streamer went offline mid-window (sub=%s)", sub["id"])
-                break
-        ok = await _fire_one_burst(sub, link, tag=f"live_burst_{i+1}")
-        if not ok:
-            break
-        fired += 1
-        # Sleep between bursts (skip after last one)
-        if i < LIVE_BURST_COUNT - 1:
-            await asyncio.sleep(LIVE_BURST_INTERVAL_SEC)
-    logger.info("[livesub] rapid-fire window complete for sub=%s @%s — fired %s/%s bursts", sub["id"], sub.get("tiktok_username"), fired, LIVE_BURST_COUNT)
+                pass
+        if due:
+            fire_tag = "live_interval"
+
+    note = (
+        "LIVE (just came online) — order sent" if fire_tag == "re_live"
+        else "LIVE — interval order sent" if fire_tag == "live_interval"
+        else "LIVE — waiting for next interval"
+    )
+    await _log_live_check(sub, True, note=note, will_fire=bool(fire_tag))
+    await db.live_subscriptions.update_one(
+        {"id": sub["id"]},
+        {"$set": {"status": "active", "last_live_state": True, "ever_live": True},
+         "$unset": {"waiting_since": ""}},
+    )
+    if fire_tag:
+        ok = await _fire_one_burst(sub, link, tag=fire_tag)
+        if ok:
+            logger.info("[livesub] sub %s @%s fired burst (%s)", sub["id"], sub.get("tiktok_username"), fire_tag)
 
 
 @app.on_event("startup")
@@ -3183,6 +3246,21 @@ async def _start_live_sub_worker():
     # Monthly chat cleanup — hourly worker that trims public_chat, ai_chat_messages
     # and direct_messages older than 30 days.
     asyncio.create_task(_chat_retention_loop())
+    # Auto-restart the Discord bot if it was running before the last reload.
+    asyncio.create_task(_discord_bot_autostart())
+
+
+async def _discord_bot_autostart():
+    try:
+        await asyncio.sleep(3)
+        cfg = await db.discord_config.find_one({}, {"_id": 0}) or {}
+        if cfg.get("auto_start") and (cfg.get("bot_token") or "").strip():
+            from discord_bot import bot_manager as _bm
+            words = [w.strip() for w in (cfg.get("banned_words") or "").split(",") if w.strip()]
+            await _bm.start(db, cfg["bot_token"].strip(), activity_text=cfg.get("activity_text") or "", banned_words=words)
+            logger.info("[discord] auto-started bot after reload")
+    except Exception as e:
+        logger.warning("[discord] autostart failed: %s", e)
 
 
 async def _chat_retention_loop():
@@ -3898,6 +3976,185 @@ async def admin_set_nowpayments_config(payload: NowpaymentsConfig, x_admin_token
         upd["password"] = payload.password  # stored as-is; used only server-side for JWT exchange
     await db.nowpayments_config.update_one({"_id": "singleton"}, {"$set": upd}, upsert=True)
     return {"configured": True}
+
+
+# ============ ADMIN ALERTS (underpaid deposits etc.) ============
+
+@api_router.get("/admin/alerts")
+async def admin_list_alerts(status: str = "open", x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    q = {"status": status} if status != "all" else {}
+    cur = db.admin_alerts.find(q, {"_id": 0}).sort("created_at", -1).limit(100)
+    return {"alerts": await cur.to_list(100)}
+
+
+@api_router.post("/admin/alerts/{aid}/dismiss")
+async def admin_dismiss_alert(aid: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    r = await db.admin_alerts.update_one(
+        {"id": aid, "status": "open"},
+        {"$set": {"status": "dismissed", "resolved_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if r.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Alert not found or already resolved")
+    return {"ok": True}
+
+
+class PartialCreditReq(BaseModel):
+    amount: Optional[float] = None  # defaults to the estimated paid USD
+
+
+@api_router.post("/admin/deposits/{tx_id}/credit-partial")
+async def admin_credit_partial_deposit(tx_id: str, body: PartialCreditReq, x_admin_token: Optional[str] = Header(None)):
+    """Credit an underpaid crypto deposit for the amount actually received
+    (e.g. buyer paid $93 of a $100 invoice → credit $93). Applies the standard
+    70% deposit bonus on the credited amount and resolves the admin alert."""
+    check_admin(x_admin_token)
+    tx = await db.transactions.find_one({"id": tx_id, "method": "nowpayments"})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if tx.get("status") == "approved":
+        return {"ok": True, "already_credited": True}
+    credit = round(float(body.amount if body.amount is not None else (tx.get("paid_usd") or 0)), 2)
+    if credit <= 0:
+        raise HTTPException(status_code=400, detail="Credit amount must be > 0")
+    invoice_amount = round(float(tx.get("amount") or 0), 2)
+    bonus = round(credit * 0.70, 2)
+    now = datetime.now(timezone.utc).isoformat()
+    upd = await db.transactions.update_one(
+        {"id": tx_id, "status": {"$ne": "approved"}},
+        {"$set": {
+            "status": "approved",
+            "approved_at": now,
+            "amount": credit,
+            "original_invoice_amount": invoice_amount,
+            "partial_credit": True,
+            "bonus_applied": bonus,
+            "note": f"Partial credit ${credit:.2f} of ${invoice_amount:.2f} invoice (admin approved)",
+        }},
+    )
+    if upd.modified_count == 0:
+        return {"ok": True, "already_credited": True}
+    if bonus > 0:
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()), "user_id": tx["user_id"], "username": tx.get("username"),
+            "amount": bonus, "method": "bonus", "status": "approved", "type": "deposit_bonus",
+            "note": f"+70% crypto deposit bonus on ${credit:.2f} (partial payment)",
+            "created_at": now, "approved_at": now, "linked_tx": tx_id,
+        })
+    await db.admin_alerts.update_many(
+        {"tx_id": tx_id, "status": "open"},
+        {"$set": {"status": "resolved", "resolved_at": now, "credited_amount": credit}},
+    )
+    logger.info(f"[nowpay] PARTIAL-CREDITED tx={tx_id} user={tx.get('username')} ${credit} of ${invoice_amount} bonus=${bonus}")
+    try:
+        from notification_service import notify_deposit_credited
+        backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+        asyncio.create_task(notify_deposit_credited(db, tx["user_id"], credit, bonus, backend_url, method="crypto (partial)"))
+    except Exception as e:
+        logger.warning(f"[nowpay] partial-credit email failed: {e}")
+    return {"ok": True, "credited": credit, "bonus": bonus, "invoice_amount": invoice_amount}
+
+
+# ============ DB MANAGER (phpMyAdmin-style · OWNER ONLY · separate page) ============
+from bson import ObjectId as _ObjectId  # noqa: E402
+
+
+def _dbadmin_sanitize(doc: dict) -> dict:
+    return jsonlib.loads(jsonlib.dumps(doc, default=str))
+
+
+def _dbadmin_id_query(doc_id: str) -> dict:
+    ors = [{"id": doc_id}, {"_id": doc_id}]
+    try:
+        ors.append({"_id": _ObjectId(doc_id)})
+    except Exception:
+        pass
+    return {"$or": ors}
+
+
+@api_router.get("/dbadmin/collections")
+async def dbadmin_collections(x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    names = await db.list_collection_names()
+    out = []
+    for n in sorted(names):
+        out.append({"name": n, "count": await db[n].estimated_document_count()})
+    return {"collections": out}
+
+
+@api_router.get("/dbadmin/{coll}/docs")
+async def dbadmin_list_docs(
+    coll: str,
+    skip: int = 0,
+    limit: int = 25,
+    q: str = "",
+    filter_json: str = "",
+    x_admin_token: Optional[str] = Header(None),
+):
+    check_owner(x_admin_token)
+    limit = max(1, min(limit, 100))
+    query: dict = {}
+    if filter_json.strip():
+        try:
+            query = jsonlib.loads(filter_json)
+        except Exception:
+            raise HTTPException(status_code=400, detail="filter_json is not valid JSON")
+    elif q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query = {"$or": [{"id": rx}, {"username": rx}, {"email": rx}, {"name": rx}, {"title": rx}, {"status": rx}, {"tiktok_username": rx}]}
+    total = await db[coll].count_documents(query) if query else await db[coll].estimated_document_count()
+    cur = db[coll].find(query).sort("_id", -1).skip(skip).limit(limit)
+    docs = [_dbadmin_sanitize(d) for d in await cur.to_list(limit)]
+    return {"docs": docs, "total": total, "skip": skip, "limit": limit}
+
+
+class DbAdminDocBody(BaseModel):
+    doc: dict
+
+
+@api_router.post("/dbadmin/{coll}/doc")
+async def dbadmin_insert_doc(coll: str, body: DbAdminDocBody, x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    doc = dict(body.doc)
+    doc.pop("_id", None)
+    r = await db[coll].insert_one(doc)
+    return {"ok": True, "inserted_id": str(r.inserted_id)}
+
+
+@api_router.put("/dbadmin/{coll}/doc/{doc_id}")
+async def dbadmin_update_doc(coll: str, doc_id: str, body: DbAdminDocBody, x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    doc = dict(body.doc)
+    doc.pop("_id", None)
+    r = await db[coll].update_one(_dbadmin_id_query(doc_id), {"$set": doc})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"ok": True, "modified": r.modified_count}
+
+
+@api_router.delete("/dbadmin/{coll}/doc/{doc_id}")
+async def dbadmin_delete_doc(coll: str, doc_id: str, x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    r = await db[coll].delete_one(_dbadmin_id_query(doc_id))
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"ok": True}
+
+
+class DbAdminDeleteManyBody(BaseModel):
+    filter: dict = {}
+    confirm_all: bool = False
+
+
+@api_router.post("/dbadmin/{coll}/delete-many")
+async def dbadmin_delete_many(coll: str, body: DbAdminDeleteManyBody, x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    if not body.filter and not body.confirm_all:
+        raise HTTPException(status_code=400, detail="Empty filter deletes ALL documents — set confirm_all=true to proceed")
+    r = await db[coll].delete_many(body.filter or {})
+    logger.warning("[dbadmin] delete-many on %s filter=%s → deleted %s", coll, body.filter, r.deleted_count)
+    return {"ok": True, "deleted": r.deleted_count}
 
 
 # ============ Public group chat (shoutbox) ============
@@ -5918,11 +6175,97 @@ async def nowpayments_create_funds(body: NowpaymentsFundsRequest, user: CurrentU
         {"$set": {"nowpayments_invoice_id": invoice["invoice_id"], "nowpayments_url": invoice["invoice_url"]}},
     )
     logger.info(f"[nowpay] Created invoice {invoice['invoice_id']} for tx={tx_id} amount=${amount} ipn_url={backend_url}/api/nowpayments/webhook")
+    # Email the user that their deposit is pending (best-effort)
+    tx_doc = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if tx_doc:
+        await _notify_deposit_status_once(tx_doc, "waiting")
     return {"id": tx_id, "checkout_url": invoice["invoice_url"]}
 
 
-# Statuses that mean "the buyer has paid — credit them".
-NOWPAY_SUCCESS_STATUSES = {"finished", "confirmed", "sending", "partially_paid"}
+# Statuses that mean "the buyer has paid in full — credit them".
+# NOTE: partially_paid is handled separately — it flags an admin alert instead
+# of silently crediting the full invoice amount.
+NOWPAY_SUCCESS_STATUSES = {"finished", "confirmed", "sending"}
+NOWPAY_FAIL_STATUSES = {"failed", "expired", "refunded"}
+
+
+def _estimate_paid_usd(tx: dict, payload: dict) -> float:
+    """Best-effort USD value of what the buyer actually sent."""
+    try:
+        fiat = float(payload.get("actually_paid_at_fiat") or 0)
+        if fiat > 0:
+            return round(fiat, 2)
+    except (TypeError, ValueError):
+        pass
+    try:
+        price = float(payload.get("price_amount") or tx.get("amount") or 0)
+        pay_amount = float(payload.get("pay_amount") or 0)
+        actually = float(payload.get("actually_paid") or 0)
+        if pay_amount > 0 and actually > 0:
+            return round(price * actually / pay_amount, 2)
+    except (TypeError, ValueError):
+        pass
+    return 0.0
+
+
+async def _notify_deposit_status_once(tx: dict, status: str, paid_usd: float = 0.0, missing_usd: float = 0.0) -> None:
+    """Email the user about a deposit status — at most once per distinct status per tx."""
+    claim = await db.transactions.update_one(
+        {"id": tx["id"], "notified_statuses": {"$ne": status}},
+        {"$addToSet": {"notified_statuses": status}},
+    )
+    if claim.modified_count == 0:
+        return  # already notified for this status
+    try:
+        from notification_service import notify_deposit_status
+        backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+        asyncio.create_task(notify_deposit_status(
+            db, tx["user_id"], status, float(tx.get("amount") or 0), backend_url,
+            paid_usd=paid_usd, missing_usd=missing_usd,
+        ))
+    except Exception as e:
+        logger.warning(f"[nowpay] status email failed tx={tx['id']} status={status}: {e}")
+
+
+async def _handle_nowpayments_underpaid(tx: dict, payload: dict) -> dict:
+    """Buyer paid less than the invoice. Flag tx as underpaid, raise an admin
+    alert (popup in admin dashboard) and email the user. Never auto-credits."""
+    tx_id = tx["id"]
+    if tx.get("status") in ("approved", "underpaid"):
+        return {"ok": True, "already_handled": True, "tx_id": tx_id}
+    invoice_amount = round(float(tx.get("amount") or 0), 2)
+    paid_usd = _estimate_paid_usd(tx, payload)
+    missing_usd = max(0.0, round(invoice_amount - paid_usd, 2))
+    now = datetime.now(timezone.utc).isoformat()
+    upd = await db.transactions.update_one(
+        {"id": tx_id, "status": {"$nin": ["approved", "underpaid"]}},
+        {"$set": {
+            "status": "underpaid",
+            "underpaid_at": now,
+            "paid_usd": paid_usd,
+            "missing_usd": missing_usd,
+            "nowpayments_payload": payload,
+        }},
+    )
+    if upd.modified_count == 0:
+        return {"ok": True, "already_handled": True, "tx_id": tx_id}
+    existing = await db.admin_alerts.find_one({"tx_id": tx_id, "type": "underpaid_deposit", "status": "open"})
+    if not existing:
+        await db.admin_alerts.insert_one({
+            "id": str(uuid.uuid4()),
+            "type": "underpaid_deposit",
+            "status": "open",
+            "tx_id": tx_id,
+            "user_id": tx["user_id"],
+            "username": tx.get("username"),
+            "invoice_amount": invoice_amount,
+            "paid_usd": paid_usd,
+            "missing_usd": missing_usd,
+            "created_at": now,
+        })
+    logger.warning(f"[nowpay] UNDERPAID tx={tx_id} user={tx.get('username')} paid=${paid_usd} of ${invoice_amount} (missing ${missing_usd}) — admin alert raised")
+    await _notify_deposit_status_once(tx, "partially_paid", paid_usd=paid_usd, missing_usd=missing_usd)
+    return {"ok": True, "underpaid": tx_id, "paid_usd": paid_usd, "missing_usd": missing_usd}
 
 
 async def _credit_nowpayments_deposit(tx: dict, payload: dict) -> dict:
@@ -5998,14 +6341,29 @@ async def nowpayments_webhook(request: Request):
     order_id = str(data.get("order_id", ""))
     status = (data.get("payment_status") or "").lower()
     logger.info(f"[nowpay] webhook: order={order_id} status={status} amount={data.get('actually_paid')}")
-    if not order_id.startswith("funds_") or status not in NOWPAY_SUCCESS_STATUSES:
+    if not order_id.startswith("funds_"):
         return {"ok": True, "ignored": True, "status": status, "order_id": order_id}
     tx_id = order_id.replace("funds_", "", 1)
     tx = await db.transactions.find_one({"id": tx_id})
     if not tx:
         logger.warning(f"[nowpay] unknown tx_id={tx_id}")
         return {"ok": True, "unknown_tx": tx_id}
-    return await _credit_nowpayments_deposit(tx, data)
+    if status in NOWPAY_SUCCESS_STATUSES:
+        return await _credit_nowpayments_deposit(tx, data)
+    if status == "partially_paid":
+        return await _handle_nowpayments_underpaid(tx, data)
+    if status == "confirming":
+        await _notify_deposit_status_once(tx, "confirming")
+        return {"ok": True, "status": status}
+    if status in NOWPAY_FAIL_STATUSES:
+        if tx.get("status") == "pending":
+            await db.transactions.update_one(
+                {"id": tx_id, "status": "pending"},
+                {"$set": {"status": "failed", "failed_status": status, "failed_at": datetime.now(timezone.utc).isoformat(), "nowpayments_payload": data}},
+            )
+            await _notify_deposit_status_once(tx, status)
+        return {"ok": True, "status": status}
+    return {"ok": True, "ignored": True, "status": status, "order_id": order_id}
 
 
 async def _get_nowpayments_jwt(cfg: dict) -> str | None:
@@ -6086,6 +6444,8 @@ async def nowpayments_verify(tx_id: str, user: CurrentUser = Depends(current_use
     logger.info(f"[nowpay] manual verify tx={tx_id} invoice={invoice_id} status={pstatus}")
     if pstatus in NOWPAY_SUCCESS_STATUSES:
         return await _credit_nowpayments_deposit(tx, payment)
+    if pstatus == "partially_paid":
+        return await _handle_nowpayments_underpaid(tx, payment)
     return {"ok": True, "credited": False, "status": pstatus or "unknown", "payment": payment}
 
 
@@ -6139,6 +6499,11 @@ async def _nowpayments_reconciler_loop():
                     if pstatus in NOWPAY_SUCCESS_STATUSES:
                         result = await _credit_nowpayments_deposit(tx, payment)
                         logger.info(f"[nowpay-reconciler] auto-credited tx={tx['id']} user={tx.get('username')} status={pstatus} result={result}")
+                    elif pstatus == "partially_paid":
+                        result = await _handle_nowpayments_underpaid(tx, payment)
+                        logger.info(f"[nowpay-reconciler] underpaid tx={tx['id']} user={tx.get('username')} result={result}")
+                    elif pstatus == "confirming":
+                        await _notify_deposit_status_once(tx, "confirming")
                 except Exception as e:
                     logger.warning(f"[nowpay-reconciler] tx={tx.get('id')} failed: {e}")
         except Exception as e:
@@ -6800,6 +7165,144 @@ async def set_discord_config(payload: DiscordConfig, x_admin_token: Optional[str
     doc["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.discord_config.update_one({}, {"$set": doc}, upsert=True)
     return {"configured": True}
+
+
+# ===== In-process Discord moderation bot (managed from admin panel) =====
+from discord_bot import bot_manager  # noqa: E402
+
+
+async def _discord_bot_start_from_config() -> dict:
+    cfg = await db.discord_config.find_one({}, {"_id": 0}) or {}
+    token = (cfg.get("bot_token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="No bot token saved — enter it in the Discord tab first")
+    words = [w.strip() for w in (cfg.get("banned_words") or "").split(",") if w.strip()]
+    return await bot_manager.start(db, token, activity_text=cfg.get("activity_text") or "", banned_words=words)
+
+
+@api_router.get("/admin/discord/status")
+async def discord_bot_status(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    cfg = await db.discord_config.find_one({}, {"_id": 0}) or {}
+    info = bot_manager.info()
+    info["token_saved"] = bool(cfg.get("bot_token"))
+    info["banned_words"] = cfg.get("banned_words") or ""
+    info["saved_activity_text"] = cfg.get("activity_text") or ""
+    return info
+
+
+@api_router.post("/admin/discord/start")
+async def discord_bot_start(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    res = await _discord_bot_start_from_config()
+    await db.discord_config.update_one({}, {"$set": {"auto_start": True}}, upsert=True)
+    return res
+
+
+@api_router.post("/admin/discord/stop")
+async def discord_bot_stop(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    await db.discord_config.update_one({}, {"$set": {"auto_start": False}}, upsert=True)
+    return await bot_manager.stop()
+
+
+class DiscordActivityReq(BaseModel):
+    text: str = Field(default="", max_length=128)
+
+
+@api_router.post("/admin/discord/activity")
+async def discord_bot_activity(body: DiscordActivityReq, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    await db.discord_config.update_one({}, {"$set": {"activity_text": body.text}}, upsert=True)
+    try:
+        return await bot_manager.set_activity(body.text)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+class DiscordAvatarReq(BaseModel):
+    image_base64: str
+
+
+@api_router.post("/admin/discord/avatar")
+async def discord_bot_avatar(body: DiscordAvatarReq, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    raw = body.image_base64
+    if "," in raw:
+        raw = raw.split(",", 1)[1]
+    try:
+        img = base64.b64decode(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image")
+    if len(img) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image too large (max 8MB)")
+    try:
+        return await bot_manager.set_avatar(img)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Discord rejected avatar: {str(e)[:200]}")
+
+
+class DiscordModWordsReq(BaseModel):
+    banned_words: str = Field(default="", max_length=2000)
+
+
+@api_router.post("/admin/discord/mod-words")
+async def discord_bot_mod_words(body: DiscordModWordsReq, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    await db.discord_config.update_one({}, {"$set": {"banned_words": body.banned_words}}, upsert=True)
+    bot_manager.banned_words = [w.strip().lower() for w in body.banned_words.split(",") if w.strip()]
+    return {"ok": True}
+
+
+@api_router.get("/admin/discord/dms")
+async def discord_bot_dm_conversations(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    pipeline = [
+        {"$sort": {"created_at": -1}},
+        {"$group": {
+            "_id": "$discord_user_id",
+            "discord_username": {"$first": "$discord_username"},
+            "last_text": {"$first": "$text"},
+            "last_direction": {"$first": "$direction"},
+            "last_at": {"$first": "$created_at"},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"last_at": -1}},
+        {"$limit": 100},
+    ]
+    convos = await db.discord_dms.aggregate(pipeline).to_list(100)
+    return {"conversations": [
+        {"discord_user_id": c["_id"], "discord_username": c.get("discord_username"),
+         "last_text": c.get("last_text"), "last_direction": c.get("last_direction"),
+         "last_at": c.get("last_at"), "count": c.get("count", 0)}
+        for c in convos
+    ]}
+
+
+@api_router.get("/admin/discord/dms/{duid}")
+async def discord_bot_dm_thread(duid: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    cur = db.discord_dms.find({"discord_user_id": duid}, {"_id": 0}).sort("created_at", -1).limit(200)
+    msgs = await cur.to_list(200)
+    msgs.reverse()
+    return {"messages": msgs}
+
+
+class DiscordDmSendReq(BaseModel):
+    text: str = Field(..., min_length=1, max_length=2000)
+
+
+@api_router.post("/admin/discord/dms/{duid}/send")
+async def discord_bot_dm_send(duid: str, body: DiscordDmSendReq, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    try:
+        return await bot_manager.send_dm(duid, body.text)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"DM failed: {str(e)[:200]}")
 
 
 class DiscordOrderRequest(BaseModel):

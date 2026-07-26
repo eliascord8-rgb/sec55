@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { adminApi, api } from "@/lib/api";
+import { AdminAlertsWatcher } from "@/components/AdminAlertsWatcher";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -236,6 +237,7 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
 
   return (
     <div className="theme-green min-h-screen bg-[#0a1a0a]" data-testid="admin-shell">
+      <AdminAlertsWatcher token={token} />
       <header className="border-b border-emerald-500/20 bg-[#0d2b12]/90 backdrop-blur sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-3 md:px-10 h-14 md:h-16 flex items-center justify-between gap-2">
           <Link to="/" className="flex items-center gap-2 min-w-0">
@@ -2942,6 +2944,206 @@ function AIPanel({ token }) {
   );
 }
 
+function DiscordBotControl({ token }) {
+  const [info, setInfo] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [activity, setActivity] = useState("");
+  const [words, setWords] = useState("");
+  const [avatarFile, setAvatarFile] = useState(null);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/discord/status");
+      setInfo(r.data);
+      setActivity((prev) => prev || r.data.saved_activity_text || "");
+      setWords((prev) => prev || r.data.banned_words || "");
+    } catch { /* silent */ }
+  };
+  useEffect(() => { load(); const i = setInterval(load, 10000); return () => clearInterval(i); // eslint-disable-next-line
+  }, [token]);
+
+  const act = async (name, fn) => {
+    setBusy(name);
+    try { await fn(); await load(); }
+    catch (e) { toast.error(e.response?.data?.detail || `${name} failed`); }
+    finally { setBusy(""); }
+  };
+
+  const uploadAvatar = () => act("avatar", async () => {
+    if (!avatarFile) { toast.error("Pick an image first"); return; }
+    const b64 = await new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result);
+      fr.onerror = rej;
+      fr.readAsDataURL(avatarFile);
+    });
+    await adminApi(token).post("/admin/discord/avatar", { image_base64: b64 });
+    toast.success("Bot avatar updated");
+    setAvatarFile(null);
+  });
+
+  const running = info?.status === "running";
+  const dot = running ? "bg-emerald-400" : info?.status === "error" ? "bg-red-400" : "bg-white/30";
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6 max-w-2xl" data-testid="discord-bot-control">
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <h2 className="font-display font-bold text-lg">Bot Control</h2>
+        <span className={`w-2.5 h-2.5 rounded-full ${dot} ${running ? "animate-pulse" : ""}`} />
+        <span className="text-xs uppercase tracking-widest text-white/60" data-testid="discord-bot-status">
+          {info?.status || "…"}{info?.bot_username ? ` · ${info.bot_username}` : ""}
+        </span>
+        {info?.bot_avatar && <img src={info.bot_avatar} alt="bot" className="w-8 h-8 rounded-full border border-white/10" />}
+        <div className="ml-auto flex gap-2">
+          {!running ? (
+            <button onClick={() => act("start", async () => { await adminApi(token).post("/admin/discord/start"); toast.success("Bot starting…"); })}
+                    disabled={busy === "start" || !info?.token_saved} data-testid="discord-bot-start"
+                    className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-40">
+              {busy === "start" ? "Starting…" : "Start bot"}
+            </button>
+          ) : (
+            <button onClick={() => act("stop", async () => { await adminApi(token).post("/admin/discord/stop"); toast.success("Bot stopped"); })}
+                    disabled={busy === "stop"} data-testid="discord-bot-stop"
+                    className="px-4 py-2 bg-red-900/70 border border-red-700 text-red-200 hover:bg-red-800 rounded-sm text-xs font-bold uppercase tracking-wider">
+              {busy === "stop" ? "Stopping…" : "Stop bot"}
+            </button>
+          )}
+        </div>
+      </div>
+      {info?.status === "error" && (
+        <div className="mb-4 p-3 bg-red-950/50 border border-red-800/60 rounded-sm text-xs text-red-300" data-testid="discord-bot-error">
+          {info.error} — check the token and enable the <b>Message Content Intent</b> at discord.com/developers → Bot.
+        </div>
+      )}
+      {!info?.token_saved && (
+        <div className="mb-4 p-3 bg-amber-950/40 border border-amber-700/50 rounded-sm text-xs text-amber-300">
+          Save a bot token below first, then hit Start.
+        </div>
+      )}
+      <div className="space-y-4">
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">Activity status</Label>
+          <div className="flex gap-2 mt-1">
+            <Input data-testid="discord-activity-input" value={activity} onChange={(e) => setActivity(e.target.value)}
+                   placeholder="e.g. Watching Better Social orders" className="bg-[#0d0a14] border-white/10" />
+            <button onClick={() => act("activity", async () => { await adminApi(token).post("/admin/discord/activity", { text: activity }); toast.success("Activity updated"); })}
+                    disabled={busy === "activity"} data-testid="discord-activity-save"
+                    className="px-4 bg-white/5 hover:bg-white/10 rounded-sm text-xs font-bold uppercase tracking-wider whitespace-nowrap">
+              Set
+            </button>
+          </div>
+        </div>
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">Profile picture</Label>
+          <div className="flex gap-2 mt-1 items-center">
+            <input type="file" accept="image/png,image/jpeg,image/gif" data-testid="discord-avatar-file"
+                   onChange={(e) => setAvatarFile(e.target.files?.[0] || null)}
+                   className="text-xs text-white/60 file:mr-2 file:px-3 file:py-1.5 file:bg-white/10 file:border-0 file:rounded-sm file:text-white file:text-xs file:cursor-pointer" />
+            <button onClick={uploadAvatar} disabled={busy === "avatar" || !avatarFile} data-testid="discord-avatar-save"
+                    className="px-4 py-1.5 bg-white/5 hover:bg-white/10 rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-40 whitespace-nowrap">
+              {busy === "avatar" ? "Uploading…" : "Upload"}
+            </button>
+          </div>
+        </div>
+        <div>
+          <Label className="text-[11px] uppercase tracking-wider text-white/60">Moderation — banned words (comma separated)</Label>
+          <div className="flex gap-2 mt-1">
+            <Input data-testid="discord-modwords-input" value={words} onChange={(e) => setWords(e.target.value)}
+                   placeholder="scam, free nitro, phishing.link" className="bg-[#0d0a14] border-white/10 font-mono text-xs" />
+            <button onClick={() => act("words", async () => { await adminApi(token).post("/admin/discord/mod-words", { banned_words: words }); toast.success("Moderation words saved"); })}
+                    disabled={busy === "words"} data-testid="discord-modwords-save"
+                    className="px-4 bg-white/5 hover:bg-white/10 rounded-sm text-xs font-bold uppercase tracking-wider whitespace-nowrap">
+              Save
+            </button>
+          </div>
+          <p className="text-[10px] text-white/40 mt-1">
+            Messages containing these words are auto-deleted. Mods with Manage Messages can also use <code className="text-[#FF007F]">!purge N</code>, <code className="text-[#FF007F]">!kick @user</code>, <code className="text-[#FF007F]">!ban @user</code>.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DiscordDmConsole({ token }) {
+  const [convos, setConvos] = useState([]);
+  const [sel, setSel] = useState("");
+  const [msgs, setMsgs] = useState([]);
+  const [text, setText] = useState("");
+  const [newId, setNewId] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const loadConvos = async () => {
+    try { const r = await adminApi(token).get("/admin/discord/dms"); setConvos(r.data.conversations || []); } catch { /* */ }
+  };
+  const loadThread = async (id) => {
+    if (!id) return;
+    try { const r = await adminApi(token).get(`/admin/discord/dms/${id}`); setMsgs(r.data.messages || []); } catch { /* */ }
+  };
+  useEffect(() => { loadConvos(); const i = setInterval(() => { loadConvos(); if (sel) loadThread(sel); }, 8000); return () => clearInterval(i); // eslint-disable-next-line
+  }, [token, sel]);
+
+  const send = async () => {
+    const target = sel || newId.trim();
+    if (!target || !text.trim()) return;
+    setSending(true);
+    try {
+      await adminApi(token).post(`/admin/discord/dms/${target}/send`, { text: text.trim() });
+      setText("");
+      if (!sel) setSel(target);
+      loadThread(target);
+      loadConvos();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "DM failed");
+    } finally { setSending(false); }
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="discord-dm-console">
+      <h2 className="font-display font-bold text-lg mb-1">DM Console</h2>
+      <p className="text-xs text-white/50 mb-4">Chat with Discord users via the bot. Users who DM the bot show up here automatically.</p>
+      <div className="grid md:grid-cols-3 gap-4">
+        <div className="space-y-1 max-h-72 overflow-y-auto" data-testid="discord-dm-list">
+          <div className="flex gap-1 mb-2">
+            <Input value={newId} onChange={(e) => setNewId(e.target.value)} placeholder="Discord user ID…"
+                   data-testid="discord-dm-newid" className="bg-[#0d0a14] border-white/10 text-xs font-mono h-8" />
+            <button onClick={() => { if (newId.trim()) { setSel(newId.trim()); setMsgs([]); } }}
+                    className="px-2 bg-white/5 hover:bg-white/10 rounded-sm text-[10px] font-bold uppercase">Open</button>
+          </div>
+          {convos.map((c) => (
+            <button key={c.discord_user_id} onClick={() => { setSel(c.discord_user_id); loadThread(c.discord_user_id); }}
+                    data-testid={`discord-dm-convo-${c.discord_user_id}`}
+                    className={`w-full text-left px-2 py-1.5 rounded text-xs ${sel === c.discord_user_id ? "bg-[#FF007F]/20 text-white" : "text-white/70 hover:bg-white/5"}`}>
+              <div className="font-bold truncate">{c.discord_username || c.discord_user_id}</div>
+              <div className="text-white/40 truncate">{c.last_direction === "out" ? "You: " : ""}{c.last_text}</div>
+            </button>
+          ))}
+          {convos.length === 0 && <div className="text-white/30 text-xs italic px-2">No conversations yet.</div>}
+        </div>
+        <div className="md:col-span-2 flex flex-col">
+          <div className="flex-1 bg-[#0d0a14] border border-white/10 rounded-sm p-3 h-56 overflow-y-auto space-y-2" data-testid="discord-dm-thread">
+            {!sel && <div className="text-white/30 text-xs italic">Select a conversation or enter a user ID.</div>}
+            {msgs.map((m) => (
+              <div key={m.id} className={`max-w-[80%] px-2.5 py-1.5 rounded text-xs ${m.direction === "out" ? "ml-auto bg-[#FF007F]/25 text-white" : "bg-white/8 text-white/85"}`}>
+                <div>{m.text}</div>
+                <div className="text-[9px] text-white/35 mt-0.5">{new Date(m.created_at).toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2 mt-2">
+            <Input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
+                   placeholder="Type a DM…" data-testid="discord-dm-input" className="bg-[#0d0a14] border-white/10" />
+            <button onClick={send} disabled={sending || !text.trim() || (!sel && !newId.trim())} data-testid="discord-dm-send"
+                    className="px-5 gradient-pp rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-40">
+              Send
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DiscordPanel({ token }) {
   const [cfg, setCfg] = useState(null);
   const [role, setRole] = useState("Developer");
@@ -2998,6 +3200,8 @@ function DiscordPanel({ token }) {
 
   return (
     <div className="space-y-6">
+      <DiscordBotControl token={token} />
+      <DiscordDmConsole token={token} />
       <form
         onSubmit={save}
         data-testid="discord-form"

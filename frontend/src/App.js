@@ -8,6 +8,7 @@ import StatusPage from "@/pages/StatusPage";
 import ClientAuth from "@/pages/ClientAuth";
 import ResetPassword from "@/pages/ResetPassword";
 import ClientDashboard from "@/pages/ClientDashboard";
+import DbManager from "@/pages/DbManager";
 import Splash from "@/components/Splash";
 import MaintenanceGate from "@/components/MaintenanceGate";
 import GoogleAuthCallback from "@/components/GoogleAuthCallback";
@@ -46,6 +47,7 @@ function App() {
                   <Route path="/reset" element={<ResetPassword />} />
                   <Route path="/client/dashboard" element={<ClientDashboard />} />
                   <Route path="/admin" element={<Admin />} />
+                  <Route path="/db-manager" element={<DbManager />} />
                 </Routes>
                 <LiveChatFAB />
               </MaintenanceGate>

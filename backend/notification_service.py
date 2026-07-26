@@ -201,6 +201,37 @@ async def notify_deposit_credited(db, user_id: str, amount: float, bonus: float,
         cta_label="Place an order")
 
 
+async def notify_deposit_status(db, user_id: str, status: str, amount: float, backend_url: str,
+                                paid_usd: float = 0.0, missing_usd: float = 0.0):
+    """Email the user about a crypto deposit status change (pending/confirming/partial/failed)."""
+    titles = {
+        "waiting": ("⏳ Deposit pending", f"We created your ${amount:.2f} crypto deposit. Complete the payment in the checkout window — your balance will be credited automatically once the network confirms it."),
+        "confirming": ("🔍 Payment detected", f"We detected your crypto payment for the ${amount:.2f} deposit. It's now confirming on the blockchain — this usually takes a few minutes."),
+        "partially_paid": ("⚠️ Partial payment received", f"We received <b>${paid_usd:.2f}</b> of your <b>${amount:.2f}</b> deposit — <b>${missing_usd:.2f}</b> is still missing. Our team has been notified and will review it shortly. You may be credited for the amount you actually paid."),
+        "failed": ("❌ Deposit failed", f"Your ${amount:.2f} crypto deposit failed. No funds were credited. If you believe this is an error, contact support."),
+        "expired": ("⌛ Deposit expired", f"Your ${amount:.2f} crypto deposit invoice expired before payment completed. You can start a new deposit any time."),
+        "refunded": ("↩️ Deposit refunded", f"Your ${amount:.2f} crypto deposit was refunded by the payment provider."),
+    }
+    title, msg = titles.get(status, (f"Deposit update: {status}", f"Your ${amount:.2f} crypto deposit status changed to <b>{status}</b>."))
+    body = f"""
+<h2 style="color:#fff;font-size:20px;margin:0 0 8px">{title}</h2>
+<p>{msg}</p>
+<div style="background:#0f2a15;border:1px solid #10b98133;border-radius:8px;padding:16px;margin:16px 0">
+  <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Deposit details</div>
+  <div style="font-size:14px;line-height:1.9">
+    <div><strong style="color:#fff">Invoice amount:</strong> <span style="color:{BRAND_COLOR};font-weight:700">${amount:.2f}</span></div>
+    {f"<div><strong style='color:#fff'>Received so far:</strong> <span style='color:#fbbf24;font-weight:700'>${paid_usd:.2f}</span></div><div><strong style='color:#fff'>Missing:</strong> <span style='color:#f87171;font-weight:700'>${missing_usd:.2f}</span></div>" if status == "partially_paid" else ""}
+    <div><strong style="color:#fff">Status:</strong> {status.replace("_", " ").upper()}</div>
+  </div>
+</div>
+"""
+    return await notify_user(db, user_id, "deposit",
+        subject=f"{title.split(' ', 1)[1] if ' ' in title else title} — ${amount:.2f} deposit",
+        body_html=body,
+        cta_url=f"{backend_url}/client/dashboard?tab=wallet",
+        cta_label="View wallet")
+
+
 async def notify_ticket_reply(db, user_id: str, ticket_id: str, subject: str, staff_name: str, message: str, backend_url: str):
     preview = (message or "")[:280]
     body = f"""

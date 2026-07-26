@@ -1,0 +1,65 @@
+{
+  "summary": "Iteration 40 tested the requested admin alerts/partial credit, DB manager API/UI, Discord manager API/UI, NOWPayments webhook signature, TikTok debug probe, and Auto-Live copy against the public URL. Backend focused suite passed 6/6 with persistence and cleanup. Most frontend flows passed. Two DB manager security/auth defects remain: the visible owner credential login rejects the documented owner credentials, and the generic users collection API/UI exposes password_hash values.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/dbadmin/users/docs",
+        "issue": "Owner-only DB API returns the users.password_hash field verbatim; the DB Manager document list/editor renders it. This exposes password hashes to the browser and any script/browser extension in the admin session.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "DB Manager owner login gate",
+        "issue": "Entering the documented owner credentials Balkin / Dennis123.@@ submits POST /api/admin/login and receives 401, so the visible login gate cannot unlock. The remaining DB Manager UI works when a valid owner token is preloaded.",
+        "selector": "[data-testid='dbm-login-form']",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "DB Manager credential authentication",
+        "issue": "DbManager.jsx uses the legacy /admin/login route, whose ADMIN_USER/ADMIN_PASS defaults (Balkin99/Armin1234) are independent from the seeded owner dashboard credentials. The page copy promises owner credentials, but the route rejects them.",
+        "affected_selectors": ["[data-testid='dbm-username']", "[data-testid='dbm-password']", "[data-testid='dbm-login-btn']"]
+      },
+      {
+        "flow": "DB Manager users collection browsing/editing",
+        "issue": "Search results and the JSON editor include password_hash. The reproduced DOM showed the bcrypt hash for testbugfix1.",
+        "affected_selectors": ["[data-testid='dbm-docs']", "[data-testid='dbm-doc-editor']"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_40_admin_db_discord.py",
+    "/app/test_reports/pytest/iter40_results.xml"
+  ],
+  "action_items": [
+    "Make /db-manager authenticate the documented seeded owner account, preferably through /api/admin/login-with-account with captcha or an authenticated owner session exchange; do not keep a second divergent owner password path.",
+    "Redact sensitive fields such as password_hash from dbadmin responses and UI editors. Use an explicit denylist at minimum and preferably per-collection projections/schemas.",
+    "Retest the DB Manager credential gate and users collection after both fixes."
+  ],
+  "critical_code_review_comments": [
+    "DbManager.jsx:44 calls /admin/login, while server.py:33-34 defaults ADMIN_USER/ADMIN_PASS to Balkin99/Armin1234 and backend/.env defines only OWNER_USERNAME/OWNER_PASSWORD. This directly causes the reproduced 401 with Balkin/Dennis123.@@.",
+    "server.py:4063 _dbadmin_sanitize only JSON-serializes records and does not remove secrets; dbadmin_list_docs returns full documents, including users.password_hash. Never expose credential hashes to browser-based generic data tools.",
+    "server.py (7,907 lines), Admin.jsx (6,438 lines), and ClientDashboard.jsx (4,605 lines) remain far above the 700-line maintainability threshold and should be split into routers/components.",
+    "Discord activity persistence occurs before bot_manager.set_activity. Thus the expected 409 while stopped still changes saved_activity_text to Testing; consider whether a failed Set action should mutate saved configuration.",
+    "Client Auto-Live duration uses a native select, and the browser logged invalid option/span hydration markup in the instrumented preview. Prefer the project UI Select component and valid option text nodes."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_40_admin_db_discord.py",
+    "/app/test_reports/iteration_40.json"
+  ],
+  "success_rate": {
+    "backend": "100% (6/6 focused tests passed)",
+    "frontend": "90% of requested focused flows passed; DB Manager login gate and password-hash redaction failed"
+  },
+  "seed_data_creation": "Created uniquely named underpaid transaction/admin alerts, dismiss alert, scratch docs, one unsigned webhook event, and one UI alert. All test documents and generated bonus transaction were cleaned. Discord banned words/activity were restored; the real bot was never started. No Auto-Live subscription or SMM order was created.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run only test_iteration_40_admin_db_discord.py. Backend is healthy: partial credit persisted approved amount=93, partial_credit=true, +65.10 bonus and resolved alert; dismiss second call 404; DB CRUD/delete guard; Discord stopped behavior; unsigned NOWPayments 401; TikTok @tiktok false all passed. UI admin alerts, Discord tab, token-authenticated DB browse/search/edit-cancel, and Auto-Live copy passed. Recheck DB Manager form using Balkin credentials after route alignment, then confirm users docs/editor no longer contain password_hash.",
+  "rca_of_the_issue": "DB Manager authentication is wired to a legacy, separate in-memory admin credential pair rather than the seeded owner account advertised by the page. Sensitive-data exposure is caused by the generic dbadmin serializer returning all collection fields without a secret-field projection or redaction step."
+}
