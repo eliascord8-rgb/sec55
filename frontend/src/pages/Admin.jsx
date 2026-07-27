@@ -468,6 +468,7 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
             <OrdersPanel token={token} />
           </TabsContent>
           <TabsContent value="bulk">
+            <BalanceBonusPanel token={token} />
             <BulkGiftPanel token={token} />
           </TabsContent>
           <TabsContent value="services">
@@ -631,6 +632,126 @@ function StatCard({ label, value, tone = "white" }) {
     <div className={`rounded-sm px-3 py-2 border ${toneCls}`}>
       <div className="text-[9px] uppercase tracking-widest text-white/50">{label}</div>
       <div className="font-display font-black text-base mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+function BalanceBonusPanel({ token }) {
+  const [users, setUsers] = useState([]);
+  const [selected, setSelected] = useState([]);
+  const [query, setQuery] = useState("");
+  const [amount, setAmount] = useState(10);
+  const [sending, setSending] = useState(false);
+  const [bonuses, setBonuses] = useState([]);
+
+  const loadBonuses = async () => {
+    try { const r = await adminApi(token).get("/admin/bonuses"); setBonuses(r.data.bonuses || []); } catch { /* */ }
+  };
+  useEffect(() => {
+    adminApi(token).get("/admin/users").then((r) => setUsers(r.data.users || [])).catch(() => {});
+    loadBonuses();
+    // eslint-disable-next-line
+  }, [token]);
+
+  const filtered = users.filter((u) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return (u.username || "").toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q);
+  });
+  const toggle = (id) => setSelected((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
+
+  const send = async () => {
+    const amt = Number(amount);
+    if (!selected.length) { toast.error("Pick at least one user"); return; }
+    if (!amt || amt < 5 || amt > 1000) { toast.error("Amount must be €5 – €1000"); return; }
+    if (!window.confirm(`Gift a €${amt.toFixed(2)} FREE balance bonus to ${selected.length} user(s)? They'll get a claim popup + email.`)) return;
+    setSending(true);
+    try {
+      const r = await adminApi(token).post("/admin/bonuses/create", { user_ids: selected, amount: amt });
+      toast.success(`Bonus sent to ${r.data.created} user(s)`);
+      setSelected([]);
+      loadBonuses();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to send bonus");
+    } finally { setSending(false); }
+  };
+
+  const expire = async (bid) => {
+    try {
+      await adminApi(token).post(`/admin/bonuses/${bid}/expire`);
+      toast.success("Bonus expired");
+      loadBonuses();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+  };
+
+  const statusColor = (s) => s === "claimed" ? "text-emerald-300" : s === "pending" ? "text-amber-300" : "text-red-300";
+
+  return (
+    <div className="space-y-4 mb-6" data-testid="balance-bonus-panel">
+      <div className="bg-[#1a1525] border border-amber-500/30 rounded-sm p-4">
+        <h2 className="font-display font-bold text-lg mb-1 text-amber-300">🎁 Free Balance Bonus</h2>
+        <p className="text-xs text-white/50">Gift €5 – €1000 free balance to one or many users. They get an email + a claim popup on the purchase page that keeps reappearing until claimed or declined.</p>
+      </div>
+      <div className="grid lg:grid-cols-2 gap-4">
+        <div className="bg-[#0d0a14] border border-white/10 rounded-sm p-4 flex flex-col max-h-[380px]">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-display font-bold text-sm">Recipients ({selected.length})</h3>
+            <div className="flex gap-2 text-[10px] uppercase tracking-widest">
+              <button onClick={() => setSelected(filtered.map((u) => u.id))} data-testid="bonus-select-all" className="text-emerald-300 hover:text-emerald-200">All shown</button>
+              <button onClick={() => setSelected([])} className="text-white/50 hover:text-white">Clear</button>
+            </div>
+          </div>
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search @username or email…"
+                 data-testid="bonus-user-search"
+                 className="bg-black/40 border border-white/10 rounded px-3 py-2 text-xs text-white outline-none focus:border-emerald-400 mb-2" />
+          <div className="flex-1 overflow-y-auto space-y-0.5">
+            {filtered.slice(0, 200).map((u) => (
+              <button key={u.id} onClick={() => toggle(u.id)} data-testid={`bonus-user-${u.username}`}
+                      className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center justify-between ${selected.includes(u.id) ? "bg-amber-500/20 text-amber-200" : "text-white/70 hover:bg-white/5"}`}>
+                <span className="font-bold truncate">@{u.username}</span>
+                <span className="text-white/35 truncate ml-2">{u.email}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="space-y-4">
+          <div className="bg-[#0d0a14] border border-white/10 rounded-sm p-4">
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Bonus amount (€5 – €1000)</Label>
+            <div className="flex gap-2 mt-1">
+              <Input type="number" min={5} max={1000} step="0.01" value={amount}
+                     onChange={(e) => setAmount(e.target.value)} data-testid="bonus-amount-input"
+                     className="bg-[#1a1525] border-white/10 font-mono" />
+              <button onClick={send} disabled={sending} data-testid="bonus-send-btn"
+                      className="px-5 bg-amber-500 hover:bg-amber-400 text-black rounded-sm text-xs font-black uppercase tracking-wider disabled:opacity-50 whitespace-nowrap">
+                {sending ? "Sending…" : `Gift €${Number(amount || 0).toFixed(0)}`}
+              </button>
+            </div>
+            <div className="flex gap-1.5 mt-2">
+              {[5, 10, 25, 50, 100, 500, 1000].map((v) => (
+                <button key={v} onClick={() => setAmount(v)} className="px-2 py-1 bg-white/5 hover:bg-white/10 rounded text-[10px] font-bold text-white/60">€{v}</button>
+              ))}
+            </div>
+          </div>
+          <div className="bg-[#0d0a14] border border-white/10 rounded-sm p-4 max-h-[240px] overflow-y-auto" data-testid="bonus-history">
+            <h3 className="font-display font-bold text-sm mb-2">Recent bonuses</h3>
+            {bonuses.length === 0 && <div className="text-white/30 text-xs italic">None yet.</div>}
+            <div className="space-y-1">
+              {bonuses.map((b) => (
+                <div key={b.id} className="flex items-center gap-2 text-xs px-2 py-1.5 bg-white/[0.03] rounded">
+                  <span className="font-bold text-white truncate">@{b.username}</span>
+                  <span className="font-mono text-amber-300">€{Number(b.amount).toFixed(2)}</span>
+                  <span className={`uppercase text-[9px] font-black tracking-widest ${statusColor(b.status)}`}>{b.status}</span>
+                  <span className="text-white/30 ml-auto">{new Date(b.created_at).toLocaleDateString()}</span>
+                  {b.status === "pending" && (
+                    <button onClick={() => expire(b.id)} data-testid={`bonus-expire-${b.id}`}
+                            className="text-red-300 hover:text-red-200 text-[9px] font-bold uppercase">Expire</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

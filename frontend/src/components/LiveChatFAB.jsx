@@ -35,6 +35,12 @@ export default function LiveChatFAB() {
 
   useEffect(() => { load(); const t = setInterval(load, POLL_MS); return () => clearInterval(t); /* eslint-disable-next-line */ }, [open]);
   useEffect(() => { if (open) { setUnread(0); bottomRef.current?.scrollIntoView({ behavior: "smooth" }); } }, [open, msgs.length]);
+  // Mobile bottom-bar "Chat" button opens this panel via a global event
+  useEffect(() => {
+    const h = () => setOpen(true);
+    window.addEventListener("bs-open-community-chat", h);
+    return () => window.removeEventListener("bs-open-community-chat", h);
+  }, []);
 
   const send = async () => {
     const t = text.trim();
@@ -51,12 +57,13 @@ export default function LiveChatFAB() {
 
   return (
     <>
-      {/* Floating trigger — mobile only. Positioned so it sits directly ABOVE the AI FAB. */}
+      {/* Floating trigger — hidden on phones for signed-in users (the dashboard
+          bottom bar has a dedicated Chat button there). Desktop unchanged. */}
       <button
         onClick={() => setOpen(true)}
         data-testid="live-chat-fab"
         title="Open live community chat"
-        className="fixed bottom-24 right-4 z-30 w-14 h-14 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black shadow-lg shadow-emerald-500/40 flex items-center justify-center transition"
+        className={`fixed bottom-24 right-4 z-30 w-14 h-14 rounded-full bg-emerald-500 hover:bg-emerald-400 text-black shadow-lg shadow-emerald-500/40 items-center justify-center transition ${user ? "hidden md:flex" : "flex"}`}
       >
         <MessageCircle className="w-6 h-6" strokeWidth={2.5} />
         {unread > 0 && (

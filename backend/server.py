@@ -4056,6 +4056,107 @@ async def admin_credit_partial_deposit(tx_id: str, body: PartialCreditReq, x_adm
     return {"ok": True, "credited": credit, "bonus": bonus, "invoice_amount": invoice_amount}
 
 
+# ============ FREE BALANCE BONUSES (admin gift → user claims via popup) ============
+
+class BonusCreateReq(BaseModel):
+    user_ids: List[str] = Field(..., min_length=1, max_length=500)
+    amount: float
+
+
+@api_router.post("/admin/bonuses/create")
+async def admin_create_bonuses(body: BonusCreateReq, x_admin_token: Optional[str] = Header(None)):
+    """Gift a free balance bonus (5–1000 €) to one or many users. Each user gets
+    a claim popup on the purchase page and an email notification."""
+    check_admin(x_admin_token)
+    amount = round(float(body.amount), 2)
+    if amount < 5 or amount > 1000:
+        raise HTTPException(status_code=400, detail="Bonus amount must be between €5 and €1000")
+    now = datetime.now(timezone.utc).isoformat()
+    created, skipped = [], []
+    backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+    for uid in body.user_ids:
+        u = await db.users.find_one({"id": uid}, {"_id": 0, "id": 1, "username": 1, "email": 1})
+        if not u:
+            skipped.append(uid)
+            continue
+        bid = str(uuid.uuid4())
+        await db.balance_bonuses.insert_one({
+            "id": bid,
+            "user_id": uid,
+            "username": u.get("username"),
+            "amount": amount,
+            "status": "pending",
+            "created_at": now,
+        })
+        created.append({"id": bid, "username": u.get("username")})
+        try:
+            from notification_service import notify_bonus_waiting
+            asyncio.create_task(notify_bonus_waiting(db, uid, amount, backend_url))
+        except Exception as e:
+            logger.warning("[bonus] email failed for %s: %s", uid, e)
+    logger.info("[bonus] admin gifted €%.2f to %s users (%s skipped)", amount, len(created), len(skipped))
+    return {"ok": True, "created": len(created), "skipped": skipped, "bonuses": created}
+
+
+@api_router.get("/admin/bonuses")
+async def admin_list_bonuses(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cur = db.balance_bonuses.find({}, {"_id": 0}).sort("created_at", -1).limit(100)
+    return {"bonuses": await cur.to_list(100)}
+
+
+@api_router.post("/admin/bonuses/{bid}/expire")
+async def admin_expire_bonus(bid: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    r = await db.balance_bonuses.update_one(
+        {"id": bid, "status": "pending"},
+        {"$set": {"status": "expired", "expired_at": datetime.now(timezone.utc).isoformat(), "expired_by": "admin"}},
+    )
+    if r.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Bonus not found or not pending")
+    return {"ok": True}
+
+
+@client_router.get("/bonuses/pending")
+async def client_pending_bonuses(user: CurrentUser = Depends(current_user_dep)):
+    cur = db.balance_bonuses.find({"user_id": user.id, "status": "pending"}, {"_id": 0}).sort("created_at", -1).limit(10)
+    return {"bonuses": await cur.to_list(10)}
+
+
+@client_router.post("/bonuses/{bid}/claim")
+async def client_claim_bonus(bid: str, user: CurrentUser = Depends(current_user_dep)):
+    bonus = await db.balance_bonuses.find_one({"id": bid, "user_id": user.id})
+    if not bonus:
+        raise HTTPException(status_code=404, detail="Bonus not found")
+    now = datetime.now(timezone.utc).isoformat()
+    r = await db.balance_bonuses.update_one(
+        {"id": bid, "status": "pending"},
+        {"$set": {"status": "claimed", "claimed_at": now}},
+    )
+    if r.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Bonus already claimed or expired")
+    amount = round(float(bonus.get("amount") or 0), 2)
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
+        "amount": amount, "method": "bonus", "status": "approved", "type": "balance_bonus",
+        "note": f"Free balance bonus claimed (€{amount:.2f})",
+        "bonus_id": bid, "created_at": now, "approved_at": now,
+    })
+    logger.info("[bonus] user %s claimed €%.2f (bonus=%s)", user.username, amount, bid)
+    return {"ok": True, "claimed": amount}
+
+
+@client_router.post("/bonuses/{bid}/decline")
+async def client_decline_bonus(bid: str, user: CurrentUser = Depends(current_user_dep)):
+    r = await db.balance_bonuses.update_one(
+        {"id": bid, "user_id": user.id, "status": "pending"},
+        {"$set": {"status": "expired", "expired_at": datetime.now(timezone.utc).isoformat(), "expired_by": "user"}},
+    )
+    if r.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Bonus not found or not pending")
+    return {"ok": True, "declined": True}
+
+
 # ============ DB MANAGER (phpMyAdmin-style · OWNER ONLY · separate page) ============
 from bson import ObjectId as _ObjectId  # noqa: E402
 

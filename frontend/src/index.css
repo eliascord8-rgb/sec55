@@ -240,3 +240,45 @@ body.theme-purple-body { background: #0f051a; }
 
 .theme-green .bg-\[\#1a1525\] { background-color: #0f2a15 !important; }
 .theme-green .bg-\[\#12101a\] { background-color: #0f2a15 !important; }
+
+/* ===== Free balance bonus popup ===== */
+@keyframes bonus-card-in {
+  0% { transform: scale(0.3) translateY(40px); opacity: 0; }
+  55% { transform: scale(1.08) translateY(-6px); opacity: 1; }
+  75% { transform: scale(0.97) translateY(2px); }
+  100% { transform: scale(1) translateY(0); }
+}
+@keyframes bonus-sway {
+  0%, 100% { transform: translateX(0) rotate(0deg); }
+  25% { transform: translateX(-7px) rotate(-0.6deg); }
+  75% { transform: translateX(7px) rotate(0.6deg); }
+}
+.bonus-card-anim {
+  animation: bonus-card-in 0.65s cubic-bezier(0.22, 1.4, 0.36, 1) both,
+             bonus-sway 4.5s ease-in-out 0.7s infinite;
+}
+@keyframes bonus-gift-bounce {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  20% { transform: scale(1.12) rotate(-6deg); }
+  40% { transform: scale(0.96) rotate(4deg); }
+  60% { transform: scale(1.06) rotate(-3deg); }
+  80% { transform: scale(1) rotate(0deg); }
+}
+.bonus-gift-anim { animation: bonus-gift-bounce 2.2s ease-in-out infinite; }
+@keyframes bonus-amount-pulse {
+  0%, 100% { transform: scale(1); text-shadow: 0 0 18px rgba(52,211,153,0.5); }
+  50% { transform: scale(1.09); text-shadow: 0 0 34px rgba(52,211,153,0.9); }
+}
+.bonus-amount-anim { animation: bonus-amount-pulse 1.6s ease-in-out infinite; }
+@keyframes bonus-confetti-fall {
+  0% { transform: translateY(-6vh) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(106vh) rotate(720deg); opacity: 0.5; }
+}
+.bonus-confetti {
+  position: absolute;
+  top: -20px;
+  border-radius: 2px;
+  animation-name: bonus-confetti-fall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}

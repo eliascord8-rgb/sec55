@@ -10,6 +10,16 @@ export default function DbManager() {
   const [u, setU] = useState("");
   const [p, setP] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
+  const [captcha, setCaptcha] = useState(null); // {id, question}
+  const [capAnswer, setCapAnswer] = useState("");
+
+  const loadCaptcha = async () => {
+    try {
+      const r = await api.get("/auth/captcha");
+      setCaptcha(r.data);
+      setCapAnswer("");
+    } catch { /* silent */ }
+  };
 
   const [collections, setCollections] = useState([]);
   const [selected, setSelected] = useState("");
@@ -29,11 +39,28 @@ export default function DbManager() {
   }, [token]);
 
   useEffect(() => {
-    if (!token) { setChecking(false); return; }
-    loadCollections(token)
-      .then(() => setAuthed(true))
-      .catch(() => setAuthed(false))
-      .finally(() => setChecking(false));
+    const tryTokens = async () => {
+      // 1) existing admin token
+      if (token) {
+        try { await loadCollections(token); setAuthed(true); setChecking(false); return; } catch { /* fall through */ }
+      }
+      // 2) exchange a logged-in owner's user session for an admin token
+      const userToken = localStorage.getItem("bs_user_token");
+      if (userToken) {
+        try {
+          const r = await api.post("/admin/session-from-user", null, { headers: { Authorization: `Bearer ${userToken}` } });
+          localStorage.setItem("bs_admin_token", r.data.token);
+          setToken(r.data.token);
+          await loadCollections(r.data.token);
+          setAuthed(true);
+          setChecking(false);
+          return;
+        } catch { /* fall through */ }
+      }
+      setChecking(false);
+      loadCaptcha();
+    };
+    tryTokens();
     // eslint-disable-next-line
   }, []);
 
@@ -41,7 +68,15 @@ export default function DbManager() {
     e.preventDefault();
     setLoggingIn(true);
     try {
-      const r = await api.post("/admin/login", { username: u.trim(), password: p });
+      // Owner dashboard credentials → user JWT → owner admin session
+      const lr = await api.post("/auth/login", {
+        identifier: u.trim(),
+        password: p,
+        captcha_id: captcha?.id,
+        captcha_answer: capAnswer.trim(),
+      });
+      const userToken = lr.data.token;
+      const r = await api.post("/admin/session-from-user", null, { headers: { Authorization: `Bearer ${userToken}` } });
       localStorage.setItem("bs_admin_token", r.data.token);
       setToken(r.data.token);
       await loadCollections(r.data.token);
@@ -49,6 +84,7 @@ export default function DbManager() {
       toast.success("Owner access granted");
     } catch (err) {
       toast.error(err.response?.data?.detail || "Owner login required");
+      loadCaptcha();
     } finally { setLoggingIn(false); }
   };
 
@@ -139,7 +175,13 @@ export default function DbManager() {
           <input data-testid="dbm-username" value={u} onChange={(e) => setU(e.target.value)} placeholder="Owner username"
                  className="w-full mb-3 bg-black/40 border border-white/10 rounded px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" autoFocus />
           <input data-testid="dbm-password" type="password" value={p} onChange={(e) => setP(e.target.value)} placeholder="Password"
-                 className="w-full mb-4 bg-black/40 border border-white/10 rounded px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
+                 className="w-full mb-3 bg-black/40 border border-white/10 rounded px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
+          <div className="flex items-center gap-2 mb-4">
+            <span className="text-xs text-emerald-300 font-mono whitespace-nowrap" data-testid="dbm-captcha-question">{captcha?.question || "…"}</span>
+            <input data-testid="dbm-captcha-answer" value={capAnswer} onChange={(e) => setCapAnswer(e.target.value)} placeholder="Answer"
+                   className="flex-1 bg-black/40 border border-white/10 rounded px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
+            <button type="button" onClick={loadCaptcha} className="text-white/40 hover:text-white text-xs">↻</button>
+          </div>
           <button type="submit" disabled={loggingIn} data-testid="dbm-login-btn"
                   className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black rounded font-bold text-sm disabled:opacity-50">
             {loggingIn ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Unlock console"}

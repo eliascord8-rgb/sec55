@@ -232,6 +232,23 @@ async def notify_deposit_status(db, user_id: str, status: str, amount: float, ba
         cta_label="View wallet")
 
 
+async def notify_bonus_waiting(db, user_id: str, amount: float, backend_url: str):
+    body = f"""
+<h2 style="color:#fff;font-size:20px;margin:0 0 8px">🎁 Balance Bonus Free to your account waiting</h2>
+<p>Great news — a <b>free balance bonus of €{amount:.2f}</b> has been gifted to your account!</p>
+<div style="background:#0f2a15;border:1px solid #10b98133;border-radius:8px;padding:16px;margin:16px 0;text-align:center">
+  <div style="font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Your free bonus</div>
+  <div style="font-size:32px;font-weight:900;color:{BRAND_COLOR}">€{amount:.2f}</div>
+</div>
+<p>Open the purchase page and the claim popup will appear — hit <b>Claim</b> and the funds land in your balance instantly. You can also decline it if you don't want it.</p>
+"""
+    return await notify_user(db, user_id, "deposit",
+        subject=f"Balance Bonus Free to your account waiting — €{amount:.2f}",
+        body_html=body,
+        cta_url=f"{backend_url}/client/dashboard?tab=buy",
+        cta_label="Claim your bonus")
+
+
 async def notify_ticket_reply(db, user_id: str, ticket_id: str, subject: str, staff_name: str, message: str, backend_url: str):
     preview = (message or "")[:280]
     body = f"""

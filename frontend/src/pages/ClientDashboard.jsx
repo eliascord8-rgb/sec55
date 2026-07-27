@@ -41,6 +41,10 @@ import {
   Copy,
   RefreshCw,
   X,
+  Gift,
+  Home,
+  Trophy,
+  MessageCircle,
 } from "lucide-react";
 import SlotsView from "./SlotsView";
 import MessagesView from "./MessagesView";
@@ -63,14 +67,31 @@ export default function ClientDashboard() {
   const { features } = useFeatures();
   const feat = (k) => features[k] !== false;
   const { t } = useLang();
-  const { format: fmtMoney } = useCurrency();
+  const { format: fmtMoney, currency, setCurrency } = useCurrency();
   const nav = useNavigate();
   const [stats, setStats] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [pendingBonuses, setPendingBonuses] = useState([]);
+  const [bonusModalOpen, setBonusModalOpen] = useState(false);
   const [view, setView] = useState("home"); // home | funds | tickets | buy | redeem | slots | withdraw | tos | messages
+
+  // Free balance bonus popup — re-opens every time the purchase page is opened
+  // (and on refresh) until the user claims or declines it.
+  useEffect(() => {
+    if (view !== "buy" || !user) return;
+    (async () => {
+      try {
+        const r = await authedApi().get("/client/bonuses/pending");
+        const list = r.data.bonuses || [];
+        setPendingBonuses(list);
+        if (list.length > 0) setBonusModalOpen(true);
+      } catch { /* silent */ }
+    })();
+    // eslint-disable-next-line
+  }, [view, user?.id]);
   const [viewLoading, setViewLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const [balance, setBalance] = useState(0);
@@ -455,15 +476,6 @@ export default function ClientDashboard() {
         <header className="bg-[#0d2b12] sticky top-0 z-20 shadow-lg shadow-emerald-900/40 border-b border-emerald-500/20">
           <div className="flex items-center h-16 px-3 md:px-6 gap-2 md:gap-4">
             <div className="flex items-center gap-2 shrink-0">
-              {/* Mobile hamburger — reveals full tab list */}
-              <button
-                onClick={() => setMobileMenuOpen(true)}
-                data-testid="mobile-nav-toggle"
-                className="md:hidden w-9 h-9 rounded-md hover:bg-emerald-500/15 flex items-center justify-center text-emerald-200"
-                title="Menu"
-              >
-                <Menu className="w-5 h-5" />
-              </button>
               <div className="w-9 h-9 rounded-md bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
                 <Sparkles className="w-4 h-4 text-emerald-300" strokeWidth={2.5} />
               </div>
@@ -537,13 +549,22 @@ export default function ClientDashboard() {
               {(navTabs.find((t) => t.id === view) || {}).label || "Home"}
             </div>
             <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
-              {/* Balance chip — Buy button removed (already in nav) to save topbar space */}
-              <div className="flex items-center gap-1.5 px-2 md:px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/30" data-testid="topbar-balance">
+              {/* Balance chip — desktop only (mobile shows it centered) */}
+              <div className="hidden md:flex items-center gap-1.5 px-2 md:px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/30" data-testid="topbar-balance">
                 <CreditCard className="w-3.5 h-3.5 text-emerald-300 hidden sm:inline-block" />
                 <span className="text-xs md:text-sm font-bold text-emerald-300 whitespace-nowrap">{fmtMoney(balance)}</span>
               </div>
+              {/* Mobile: gift icon → redeem coupons */}
+              <button
+                onClick={() => changeView("redeem")}
+                data-testid="mobile-gift-btn"
+                title="Redeem a coupon"
+                className="md:hidden w-9 h-9 rounded-md bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-300 active:scale-95 transition"
+              >
+                <Gift className="w-4 h-4" />
+              </button>
               {/* Daily free-bet claim removed per user request */}
-              <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-white/10 relative" data-testid="profile-menu-wrap">
+              <div className="flex items-center gap-2 pl-1 sm:pl-3 sm:border-l border-white/10 relative" data-testid="profile-menu-wrap">
                 <button onClick={() => setProfileOpen((v) => !v)}
                   data-testid="profile-menu-btn"
                   className="flex items-center gap-2 hover:bg-white/5 rounded-md px-1.5 py-1 transition">
@@ -606,23 +627,34 @@ export default function ClientDashboard() {
                   Admin
                 </a>
               )}
-              <button onClick={() => { logout(); nav("/"); }} data-testid="client-logout" className="w-9 h-9 rounded-md hover:bg-white/10 flex items-center justify-center text-white/70" title="Logout">
+              <button onClick={() => { logout(); nav("/"); }} data-testid="client-logout" className="hidden md:flex w-9 h-9 rounded-md hover:bg-white/10 items-center justify-center text-white/70" title="Logout">
                 <LogOut className="w-4 h-4" />
               </button>
             </div>
           </div>
-          {/* Mobile drawer — full tab list */}
+          {/* Mobile side drawer — full page list (opened from bottom-bar Menu) */}
           {mobileMenuOpen && (
             <>
-              <div className="fixed inset-0 top-16 bg-black/70 backdrop-blur-sm z-30 md:hidden" onClick={() => setMobileMenuOpen(false)} />
-              <div className="fixed top-16 left-0 right-0 z-40 bg-[#0d2b12] border-b border-emerald-500/30 shadow-2xl md:hidden max-h-[70vh] overflow-y-auto" data-testid="mobile-nav-drawer">
-                <div className="p-2 grid grid-cols-2 gap-1">
+              <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-40 md:hidden" onClick={() => setMobileMenuOpen(false)} />
+              <div className="fixed top-0 left-0 bottom-0 z-50 w-[280px] bg-[#0d2b12] border-r border-emerald-500/30 shadow-2xl md:hidden overflow-y-auto" data-testid="mobile-nav-drawer">
+                <div className="flex items-center justify-between px-4 h-14 border-b border-emerald-500/20 sticky top-0 bg-[#0d2b12]">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-md bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
+                      <Sparkles className="w-4 h-4 text-emerald-300" strokeWidth={2.5} />
+                    </div>
+                    <span className="font-display font-black text-sm text-white">Menu</span>
+                  </div>
+                  <button onClick={() => setMobileMenuOpen(false)} data-testid="mobile-drawer-close" className="w-8 h-8 rounded-md hover:bg-white/10 flex items-center justify-center text-white/60">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="p-2 space-y-0.5">
                   {navTabs.map((t) => (
                     <button
                       key={t.id}
                       onClick={() => { changeView(t.id); setMobileMenuOpen(false); }}
                       data-testid={`m-${t.testId}`}
-                      className={`relative flex items-center justify-between px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider transition ${view === t.id ? "bg-emerald-500/20 text-emerald-200" : "text-white/70 hover:bg-emerald-500/10"}`}
+                      className={`relative w-full flex items-center justify-between px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider transition ${view === t.id ? "bg-emerald-500/20 text-emerald-200" : "text-white/70 hover:bg-emerald-500/10"}`}
                     >
                       <span>{t.label}</span>
                       {t.isNew && (
@@ -635,6 +667,19 @@ export default function ClientDashboard() {
                       )}
                     </button>
                   ))}
+                  <button
+                    onClick={() => { setMobileMenuOpen(false); changeView("settings"); }}
+                    className="w-full flex items-center justify-between px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider text-white/70 hover:bg-emerald-500/10"
+                  >
+                    <span>Settings</span>
+                  </button>
+                  <button
+                    onClick={() => { logout(); nav("/"); }}
+                    data-testid="m-logout"
+                    className="w-full flex items-center gap-2 px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider text-red-300 hover:bg-red-500/10"
+                  >
+                    <LogOut className="w-4 h-4" /> Sign out
+                  </button>
                 </div>
                 {user.role === "owner" && (
                   <div className="p-2 border-t border-emerald-500/20">
@@ -732,7 +777,7 @@ export default function ClientDashboard() {
       </header>
       )}
 
-      <div className={useNewLayout ? "flex-1 px-4 md:px-6 pt-4" : "flex flex-1"}>
+      <div className={useNewLayout ? "flex-1 px-4 md:px-6 pt-4 pb-24 md:pb-4" : "flex flex-1"}>
         {/* SIDEBAR — only for classic layout */}
         {!useNewLayout && (
         <aside
@@ -878,9 +923,145 @@ export default function ClientDashboard() {
       <AIWidget open={aiOpen} onOpenChange={setAiOpen} />
       <GoalNotifier />
       <NewsModal />
+      {bonusModalOpen && pendingBonuses.length > 0 && (
+        <BonusClaimModal
+          bonus={pendingBonuses[0]}
+          authedApi={authedApi}
+          onDone={(claimed) => {
+            setBonusModalOpen(false);
+            setPendingBonuses((prev) => prev.slice(1));
+            if (claimed) loadBalance();
+          }}
+          onClose={() => setBonusModalOpen(false)}
+        />
+      )}
+
+      {/* Mobile bottom navigation bar — BC.Game style (phone only) */}
+      {useNewLayout && (
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0d2b12]/95 backdrop-blur border-t border-emerald-500/25 shadow-[0_-4px_20px_rgba(0,0,0,0.5)]" data-testid="mobile-bottom-nav">
+          <div className="grid grid-cols-5 h-16">
+            <button onClick={() => setMobileMenuOpen(true)} data-testid="bottomnav-menu"
+                    className="flex flex-col items-center justify-center gap-0.5 text-white/60 active:scale-95 transition">
+              <Menu className="w-5 h-5" />
+              <span className="text-[9px] font-bold uppercase tracking-wider">Menu</span>
+            </button>
+            <button onClick={() => changeView("home")} data-testid="bottomnav-home"
+                    className={`flex flex-col items-center justify-center gap-0.5 active:scale-95 transition ${view === "home" ? "text-emerald-300" : "text-white/60"}`}>
+              <Home className="w-5 h-5" />
+              <span className="text-[9px] font-bold uppercase tracking-wider">Home</span>
+            </button>
+            <button onClick={() => changeView("buy")} data-testid="bottomnav-buy"
+                    className={`flex flex-col items-center justify-center gap-0.5 active:scale-95 transition ${view === "buy" ? "text-emerald-300" : "text-white/60"}`}>
+              <ShoppingBag className="w-5 h-5" />
+              <span className="text-[9px] font-bold uppercase tracking-wider">{t("nav_buy") || "Buy"}</span>
+            </button>
+            {feat("sports") ? (
+              <button onClick={() => changeView("sports")} data-testid="bottomnav-sports"
+                      className={`flex flex-col items-center justify-center gap-0.5 active:scale-95 transition ${view === "sports" ? "text-emerald-300" : "text-white/60"}`}>
+                <Trophy className="w-5 h-5" />
+                <span className="text-[9px] font-bold uppercase tracking-wider">Sports</span>
+              </button>
+            ) : (
+              <button onClick={() => changeView("funds")} data-testid="bottomnav-funds"
+                      className={`flex flex-col items-center justify-center gap-0.5 active:scale-95 transition ${view === "funds" ? "text-emerald-300" : "text-white/60"}`}>
+                <CreditCard className="w-5 h-5" />
+                <span className="text-[9px] font-bold uppercase tracking-wider">Funds</span>
+              </button>
+            )}
+            <button onClick={() => window.dispatchEvent(new CustomEvent("bs-open-community-chat"))} data-testid="bottomnav-chat"
+                    className="flex flex-col items-center justify-center gap-0.5 text-white/60 active:scale-95 transition">
+              <MessageCircle className="w-5 h-5" />
+              <span className="text-[9px] font-bold uppercase tracking-wider">Chat</span>
+            </button>
+          </div>
+        </nav>
+      )}
       {/* AI FAB — ONLY inside the Help Center view (per user request).
           The Help Center itself renders a big "Chat with support" button
           that calls setAiOpen(true), so we pass it via context/prop. */}
+    </div>
+  );
+}
+
+const CONFETTI_COLORS = ["#34d399", "#fbbf24", "#f472b6", "#60a5fa", "#a78bfa", "#f87171", "#fde047"];
+
+function BonusClaimModal({ bonus, authedApi, onDone, onClose }) {
+  const [busy, setBusy] = useState("");
+  const [claimed, setClaimed] = useState(false);
+  const confetti = Array.from({ length: 36 }, (_, i) => ({
+    left: `${(i * 137) % 100}%`,
+    delay: `${(i % 12) * 0.28}s`,
+    dur: `${2.4 + (i % 5) * 0.5}s`,
+    color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+    w: 6 + (i % 3) * 3,
+    h: 10 + (i % 4) * 3,
+  }));
+
+  const act = async (kind) => {
+    setBusy(kind);
+    try {
+      if (kind === "claim") {
+        const r = await authedApi().post(`/client/bonuses/${bonus.id}/claim`);
+        setClaimed(true);
+        toast.success(`€${Number(r.data.claimed || bonus.amount).toFixed(2)} added to your balance! 🎉`);
+        setTimeout(() => onDone(true), 1600);
+      } else {
+        await authedApi().post(`/client/bonuses/${bonus.id}/decline`);
+        toast("Bonus declined — it's now expired.");
+        onDone(false);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Action failed");
+      onDone(false);
+    } finally { setBusy(""); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[80] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-hidden" data-testid="bonus-claim-modal">
+      {/* Confetti layer */}
+      <div className="absolute inset-0 pointer-events-none">
+        {confetti.map((c, i) => (
+          <span key={i} className="bonus-confetti" style={{
+            left: c.left, animationDelay: c.delay, animationDuration: c.dur,
+            background: c.color, width: c.w, height: c.h,
+          }} />
+        ))}
+      </div>
+      <div className="relative w-full max-w-sm bonus-card-anim">
+        <div className="relative bg-gradient-to-b from-[#0f2a15] to-[#0a1a0a] border-2 border-emerald-400/60 rounded-2xl p-8 text-center shadow-[0_0_60px_rgba(52,211,153,0.35)]">
+          <button onClick={onClose} data-testid="bonus-modal-close"
+                  className="absolute top-3 right-3 w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center text-white/50">
+            <X className="w-4 h-4" />
+          </button>
+          <div className="bonus-gift-anim mx-auto w-20 h-20 rounded-2xl bg-emerald-500/20 border border-emerald-400/50 flex items-center justify-center mb-4">
+            <Gift className="w-10 h-10 text-emerald-300" />
+          </div>
+          <div className="text-[10px] uppercase tracking-[0.3em] text-emerald-400/80 font-black mb-1">Free Balance Bonus</div>
+          <h3 className="font-display font-black text-2xl text-white mb-2">You've been gifted!</h3>
+          <div className="font-display font-black text-5xl text-emerald-300 mb-3 bonus-amount-anim" data-testid="bonus-amount">
+            €{Number(bonus.amount || 0).toFixed(2)}
+          </div>
+          <p className="text-xs text-white/60 mb-6 leading-relaxed">
+            A free balance bonus is waiting for your account. Claim it now and it lands in your balance instantly — or decline and it expires.
+          </p>
+          {claimed ? (
+            <div className="py-3 rounded-md bg-emerald-500/20 border border-emerald-400/50 text-emerald-200 font-black text-sm uppercase tracking-widest animate-pulse">
+              Credited to your balance! 🎉
+            </div>
+          ) : (
+            <div className="flex gap-3">
+              <button onClick={() => act("decline")} disabled={!!busy} data-testid="bonus-decline-btn"
+                      className="flex-1 py-3 rounded-md border border-white/15 text-white/60 hover:bg-white/5 text-xs font-bold uppercase tracking-widest disabled:opacity-50">
+                {busy === "decline" ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Decline"}
+              </button>
+              <button onClick={() => act("claim")} disabled={!!busy} data-testid="bonus-claim-btn"
+                      className="flex-[2] py-3 rounded-md bg-emerald-400 hover:bg-emerald-300 text-black font-black text-sm uppercase tracking-widest shadow-lg shadow-emerald-500/40 active:scale-95 transition disabled:opacity-50">
+                {busy === "claim" ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Claim now 🎁"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1399,7 +1580,7 @@ function PublicShoutbox({ user }) {
 
   return (
     <>
-    <aside className="bg-[#0f2a15] border border-emerald-500/20 rounded-md overflow-hidden flex flex-col min-h-0" data-testid="public-shoutbox">
+    <aside className="hidden md:flex bg-[#0f2a15] border border-emerald-500/20 rounded-md overflow-hidden flex-col min-h-0" data-testid="public-shoutbox">
       <div className="px-4 py-3 border-b border-emerald-500/15 flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
