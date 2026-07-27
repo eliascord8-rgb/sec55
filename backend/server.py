@@ -7189,6 +7189,7 @@ async def create_ticket(body: TicketCreate, user: CurrentUser = Depends(current_
         "message": body.message.strip()[:4000],
         "created_at": now,
     })
+    asyncio.create_task(_ai_ticket_autoreply(ticket_id))
     return {"ok": True, "id": ticket_id}
 
 
@@ -7242,6 +7243,7 @@ async def reply_my_ticket(ticket_id: str, body: TicketReply, user: CurrentUser =
         {"id": ticket_id},
         {"$set": {"status": "open", "updated_at": now, "last_reply_by": "user", "client_unread": False}},
     )
+    asyncio.create_task(_ai_ticket_autoreply(ticket_id))
     return {"ok": True}
 
 
@@ -7321,6 +7323,268 @@ async def admin_close_ticket(ticket_id: str, x_admin_token: Optional[str] = Head
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return {"ok": True}
+
+
+# ============ AI SUPPORT ASSISTANT (ticket auto-reply + refunds) ============
+AI_ASSISTANT_NAME = "BS Assistant (AI)"
+
+
+async def _already_refunded(user_id: str, target_id: str) -> float:
+    pipeline = [
+        {"$match": {"user_id": user_id, "target_id": target_id,
+                    "type": {"$in": ["ai_refund", "admin_refund", "live_sub_refund"]}, "status": "approved"}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
+    ]
+    rows = await db.transactions.aggregate(pipeline).to_list(1)
+    return round(float(rows[0]["total"]), 2) if rows else 0.0
+
+
+async def _ai_refundable_items(user_id: str) -> list:
+    """Cancelled/refunded live subs + cancelled orders with how much is still refundable."""
+    items = []
+    subs = await db.live_subscriptions.find(
+        {"user_id": user_id, "status": {"$in": ["cancelled", "expired", "refunded"]}},
+        {"_id": 0, "id": 1, "service_name": 1, "tiktok_username": 1, "status": 1, "total_spent": 1, "created_at": 1},
+    ).sort("created_at", -1).limit(8).to_list(8)
+    for s in subs:
+        spent = round(float(s.get("total_spent") or 0), 2)
+        done = await _already_refunded(user_id, s["id"])
+        items.append({
+            "target_id": s["id"], "kind": "live_subscription",
+            "label": f"Auto-Live @{s.get('tiktok_username')} — {s.get('service_name') or ''}".strip(),
+            "status": s.get("status"), "total_spent": spent,
+            "already_refunded": done, "refundable": max(0.0, round(spent - done, 2)),
+        })
+    orders = await db.orders.find(
+        {"user_id": user_id, "status": {"$in": ["canceled", "cancelled", "refunded", "partial"]}},
+        {"_id": 0, "id": 1, "service_name": 1, "status": 1, "price": 1, "charge": 1, "amount": 1, "created_at": 1},
+    ).sort("created_at", -1).limit(8).to_list(8)
+    for o in orders:
+        cost = round(float(o.get("charge") or o.get("price") or o.get("amount") or 0), 2)
+        done = await _already_refunded(user_id, o["id"])
+        items.append({
+            "target_id": o["id"], "kind": "order",
+            "label": f"Order {o.get('service_name') or o['id'][:8]}",
+            "status": o.get("status"), "total_spent": cost,
+            "already_refunded": done, "refundable": max(0.0, round(cost - done, 2)),
+        })
+    return items
+
+
+async def _ai_apply_refund(user_id: str, username: str, target_id: str, amount: float,
+                           reason: str, ticket_id: str, actor: str = "ai") -> Optional[float]:
+    """Validate + credit a refund. Returns credited amount or None if rejected."""
+    items = await _ai_refundable_items(user_id)
+    match = next((i for i in items if i["target_id"] == target_id), None)
+    if not match:
+        return None
+    credit = round(min(float(amount), match["refundable"]), 2)
+    if credit <= 0:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    await db.transactions.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user_id, "username": username,
+        "amount": credit, "method": "balance", "status": "approved",
+        "type": "ai_refund" if actor == "ai" else "admin_refund",
+        "target_id": target_id, "ticket_id": ticket_id,
+        "note": f"Refund for {match['label']} — {reason}"[:300],
+        "created_at": now, "approved_at": now,
+    })
+    await db.ai_actions.insert_one({
+        "id": str(uuid.uuid4()), "kind": "refund", "actor": actor,
+        "user_id": user_id, "username": username,
+        "target_id": target_id, "target_label": match["label"],
+        "amount": credit, "reason": reason[:300], "ticket_id": ticket_id,
+        "created_at": now,
+    })
+    logger.info("[ai-support] %s refunded $%.2f to %s (target=%s)", actor, credit, username, target_id)
+    return credit
+
+
+async def _ai_ticket_autoreply(ticket_id: str):
+    """AI support agent: reads the ticket, replies, and can refund cancelled
+    orders/subscriptions to the user's balance (capped at what's refundable)."""
+    try:
+        t = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+        if not t or t.get("status") == "closed" or t.get("ai_disabled"):
+            return
+        cfg = await db.ai_support_config.find_one({}, {"_id": 0}) or {}
+        if cfg.get("enabled") is False:
+            return
+        msgs = await db.ticket_messages.find({"ticket_id": ticket_id}, {"_id": 0}).sort("created_at", 1).to_list(60)
+        if msgs and msgs[-1].get("author_role") != "user":
+            return  # only reply to the user's messages
+        user_id = t.get("user_id")
+        u = await db.users.find_one({"id": user_id}, {"_id": 0, "username": 1, "email": 1}) or {}
+        balance = await _get_user_balance(user_id)
+        refundables = await _ai_refundable_items(user_id)
+
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        api_key = os.environ.get("EMERGENT_LLM_KEY")
+        if not api_key:
+            return
+        system_msg = (
+            "You are the AI support agent for Better Social, an SMM panel (TikTok live viewers, followers, etc.). "
+            "Be short, friendly and helpful. You handle support tickets.\n"
+            "You CAN issue refunds to the user's balance for CANCELLED orders/subscriptions — but ONLY up to the "
+            "'refundable' amount listed in the CONTEXT. Never invent refunds for items not listed.\n"
+            "ALWAYS answer with pure JSON (no markdown, no code fences) in this exact shape:\n"
+            '{"reply": "<your message to the user>", "refund": null}\n'
+            'or, when a refund is justified: {"reply": "...", "refund": {"target_id": "<id from context>", '
+            '"amount": <number>, "reason": "<short reason>"}}\n'
+            "Only refund when the user asks about a cancelled order/money back AND a refundable item exists. "
+            "If nothing is refundable, explain why politely."
+        )
+        context = {
+            "username": u.get("username"),
+            "current_balance": balance,
+            "ticket_subject": t.get("subject"),
+            "refundable_items": refundables,
+        }
+        convo = "\n".join(
+            f"{'USER' if m.get('author_role') == 'user' else 'STAFF'}: {m.get('message', '')[:800]}"
+            for m in msgs[-12:]
+        )
+        prompt = f"CONTEXT:\n{jsonlib.dumps(context)}\n\nTICKET CONVERSATION:\n{convo}\n\nRespond now as JSON."
+        chat = LlmChat(api_key=api_key, session_id=f"ticket-{ticket_id}", system_message=system_msg).with_model(
+            "anthropic", "claude-sonnet-4-5-20250929"
+        )
+        raw = await chat.send_message(UserMessage(text=prompt))
+        raw = (raw or "").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            raw = raw[raw.find("{"):raw.rfind("}") + 1]
+        try:
+            parsed = jsonlib.loads(raw)
+        except Exception:
+            parsed = {"reply": raw[:2000], "refund": None}
+        reply_text = (parsed.get("reply") or "").strip()[:4000]
+        refund = parsed.get("refund")
+        credited = None
+        if isinstance(refund, dict) and refund.get("target_id") and refund.get("amount"):
+            credited = await _ai_apply_refund(
+                user_id, u.get("username") or t.get("username") or "",
+                str(refund["target_id"]), float(refund["amount"]),
+                str(refund.get("reason") or "AI support refund"), ticket_id, actor="ai",
+            )
+            if credited:
+                reply_text += f"\n\n✅ I've refunded ${credited:.2f} to your balance."
+            elif refund:
+                reply_text += "\n\n(Note: the refund couldn't be applied automatically — a staff member will review it.)"
+        if not reply_text:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        await db.ticket_messages.insert_one({
+            "id": str(uuid.uuid4()), "ticket_id": ticket_id,
+            "author_role": "staff", "author_name": AI_ASSISTANT_NAME,
+            "message": reply_text, "created_at": now, "is_ai": True,
+        })
+        await db.tickets.update_one(
+            {"id": ticket_id},
+            {"$set": {"status": "answered", "updated_at": now, "last_reply_by": "staff",
+                      "last_reply_author": AI_ASSISTANT_NAME, "client_unread": True}},
+        )
+        await db.ai_actions.insert_one({
+            "id": str(uuid.uuid4()), "kind": "ticket_reply", "actor": "ai",
+            "user_id": user_id, "username": u.get("username"),
+            "ticket_id": ticket_id, "details": reply_text[:300],
+            "refunded": credited or 0, "created_at": now,
+        })
+        try:
+            from notification_service import notify_ticket_reply
+            backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+            asyncio.create_task(notify_ticket_reply(db, user_id, ticket_id, t.get("subject") or "Support",
+                                                    AI_ASSISTANT_NAME, reply_text, backend_url))
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning("[ai-support] autoreply failed for ticket %s: %s", ticket_id, e)
+
+
+@api_router.get("/admin/ai-actions")
+async def admin_ai_actions(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    rows = await db.ai_actions.find({}, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
+    return {"actions": rows}
+
+
+# ============ ADMIN — MANAGE ALL LIVE SUBSCRIPTIONS ============
+
+@api_router.get("/admin/live-subs")
+async def admin_list_live_subs(status: Optional[str] = None, q: str = "", x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    query: dict = {}
+    if status:
+        query["status"] = status
+    if q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        query["$or"] = [{"username": rx}, {"tiktok_username": rx}, {"service_name": rx}]
+    subs = await db.live_subscriptions.find(query, {"_id": 0}).sort("created_at", -1).limit(150).to_list(150)
+    for s in subs:
+        s["already_refunded"] = await _already_refunded(s.get("user_id") or "", s["id"])
+    return {"subs": subs}
+
+
+class AdminLiveSubCancelReq(BaseModel):
+    refund_amount: float = 0.0
+    reason: str = Field(default="Cancelled by admin", max_length=300)
+    open_ticket: bool = True
+
+
+@api_router.post("/admin/live-subs/{sid}/cancel")
+async def admin_cancel_live_sub(sid: str, body: AdminLiveSubCancelReq, x_admin_token: Optional[str] = Header(None)):
+    """Cancel any user's auto-live subscription, optionally refund part of what
+    they spent, and auto-open a support ticket (the AI assistant handles follow-ups)."""
+    check_admin(x_admin_token)
+    sub = await db.live_subscriptions.find_one({"id": sid}, {"_id": 0})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    now = datetime.now(timezone.utc).isoformat()
+    if sub.get("status") not in ("cancelled", "refunded"):
+        await db.live_subscriptions.update_one(
+            {"id": sid},
+            {"$set": {"status": "cancelled", "ended_at": now, "cancelled_by": "admin", "cancel_reason": body.reason}},
+        )
+    credited = 0.0
+    if body.refund_amount and body.refund_amount > 0:
+        # allow refund even right after cancel — recompute refundable now
+        credited = await _ai_apply_refund(
+            sub["user_id"], sub.get("username") or "", sid,
+            float(body.refund_amount), body.reason, ticket_id="", actor="admin",
+        ) or 0.0
+    ticket_id = None
+    if body.open_ticket and sub.get("user_id"):
+        ticket_id = str(uuid.uuid4())
+        subject = f"Auto-Live @{sub.get('tiktok_username')} cancelled by admin"
+        await db.tickets.insert_one({
+            "id": ticket_id, "user_id": sub["user_id"], "username": sub.get("username"),
+            "subject": subject[:120], "status": "answered", "created_at": now, "updated_at": now,
+            "last_reply_by": "staff", "last_reply_author": AI_ASSISTANT_NAME, "client_unread": True,
+        })
+        msg = (
+            f"Hi {sub.get('username')}, your Auto-Live subscription for @{sub.get('tiktok_username')} "
+            f"({sub.get('service_name') or ''}) was cancelled by our team.\n"
+            f"Reason: {body.reason}\n"
+            + (f"💰 ${credited:.2f} has been refunded to your balance.\n" if credited else "")
+            + "Reply here if you have any questions — I can check what else is refundable for you."
+        )
+        await db.ticket_messages.insert_one({
+            "id": str(uuid.uuid4()), "ticket_id": ticket_id, "author_role": "staff",
+            "author_name": AI_ASSISTANT_NAME, "message": msg, "created_at": now, "is_ai": True,
+        })
+        await db.ai_actions.insert_one({
+            "id": str(uuid.uuid4()), "kind": "admin_cancel_sub", "actor": "admin",
+            "user_id": sub["user_id"], "username": sub.get("username"),
+            "target_id": sid, "target_label": f"@{sub.get('tiktok_username')}",
+            "amount": credited, "reason": body.reason, "ticket_id": ticket_id, "created_at": now,
+        })
+        try:
+            from notification_service import notify_ticket_reply
+            backend_url = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+            asyncio.create_task(notify_ticket_reply(db, sub["user_id"], ticket_id, subject, AI_ASSISTANT_NAME, msg, backend_url))
+        except Exception:
+            pass
+    return {"ok": True, "cancelled": sid, "refunded": credited, "ticket_id": ticket_id}
 
 
 @api_router.delete("/admin/tickets/{ticket_id}")

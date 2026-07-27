@@ -545,9 +545,17 @@ export default function ClientDashboard() {
                 )}
               </div>
             </nav>
-            {/* Mobile: current view label in the middle */}
-            <div className="md:hidden flex-1 text-center text-xs font-bold uppercase tracking-widest text-emerald-200 truncate">
-              {(navTabs.find((t) => t.id === view) || {}).label || "Home"}
+            {/* Mobile: balance pill — tap to switch USD ⇄ EUR */}
+            <div className="md:hidden flex-1 flex justify-center min-w-0">
+              <button
+                onClick={() => setCurrency(currency === "USD" ? "EUR" : "USD")}
+                data-testid="mobile-balance-toggle"
+                title="Tap to switch currency"
+                className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 active:scale-95 transition"
+              >
+                <span className="text-sm font-black text-emerald-300 whitespace-nowrap">{fmtMoney(balance)}</span>
+                <span className="text-[9px] font-bold text-white/40 uppercase">{currency} ⇄</span>
+              </button>
             </div>
             <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
               {/* Balance chip — desktop only (mobile shows it centered) */}

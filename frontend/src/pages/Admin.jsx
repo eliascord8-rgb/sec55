@@ -2247,7 +2247,7 @@ function NowpaymentsConfigPanel({ token }) {
       {cfg && (
         <div className={`mb-4 p-3 rounded-sm text-xs ${cfg.configured ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" : "bg-amber-500/10 border border-amber-500/30 text-amber-300"}`}>
           {cfg.configured
-            ? `Active · key ${cfg.api_key_masked}${cfg.ipn_secret_set ? " · IPN verified" : " · ⚠️ IPN secret not set (webhooks won't be verified)"}${cfg.password_set && cfg.email ? " · Auto-verify ON" : " · ⚠️ Add account email+password below or 'Verify deposit' & auto-credit WON'T work"}`
+            ? `Active · key ${cfg.api_key_masked}${cfg.ipn_secret_set ? " · IPN verified" : " · ⚠️ IPN secret not set (webhooks won't be verified)"}${cfg.password_set && cfg.email ? " · Auto-verify ON" : " · ⚠️ Auto-verify OFF — add account email+password below or 'Verify deposit' & auto-credit WON'T work"}`
             : "Not configured — NOWPayments checkout is disabled until you add an API key."}
         </div>
       )}

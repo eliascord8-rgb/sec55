@@ -254,8 +254,7 @@ body.theme-purple-body { background: #0f051a; }
   75% { transform: translateX(7px) rotate(0.6deg); }
 }
 .bonus-card-anim {
-  animation: bonus-card-in 0.65s cubic-bezier(0.22, 1.4, 0.36, 1) both,
-             bonus-sway 4.5s ease-in-out 0.7s infinite;
+  animation: bonus-card-in 0.65s cubic-bezier(0.22, 1.4, 0.36, 1) both;
 }
 @keyframes bonus-gift-bounce {
   0%, 100% { transform: scale(1) rotate(0deg); }
