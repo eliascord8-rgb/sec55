@@ -19,18 +19,29 @@ class DiscordBotManager:
         self.db = None
         self.banned_words: list[str] = []
         self.activity_text = ""
+        self.welcome_enabled = False
+        self.welcome_message = "Welcome {user} to {server}! 🎉"
+        self.welcome_channel = ""
+        self.mass_dm_task: Optional[asyncio.Task] = None
+        self.mass_dm_progress: dict = {}
 
     # ---------- lifecycle ----------
-    async def start(self, db, token: str, activity_text: str = "", banned_words: Optional[list] = None):
+    async def start(self, db, token: str, activity_text: str = "", banned_words: Optional[list] = None,
+                    welcome: Optional[dict] = None):
         await self.stop()
         self.db = db
         self.banned_words = [w.strip().lower() for w in (banned_words or []) if w.strip()]
         self.activity_text = activity_text or ""
+        welcome = welcome or {}
+        self.welcome_enabled = bool(welcome.get("enabled"))
+        self.welcome_message = welcome.get("message") or self.welcome_message
+        self.welcome_channel = welcome.get("channel") or ""
         self.status = "starting"
         self.error = ""
 
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True
         client = discord.Client(intents=intents)
         self.client = client
         mgr = self
@@ -46,6 +57,25 @@ class DiscordBotManager:
                     logger.warning("[discord] presence set failed: %s", e)
 
         @client.event
+        async def on_member_join(member: discord.Member):
+            if not mgr.welcome_enabled or not mgr.welcome_message:
+                return
+            guild = member.guild
+            ch = None
+            if mgr.welcome_channel:
+                ch = discord.utils.get(guild.text_channels, name=mgr.welcome_channel.lstrip("#").lower())
+            if ch is None:
+                ch = guild.system_channel
+            if ch is None:
+                ch = next((c for c in guild.text_channels if c.permissions_for(guild.me).send_messages), None)
+            if ch:
+                try:
+                    txt = mgr.welcome_message.replace("{user}", member.mention).replace("{server}", guild.name)
+                    await ch.send(txt)
+                except Exception as e:
+                    logger.warning("[discord] welcome send failed: %s", e)
+
+        @client.event
         async def on_message(message: discord.Message):
             if message.author.bot:
                 return
@@ -53,8 +83,48 @@ class DiscordBotManager:
             if isinstance(message.channel, discord.DMChannel):
                 await mgr._store_dm(message.author, message.content, direction="in")
                 return
+            # --- ticket bot ---
+            content_lower = (message.content or "").lower()
+            if content_lower.startswith("!ticket") and message.guild:
+                subject = message.content[7:].strip() or "Support request"
+                guild = message.guild
+                try:
+                    cat = discord.utils.get(guild.categories, name="Tickets")
+                    if cat is None:
+                        cat = await guild.create_category("Tickets")
+                    overwrites = {
+                        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                        message.author: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+                        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+                    }
+                    cname = f"ticket-{message.author.name}".lower().replace(" ", "-")[:90]
+                    chan = await guild.create_text_channel(cname, category=cat, overwrites=overwrites, topic=subject[:250])
+                    await chan.send(
+                        f"🎫 Ticket opened by {message.author.mention} — **{subject}**\n"
+                        f"A staff member will reply soon. Type `!close` to close this ticket."
+                    )
+                    await message.channel.send(f"{message.author.mention} your ticket is ready → {chan.mention}", delete_after=10)
+                    await mgr._mod_log(f"ticket_open: {subject[:80]}", message)
+                except Exception as e:
+                    try:
+                        await message.channel.send(f"⚠️ Couldn't open ticket: {e}", delete_after=8)
+                    except Exception:
+                        pass
+                return
+            if content_lower.startswith("!close") and message.guild and message.channel.name.startswith("ticket-"):
+                perms = message.author.guild_permissions
+                is_opener = message.channel.name == f"ticket-{message.author.name}".lower().replace(" ", "-")[:90]
+                if perms.manage_channels or perms.administrator or is_opener:
+                    try:
+                        await message.channel.send("🔒 Closing ticket in 3 seconds…")
+                        await mgr._mod_log("ticket_close", message)
+                        await asyncio.sleep(3)
+                        await message.channel.delete(reason=f"Ticket closed by {message.author}")
+                    except Exception as e:
+                        logger.warning("[discord] ticket close failed: %s", e)
+                return
             # --- guild moderation ---
-            content_l = (message.content or "").lower()
+            content_l = content_lower
             if mgr.banned_words and any(w in content_l for w in mgr.banned_words):
                 try:
                     await message.delete()
@@ -120,10 +190,16 @@ class DiscordBotManager:
 
     # ---------- info ----------
     def info(self) -> dict:
-        out = {"status": self.status, "error": self.error, "activity_text": self.activity_text}
+        out = {
+            "status": self.status, "error": self.error, "activity_text": self.activity_text,
+            "welcome_enabled": self.welcome_enabled, "welcome_message": self.welcome_message,
+            "welcome_channel": self.welcome_channel,
+            "mass_dm": self.mass_dm_progress or None,
+        }
         if self.client and self.client.user:
             out["bot_username"] = str(self.client.user)
             out["bot_id"] = str(self.client.user.id)
+            out["guild_count"] = len(self.client.guilds)
             try:
                 out["bot_avatar"] = str(self.client.user.display_avatar.url)
             except Exception:
@@ -152,6 +228,59 @@ class DiscordBotManager:
         await user.send(text)
         await self._store_dm(user, text, direction="out")
         return {"ok": True, "to": str(user)}
+
+    # ---------- servers ----------
+    def list_servers(self) -> list:
+        self._require_running()
+        return [
+            {"id": str(g.id), "name": g.name, "member_count": g.member_count or 0,
+             "icon": str(g.icon.url) if g.icon else None}
+            for g in self.client.guilds
+        ]
+
+    async def leave_server(self, guild_id: str) -> dict:
+        self._require_running()
+        g = self.client.get_guild(int(guild_id))
+        if not g:
+            raise RuntimeError("Server not found")
+        await g.leave()
+        return {"ok": True, "left": g.name}
+
+    # ---------- mass DM ----------
+    def start_mass_dm(self, text: str) -> dict:
+        self._require_running()
+        if self.mass_dm_task and not self.mass_dm_task.done():
+            raise RuntimeError("A mass DM is already running")
+        self.mass_dm_progress = {"status": "collecting", "sent": 0, "failed": 0, "total": 0}
+        mgr = self
+
+        async def run():
+            try:
+                seen, members = set(), []
+                for g in mgr.client.guilds:
+                    try:
+                        async for m in g.fetch_members(limit=None):
+                            if not m.bot and m.id not in seen:
+                                seen.add(m.id)
+                                members.append(m)
+                    except Exception as e:
+                        logger.warning("[discord] mass-dm member fetch failed for %s: %s", g.name, e)
+                mgr.mass_dm_progress.update({"status": "running", "total": len(members)})
+                for m in members:
+                    try:
+                        await m.send(text)
+                        mgr.mass_dm_progress["sent"] += 1
+                    except Exception:
+                        mgr.mass_dm_progress["failed"] += 1
+                    await asyncio.sleep(1.5)  # gentle rate limit — avoids Discord bans
+                mgr.mass_dm_progress["status"] = "done"
+                logger.info("[discord] mass DM finished: %s", mgr.mass_dm_progress)
+            except Exception as e:
+                mgr.mass_dm_progress["status"] = "error"
+                mgr.mass_dm_progress["error"] = str(e)[:200]
+
+        self.mass_dm_task = asyncio.create_task(run())
+        return {"ok": True, "started": True}
 
     # ---------- persistence ----------
     async def _store_dm(self, user, text: str, direction: str):

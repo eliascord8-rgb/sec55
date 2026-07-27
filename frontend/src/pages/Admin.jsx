@@ -2189,12 +2189,15 @@ function NowpaymentsConfigPanel({ token }) {
   const [cfg, setCfg] = useState(null);
   const [apiKey, setApiKey] = useState("");
   const [ipnSecret, setIpnSecret] = useState("");
+  const [npEmail, setNpEmail] = useState("");
+  const [npPassword, setNpPassword] = useState("");
   const [saving, setSaving] = useState(false);
 
   const load = async () => {
     try {
       const r = await adminApi(token).get("/admin/nowpayments-config");
       setCfg(r.data);
+      setNpEmail(r.data.email || "");
     } catch {}
   };
   useEffect(() => {
@@ -2203,18 +2206,22 @@ function NowpaymentsConfigPanel({ token }) {
 
   const save = async (e) => {
     e.preventDefault();
-    if (apiKey.trim().length < 10) {
+    if (!cfg?.configured && apiKey.trim().length < 10) {
       toast.error("Enter a valid NOWPayments API key");
       return;
     }
     setSaving(true);
     try {
-      const body = { api_key: apiKey.trim() };
+      const body = {};
+      if (apiKey.trim()) body.api_key = apiKey.trim();
       if (ipnSecret) body.ipn_secret = ipnSecret.trim();
+      if (npEmail.trim()) body.email = npEmail.trim();
+      if (npPassword) body.password = npPassword;
       await adminApi(token).post("/admin/nowpayments-config", body);
       toast.success("NOWPayments saved");
       setApiKey("");
       setIpnSecret("");
+      setNpPassword("");
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed");
@@ -2240,7 +2247,7 @@ function NowpaymentsConfigPanel({ token }) {
       {cfg && (
         <div className={`mb-4 p-3 rounded-sm text-xs ${cfg.configured ? "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300" : "bg-amber-500/10 border border-amber-500/30 text-amber-300"}`}>
           {cfg.configured
-            ? `Active · key ${cfg.api_key_masked}${cfg.ipn_secret_set ? " · IPN verified" : " · ⚠️ IPN secret not set (webhooks won't be verified)"}`
+            ? `Active · key ${cfg.api_key_masked}${cfg.ipn_secret_set ? " · IPN verified" : " · ⚠️ IPN secret not set (webhooks won't be verified)"}${cfg.password_set && cfg.email ? " · Auto-verify ON" : " · ⚠️ Add account email+password below or 'Verify deposit' & auto-credit WON'T work"}`
             : "Not configured — NOWPayments checkout is disabled until you add an API key."}
         </div>
       )}
@@ -2271,6 +2278,34 @@ function NowpaymentsConfigPanel({ token }) {
           />
           <div className="text-[10px] text-white/40 mt-1">
             From <span className="font-mono text-amber-400">nowpayments.io → Settings → IPN</span>. Used to verify webhook payloads.
+          </div>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Account Email (required for auto-verify)</Label>
+            <Input
+              data-testid="nowpayments-email"
+              type="email"
+              value={npEmail}
+              onChange={(e) => setNpEmail(e.target.value)}
+              placeholder="you@nowpayments-account.com"
+              className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+            />
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Account Password</Label>
+            <Input
+              data-testid="nowpayments-password"
+              type="password"
+              value={npPassword}
+              onChange={(e) => setNpPassword(e.target.value)}
+              placeholder={cfg?.password_set ? "•••••••• (saved — re-enter to update)" : "your nowpayments.io login password"}
+              className="bg-[#0d0a14] border-white/10 mt-1 font-mono text-xs"
+            />
+          </div>
+          <div className="sm:col-span-2 text-[10px] text-amber-300/80 -mt-1">
+            NOWPayments removed the old invoice-lookup API — the bot now logs into your account to check payment status.
+            Without email+password, "Verify deposit" and automatic crediting (when webhooks fail) cannot work.
           </div>
         </div>
         <div className="bg-[#0d0a14] border border-white/5 rounded-sm p-3 text-xs">
@@ -3071,6 +3106,8 @@ function DiscordBotControl({ token }) {
   const [activity, setActivity] = useState("");
   const [words, setWords] = useState("");
   const [avatarFile, setAvatarFile] = useState(null);
+  const [welcome, setWelcome] = useState({ enabled: false, message: "Welcome {user} to {server}! 🎉", channel: "" });
+  const welcomeLoaded = useRef(false);
 
   const load = async () => {
     try {
@@ -3078,6 +3115,10 @@ function DiscordBotControl({ token }) {
       setInfo(r.data);
       setActivity((prev) => prev || r.data.saved_activity_text || "");
       setWords((prev) => prev || r.data.banned_words || "");
+      if (!welcomeLoaded.current && r.data.saved_welcome) {
+        welcomeLoaded.current = true;
+        setWelcome(r.data.saved_welcome);
+      }
     } catch { /* silent */ }
   };
   useEffect(() => { load(); const i = setInterval(load, 10000); return () => clearInterval(i); // eslint-disable-next-line
@@ -3178,8 +3219,120 @@ function DiscordBotControl({ token }) {
             </button>
           </div>
           <p className="text-[10px] text-white/40 mt-1">
-            Messages containing these words are auto-deleted. Mods with Manage Messages can also use <code className="text-[#FF007F]">!purge N</code>, <code className="text-[#FF007F]">!kick @user</code>, <code className="text-[#FF007F]">!ban @user</code>.
+            Messages containing these words are auto-deleted. Mods with Manage Messages can also use <code className="text-[#FF007F]">!purge N</code>, <code className="text-[#FF007F]">!kick @user</code>, <code className="text-[#FF007F]">!ban @user</code>. Anyone can open a private ticket with <code className="text-[#FF007F]">!ticket subject</code> (close with <code className="text-[#FF007F]">!close</code>).
           </p>
+        </div>
+        <div className="border-t border-white/5 pt-4">
+          <div className="flex items-center justify-between">
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Welcomer — greet new members in text chat</Label>
+            <button onClick={() => setWelcome((w) => ({ ...w, enabled: !w.enabled }))} data-testid="discord-welcome-toggle"
+                    className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${welcome.enabled ? "bg-emerald-500 text-black" : "bg-white/10 text-white/50"}`}>
+              {welcome.enabled ? "ON" : "OFF"}
+            </button>
+          </div>
+          <div className="grid sm:grid-cols-3 gap-2 mt-2">
+            <Input value={welcome.message} onChange={(e) => setWelcome((w) => ({ ...w, message: e.target.value }))}
+                   data-testid="discord-welcome-message" placeholder="Welcome {user} to {server}! 🎉"
+                   className="bg-[#0d0a14] border-white/10 sm:col-span-2 text-xs" />
+            <Input value={welcome.channel} onChange={(e) => setWelcome((w) => ({ ...w, channel: e.target.value }))}
+                   data-testid="discord-welcome-channel" placeholder="channel name (optional)"
+                   className="bg-[#0d0a14] border-white/10 text-xs" />
+          </div>
+          <div className="flex items-center justify-between mt-2">
+            <p className="text-[10px] text-white/40">Placeholders: <code className="text-[#FF007F]">{"{user}"}</code> mentions the member, <code className="text-[#FF007F]">{"{server}"}</code> is the server name. Empty channel = system channel.</p>
+            <button onClick={() => act("welcome", async () => { await adminApi(token).post("/admin/discord/welcome", welcome); toast.success("Welcomer saved"); })}
+                    disabled={busy === "welcome"} data-testid="discord-welcome-save"
+                    className="px-4 py-1.5 bg-white/5 hover:bg-white/10 rounded-sm text-xs font-bold uppercase tracking-wider whitespace-nowrap">
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DiscordServersPanel({ token }) {
+  const [servers, setServers] = useState(null);
+  const [massText, setMassText] = useState("");
+  const [progress, setProgress] = useState(null);
+  const [busy, setBusy] = useState("");
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/discord/servers");
+      setServers(r.data.servers || []);
+    } catch { setServers(null); }
+    try {
+      const s = await adminApi(token).get("/admin/discord/status");
+      setProgress(s.data.mass_dm || null);
+    } catch { /* */ }
+  };
+  useEffect(() => { load(); const i = setInterval(load, 12000); return () => clearInterval(i); // eslint-disable-next-line
+  }, [token]);
+
+  const leave = async (g) => {
+    if (!window.confirm(`Leave server "${g.name}"?`)) return;
+    setBusy(g.id);
+    try {
+      await adminApi(token).post(`/admin/discord/servers/${g.id}/leave`);
+      toast.success(`Left ${g.name}`);
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+    finally { setBusy(""); }
+  };
+
+  const massDm = async () => {
+    if (!massText.trim()) { toast.error("Write the DM text first"); return; }
+    if (!window.confirm("Send this DM to EVERY member across ALL servers the bot is in? This can take a long time and Discord may flag aggressive DMs.")) return;
+    setBusy("mass");
+    try {
+      await adminApi(token).post("/admin/discord/mass-dm", { text: massText.trim() });
+      toast.success("Mass DM started — progress updates below");
+      setMassText("");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to start"); }
+    finally { setBusy(""); }
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="discord-servers-panel">
+      <h2 className="font-display font-bold text-lg mb-1">Servers & Mass DM</h2>
+      <p className="text-xs text-white/50 mb-4">Manage the servers the bot is in and broadcast a DM to all members. Requires the bot to be running with the <b>Server Members Intent</b> enabled.</p>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <div className="text-[10px] uppercase tracking-widest text-white/40 mb-2">Servers {servers ? `(${servers.length})` : ""}</div>
+          {servers === null && <div className="text-white/30 text-xs italic">Bot offline — start it to see servers.</div>}
+          {servers?.length === 0 && <div className="text-white/30 text-xs italic">The bot isn't in any server yet.</div>}
+          <div className="space-y-1 max-h-56 overflow-y-auto">
+            {(servers || []).map((g) => (
+              <div key={g.id} className="flex items-center gap-2 px-2 py-1.5 bg-white/[0.04] rounded text-xs" data-testid={`discord-server-${g.id}`}>
+                {g.icon ? <img src={g.icon} alt="" className="w-6 h-6 rounded-full" /> : <span className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-[9px] font-bold">{(g.name || "?")[0]}</span>}
+                <span className="font-bold text-white truncate">{g.name}</span>
+                <span className="text-white/40">{g.member_count} members</span>
+                <button onClick={() => leave(g)} disabled={busy === g.id}
+                        data-testid={`discord-server-leave-${g.id}`}
+                        className="ml-auto text-red-300 hover:text-red-200 text-[9px] font-bold uppercase tracking-wider">Leave</button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-widest text-white/40 mb-2">Mass DM all members (all servers)</div>
+          <textarea value={massText} onChange={(e) => setMassText(e.target.value)} rows={4}
+                    data-testid="discord-massdm-text"
+                    placeholder="Custom message sent as a DM to every unique member…"
+                    className="w-full bg-[#0d0a14] border border-white/10 rounded-sm p-2.5 text-xs text-white outline-none focus:border-[#FF007F] resize-y" />
+          <button onClick={massDm} disabled={busy === "mass"} data-testid="discord-massdm-send"
+                  className="mt-2 px-4 py-2 gradient-pp rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-50">
+            {busy === "mass" ? "Starting…" : "Send mass DM"}
+          </button>
+          {progress && (
+            <div className="mt-3 p-2.5 bg-black/30 border border-white/10 rounded-sm text-xs" data-testid="discord-massdm-progress">
+              <span className={`font-black uppercase tracking-widest text-[10px] ${progress.status === "done" ? "text-emerald-300" : progress.status === "error" ? "text-red-300" : "text-amber-300"}`}>{progress.status}</span>
+              <span className="text-white/60 ml-2">sent {progress.sent} · failed {progress.failed} · total {progress.total}</span>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -3322,6 +3475,7 @@ function DiscordPanel({ token }) {
   return (
     <div className="space-y-6">
       <DiscordBotControl token={token} />
+      <DiscordServersPanel token={token} />
       <DiscordDmConsole token={token} />
       <form
         onSubmit={save}
@@ -5239,8 +5393,10 @@ function UsersPanel({ token }) {
 
 
 function FundsAdminPanel({ token }) {
-  const [paypal, setPaypal] = useState({ paypal_email: "", paypal_me_url: "" });
+  const [paypal, setPaypal] = useState({ receiver_email: "", mode: "live", bonus_pct: 0 });
+  const [paypalConfigured, setPaypalConfigured] = useState(false);
   const [savingPaypal, setSavingPaypal] = useState(false);
+  const [testingPaypal, setTestingPaypal] = useState("");
   const [tab, setTab] = useState("pending"); // pending | all
   const [txns, setTxns] = useState([]);
   const [note, setNote] = useState("");
@@ -5256,11 +5412,13 @@ function FundsAdminPanel({ token }) {
 
   const loadPaypal = async () => {
     try {
-      const r = await api.get("/paypal-config");
+      const r = await adminApi(token).get("/admin/paypal-config");
       setPaypal({
-        paypal_email: r.data.paypal_email || "",
-        paypal_me_url: r.data.paypal_me_url || "",
+        receiver_email: r.data.receiver_email || "",
+        mode: r.data.mode || "live",
+        bonus_pct: r.data.bonus_pct || 0,
       });
+      setPaypalConfigured(!!r.data.configured);
     } catch {}
   };
 
@@ -5276,14 +5434,34 @@ function FundsAdminPanel({ token }) {
 
   const savePaypal = async (e) => {
     e?.preventDefault();
+    if (!paypal.receiver_email.trim()) { toast.error("Enter your PayPal receiver email"); return; }
     setSavingPaypal(true);
     try {
-      await adminApi(token).post("/admin/paypal-config", paypal);
+      await adminApi(token).post("/admin/paypal-config", {
+        receiver_email: paypal.receiver_email.trim(),
+        mode: paypal.mode,
+        bonus_pct: Number(paypal.bonus_pct) || 0,
+      });
       toast.success("PayPal settings saved");
+      loadPaypal();
     } catch (err) {
       toast.error(err.response?.data?.detail || "Failed");
     } finally {
       setSavingPaypal(false);
+    }
+  };
+
+  const testPaypal = async (mode) => {
+    setTestingPaypal(mode);
+    try {
+      const r = await adminApi(token).post("/admin/paypal-test", { mode, amount: 1.0 });
+      const w = window.open(r.data.checkout_url, "paypal_test", "width=480,height=760,menubar=no,toolbar=no,location=yes");
+      if (!w) window.open(r.data.checkout_url, "_blank");
+      toast.success(`${mode === "sandbox" ? "Sandbox" : "Live"} test checkout opened ($1.00)`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Test failed — save a receiver email first");
+    } finally {
+      setTestingPaypal("");
     }
   };
 
@@ -5301,46 +5479,77 @@ function FundsAdminPanel({ token }) {
   return (
     <div className="space-y-6">
       <form onSubmit={savePaypal} className="bg-[#1a1525] border border-white/5 rounded-sm p-5 space-y-3">
-        <h3 className="font-display font-bold text-sm">PayPal Settings</h3>
-        <div className="text-[11px] text-white/50">
-          Your business PayPal email + paypal.me link. Users will be redirected here to pay.
+        <div className="flex items-center gap-3">
+          <h3 className="font-display font-bold text-sm">PayPal Settings (IPN auto-credit)</h3>
+          <span className={`text-[9px] uppercase tracking-widest px-2 py-0.5 rounded-full border ${paypalConfigured ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-300" : "bg-amber-500/10 border-amber-500/40 text-amber-300"}`}>
+            {paypalConfigured ? `Active · ${paypal.mode}` : "Not configured"}
+          </span>
         </div>
-        <div className="grid sm:grid-cols-2 gap-3">
+        <div className="text-[11px] text-white/50">
+          Payments target your PayPal email directly (no API keys). The checkout opens as a popup on the wallet page and
+          the IPN webhook auto-credits the user's balance after payment.
+        </div>
+        <div className="grid sm:grid-cols-3 gap-3">
           <div>
             <Label className="text-[11px] uppercase tracking-wider text-white/60">
-              Business PayPal email
+              Receiver PayPal email *
             </Label>
             <Input
               data-testid="paypal-email"
               type="email"
               placeholder="you@business.com"
-              value={paypal.paypal_email}
-              onChange={(e) => setPaypal({ ...paypal, paypal_email: e.target.value })}
+              value={paypal.receiver_email}
+              onChange={(e) => setPaypal({ ...paypal, receiver_email: e.target.value })}
               className="bg-[#0d0a14] border-white/10 mt-1"
             />
           </div>
           <div>
-            <Label className="text-[11px] uppercase tracking-wider text-white/60">
-              paypal.me link
-            </Label>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Mode</Label>
+            <div className="flex gap-1 mt-1">
+              {["live", "sandbox"].map((m) => (
+                <button key={m} type="button" onClick={() => setPaypal({ ...paypal, mode: m })}
+                        data-testid={`paypal-mode-${m}`}
+                        className={`flex-1 py-2 rounded-sm text-[10px] font-bold uppercase tracking-wider border ${paypal.mode === m ? "bg-[#FF007F] border-[#FF007F] text-white" : "border-white/10 text-white/50 hover:bg-white/5"}`}>
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Deposit bonus %</Label>
             <Input
-              data-testid="paypal-me"
-              placeholder="https://paypal.me/YourHandle"
-              value={paypal.paypal_me_url}
-              onChange={(e) => setPaypal({ ...paypal, paypal_me_url: e.target.value })}
+              data-testid="paypal-bonus"
+              type="number" min={0} max={200}
+              value={paypal.bonus_pct}
+              onChange={(e) => setPaypal({ ...paypal, bonus_pct: e.target.value })}
               className="bg-[#0d0a14] border-white/10 mt-1"
             />
           </div>
         </div>
-        <button
-          type="submit"
-          disabled={savingPaypal}
-          data-testid="paypal-save"
-          className="px-4 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-50 inline-flex items-center gap-2"
-        >
-          {savingPaypal ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-          Save
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="submit"
+            disabled={savingPaypal}
+            data-testid="paypal-save"
+            className="px-4 py-2 gradient-pp rounded-sm text-xs uppercase tracking-wider font-bold disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            {savingPaypal ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+            Save
+          </button>
+          <button type="button" onClick={() => testPaypal("sandbox")} disabled={!!testingPaypal || !paypalConfigured}
+                  data-testid="paypal-test-sandbox"
+                  className="px-4 py-2 border border-amber-500/40 text-amber-300 rounded-sm text-xs uppercase tracking-wider font-bold hover:bg-amber-500/10 disabled:opacity-40">
+            {testingPaypal === "sandbox" ? "Opening…" : "🧪 Sandbox test ($1)"}
+          </button>
+          <button type="button" onClick={() => testPaypal("live")} disabled={!!testingPaypal || !paypalConfigured}
+                  data-testid="paypal-test-live"
+                  className="px-4 py-2 border border-emerald-500/40 text-emerald-300 rounded-sm text-xs uppercase tracking-wider font-bold hover:bg-emerald-500/10 disabled:opacity-40">
+            {testingPaypal === "live" ? "Opening…" : "✅ Live test ($1)"}
+          </button>
+        </div>
+        <div className="text-[10px] text-white/40">
+          Sandbox needs a <span className="text-amber-300">sandbox.paypal.com</span> buyer account. Test sandbox first — if the flow works, switch Mode to live.
+        </div>
       </form>
 
       <div className="bg-[#1a1525] border border-white/5 rounded-sm overflow-hidden">

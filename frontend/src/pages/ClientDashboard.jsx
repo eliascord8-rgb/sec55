@@ -5,7 +5,6 @@ import { useFeatures } from "@/context/FeaturesContext";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
-import AIWidget from "@/components/AIWidget";
 import {
   Sparkles,
   LogOut,
@@ -73,9 +72,11 @@ export default function ClientDashboard() {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
-  const [aiOpen, setAiOpen] = useState(false);
   const [pendingBonuses, setPendingBonuses] = useState([]);
   const [bonusModalOpen, setBonusModalOpen] = useState(false);
+  const [giftPopupOpen, setGiftPopupOpen] = useState(false);
+  const [recentGifts, setRecentGifts] = useState([]);
+  const openAI = () => window.dispatchEvent(new CustomEvent("bs-open-support-chat"));
   const [view, setView] = useState("home"); // home | funds | tickets | buy | redeem | slots | withdraw | tos | messages
 
   // Free balance bonus popup — re-opens every time the purchase page is opened
@@ -554,15 +555,68 @@ export default function ClientDashboard() {
                 <CreditCard className="w-3.5 h-3.5 text-emerald-300 hidden sm:inline-block" />
                 <span className="text-xs md:text-sm font-bold text-emerald-300 whitespace-nowrap">{fmtMoney(balance)}</span>
               </div>
-              {/* Mobile: gift icon → redeem coupons */}
-              <button
-                onClick={() => changeView("redeem")}
-                data-testid="mobile-gift-btn"
-                title="Redeem a coupon"
-                className="md:hidden w-9 h-9 rounded-md bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-300 active:scale-95 transition"
-              >
-                <Gift className="w-4 h-4" />
-              </button>
+              {/* Gift icon → popup with recent received gifts */}
+              <div className="relative">
+                <button
+                  onClick={async () => {
+                    const next = !giftPopupOpen;
+                    setGiftPopupOpen(next);
+                    if (next) {
+                      try {
+                        const r = await authedApi().get("/client/gifts/recent");
+                        setRecentGifts(r.data.gifts || []);
+                      } catch { /* silent */ }
+                    }
+                  }}
+                  data-testid="mobile-gift-btn"
+                  title="Your gifts"
+                  className="w-9 h-9 rounded-md bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-300 active:scale-95 transition"
+                >
+                  <Gift className="w-4 h-4" />
+                </button>
+                {giftPopupOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setGiftPopupOpen(false)} />
+                    <div className="absolute right-0 top-11 z-50 w-[300px] bg-[#0d2b12] border border-emerald-500/30 rounded-md shadow-2xl overflow-hidden" data-testid="gift-popup">
+                      <div className="px-3 py-2.5 border-b border-emerald-500/20 flex items-center gap-2">
+                        <Gift className="w-3.5 h-3.5 text-emerald-300" />
+                        <span className="text-[10px] font-black uppercase tracking-widest text-emerald-200">Gifts you received</span>
+                      </div>
+                      <div className="max-h-72 overflow-y-auto p-1.5 space-y-1">
+                        {recentGifts.length === 0 && (
+                          <div className="text-white/35 text-xs italic text-center py-6">No gifts received yet.</div>
+                        )}
+                        {recentGifts.map((g) => (
+                          <div key={g.id} className="flex items-center gap-2 px-2 py-2 bg-white/[0.04] rounded" data-testid={`gift-item-${g.id}`}>
+                            <span className="text-base">{g.kind === "balance_bonus" ? "💰" : "🎁"}</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs font-bold text-white truncate">
+                                {g.kind === "balance_bonus"
+                                  ? `€${Number(g.amount || 0).toFixed(2)} free balance bonus`
+                                  : `${g.quantity ? `${g.quantity}× ` : ""}${g.service_name || "Gifted order"}`}
+                              </div>
+                              <div className="text-[10px] text-white/40">{new Date(g.created_at).toLocaleString()}</div>
+                            </div>
+                            <span className={`text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full ${
+                              g.status === "claimed" || g.status === "completed" ? "bg-emerald-500/20 text-emerald-300"
+                              : g.status === "pending" ? "bg-amber-500/20 text-amber-300"
+                              : "bg-white/10 text-white/50"}`}>
+                              {g.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => { setGiftPopupOpen(false); changeView("buy"); }}
+                        data-testid="gift-popup-claim-link"
+                        className="w-full py-2.5 bg-emerald-500/15 hover:bg-emerald-500/25 border-t border-emerald-500/20 text-[10px] font-black uppercase tracking-widest text-emerald-300"
+                      >
+                        Pending bonus? Claim it on the purchase page →
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
               {/* Daily free-bet claim removed per user request */}
               <div className="flex items-center gap-2 pl-1 sm:pl-3 sm:border-l border-white/10 relative" data-testid="profile-menu-wrap">
                 <button onClick={() => setProfileOpen((v) => !v)}
@@ -862,7 +916,7 @@ export default function ClientDashboard() {
             <div className={`animate-in fade-in duration-200 ${useNewLayout && view !== "home" ? "px-4 md:px-6" : ""}`}>
               {view === "home" && (
                 useNewLayout
-                  ? <NewHomeView authedApi={authedApi} user={user} balance={balance} stats={stats} onOpenAI={() => setAiOpen(true)} onGo={changeView} />
+                  ? <NewHomeView authedApi={authedApi} user={user} balance={balance} stats={stats} onOpenAI={openAI} onGo={changeView} />
                   : <HomeView user={user} stats={stats} />
               )}
               {view === "funds" && (
@@ -887,7 +941,7 @@ export default function ClientDashboard() {
               {view === "invoices" && (
                 <InvoicesView authedApi={authedApi} reloadBalance={loadBalance} />
               )}
-              {view === "help" && <HelpCenterView onOpenAI={() => setAiOpen(true)} />}
+              {view === "help" && <HelpCenterView onOpenAI={openAI} />}
               {view === "settings" && <SettingsView authedApi={authedApi} user={user} />}
               {view === "redeem" && (
                 <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
@@ -919,8 +973,7 @@ export default function ClientDashboard() {
         </div>
       </footer>
 
-      {/* Better Social AI floating widget — only rendered when open */}
-      <AIWidget open={aiOpen} onOpenChange={setAiOpen} />
+      {/* Support widget is mounted globally in App.js (GlobalSupportWidget) */}
       <GoalNotifier />
       <NewsModal />
       {bonusModalOpen && pendingBonuses.length > 0 && (
@@ -1977,7 +2030,14 @@ function FundsView({ authedApi, balance, reloadBalance }) {
     setCreating(true);
     try {
       const r = await authedApi().post("/client/funds/paypal-checkout", { amount: a });
-      window.location.href = r.data.checkout_url;
+      // Open PayPal as a popup on the same page — balance auto-credits via IPN after payment
+      const w = window.open(r.data.checkout_url, "paypal_checkout", "width=480,height=760,menubar=no,toolbar=no,location=yes");
+      if (!w) {
+        window.location.href = r.data.checkout_url; // popup blocked → fall back to redirect
+        return;
+      }
+      toast.success("Complete the payment in the PayPal window — your balance is credited automatically after payment.");
+      setCreating(false);
     } catch (err) {
       toast.error(err.response?.data?.detail || "PayPal is not configured yet. Please use crypto or ask an admin to set the PayPal receiver email.");
       setCreating(false);

@@ -13,6 +13,7 @@ import Splash from "@/components/Splash";
 import MaintenanceGate from "@/components/MaintenanceGate";
 import GoogleAuthCallback from "@/components/GoogleAuthCallback";
 import LiveChatFAB from "@/components/LiveChatFAB";
+import GlobalSupportWidget from "@/components/GlobalSupportWidget";
 import { AuthProvider } from "@/context/AuthContext";
 import { LanguageProvider } from "@/context/LanguageContext";
 import { CurrencyProvider } from "@/context/CurrencyContext";
@@ -50,6 +51,7 @@ function App() {
                   <Route path="/db-manager" element={<DbManager />} />
                 </Routes>
                 <LiveChatFAB />
+                <GlobalSupportWidget />
               </MaintenanceGate>
             </BrowserRouter>
           </AuthProvider>

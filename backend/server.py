@@ -3257,7 +3257,8 @@ async def _discord_bot_autostart():
         if cfg.get("auto_start") and (cfg.get("bot_token") or "").strip():
             from discord_bot import bot_manager as _bm
             words = [w.strip() for w in (cfg.get("banned_words") or "").split(",") if w.strip()]
-            await _bm.start(db, cfg["bot_token"].strip(), activity_text=cfg.get("activity_text") or "", banned_words=words)
+            welcome = {"enabled": cfg.get("welcome_enabled"), "message": cfg.get("welcome_message"), "channel": cfg.get("welcome_channel")}
+            await _bm.start(db, cfg["bot_token"].strip(), activity_text=cfg.get("activity_text") or "", banned_words=words, welcome=welcome)
             logger.info("[discord] auto-started bot after reload")
     except Exception as e:
         logger.warning("[discord] autostart failed: %s", e)
@@ -3342,6 +3343,45 @@ async def admin_set_paypal_config(payload: PayPalConfig, x_admin_token: Optional
 
 class PayPalDepositRequest(BaseModel):
     amount: float = Field(..., ge=1.0, le=10000.0)
+
+
+def _paypal_checkout_url(cfg: dict, amount: float, item_name: str, custom: str, backend_url: str, mode: Optional[str] = None) -> str:
+    base = "https://www.sandbox.paypal.com" if (mode or cfg.get("mode")) == "sandbox" else "https://www.paypal.com"
+    params = {
+        "cmd": "_xclick",
+        "business": cfg["receiver_email"],
+        "item_name": item_name,
+        "amount": f"{amount:.2f}",
+        "currency_code": "USD",
+        "no_note": "1",
+        "no_shipping": "1",
+        "custom": custom,
+        "notify_url": f"{backend_url}/api/paypal/ipn",
+        "return":     f"{backend_url}/client/dashboard?paypal=success",
+        "cancel_return": f"{backend_url}/client/dashboard?paypal=cancel",
+    }
+    return f"{base}/cgi-bin/webscr?{urlencode(params)}"
+
+
+class PayPalTestReq(BaseModel):
+    mode: str = Field(default="sandbox", pattern="^(live|sandbox)$")
+    amount: float = Field(default=1.0, ge=0.01, le=100.0)
+
+
+@api_router.post("/admin/paypal-test")
+async def admin_paypal_test(body: PayPalTestReq, x_admin_token: Optional[str] = Header(None)):
+    """Generate a test checkout URL (sandbox or live) so the admin can verify
+    the PayPal flow end-to-end before going live."""
+    check_admin(x_admin_token)
+    cfg = await db.paypal_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    if not cfg.get("receiver_email"):
+        raise HTTPException(status_code=400, detail="Save a receiver email first")
+    backend_url = (os.environ.get("PUBLIC_BACKEND_URL") or os.environ.get("REACT_APP_BACKEND_URL") or "").rstrip("/")
+    url = _paypal_checkout_url(cfg, body.amount, "Better Social — PayPal test payment",
+                               f"paypaltest|{uuid.uuid4()}", backend_url, mode=body.mode)
+    return {"checkout_url": url, "mode": body.mode}
+
+
 
 
 @client_router.post("/funds/paypal-checkout")
@@ -3944,7 +3984,7 @@ def _verify_nowpayments_signature(body_bytes: bytes, ipn_secret: str, signature:
 
 
 class NowpaymentsConfig(BaseModel):
-    api_key: str = Field(..., min_length=10, max_length=200)
+    api_key: Optional[str] = ""
     ipn_secret: Optional[str] = ""
     email: Optional[str] = ""
     password: Optional[str] = ""
@@ -3967,7 +4007,12 @@ async def admin_get_nowpayments_config(x_admin_token: Optional[str] = Header(Non
 @api_router.post("/admin/nowpayments-config")
 async def admin_set_nowpayments_config(payload: NowpaymentsConfig, x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token)
-    upd = {"api_key": payload.api_key.strip(), "updated_at": datetime.now(timezone.utc).isoformat()}
+    existing = await db.nowpayments_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    upd = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if payload.api_key and payload.api_key.strip():
+        upd["api_key"] = payload.api_key.strip()
+    elif not existing.get("api_key"):
+        raise HTTPException(status_code=400, detail="API key is required")
     if payload.ipn_secret:
         upd["ipn_secret"] = payload.ipn_secret.strip()
     if payload.email:
@@ -4115,6 +4160,27 @@ async def admin_expire_bonus(bid: str, x_admin_token: Optional[str] = Header(Non
     if r.modified_count == 0:
         raise HTTPException(status_code=404, detail="Bonus not found or not pending")
     return {"ok": True}
+
+
+@client_router.get("/gifts/recent")
+async def client_recent_gifts(user: CurrentUser = Depends(current_user_dep)):
+    """Latest gifts received: free balance bonuses + admin-gifted orders."""
+    bonuses = await db.balance_bonuses.find(
+        {"user_id": user.id}, {"_id": 0, "id": 1, "amount": 1, "status": 1, "created_at": 1}
+    ).sort("created_at", -1).limit(10).to_list(10)
+    gift_orders = await db.orders.find(
+        {"user_id": user.id, "is_gift": True},
+        {"_id": 0, "id": 1, "service_name": 1, "quantity": 1, "status": 1, "created_at": 1},
+    ).sort("created_at", -1).limit(10).to_list(10)
+    items = [
+        {"kind": "balance_bonus", "id": b["id"], "amount": b.get("amount"), "status": b.get("status"), "created_at": b.get("created_at")}
+        for b in bonuses
+    ] + [
+        {"kind": "gift_order", "id": o["id"], "service_name": o.get("service_name"), "quantity": o.get("quantity"), "status": o.get("status"), "created_at": o.get("created_at")}
+        for o in gift_orders
+    ]
+    items.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return {"gifts": items[:12]}
 
 
 @client_router.get("/bonuses/pending")
@@ -6537,12 +6603,22 @@ async def _fetch_nowpayments_invoice_status(invoice_id: str) -> dict:
                     return payments[0]
             else:
                 logger.warning("[nowpay] /payment/ list failed %s: %s", r.status_code, r.text[:200])
-        # Fallback: /invoice/{id} (x-api-key auth) — gives us the invoice status
+        # Fallback: /invoice/{id} (x-api-key auth) — NOWPayments removed this on
+        # some plans, so surface an actionable error instead of a raw 404.
         r = await c.get(
             f"{NOWPAYMENTS_API_BASE}/invoice/{invoice_id}",
             headers={"x-api-key": cfg["api_key"]},
         )
         if r.status_code >= 400:
+            if not jwt:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "NOWPayments now requires your account login for payment lookups. "
+                        "Ask the admin to add the NOWPayments account EMAIL and PASSWORD in "
+                        "Admin → Funds → NOWPayments — then Verify deposit and auto-crediting will work."
+                    ),
+                )
             raise HTTPException(status_code=502, detail=f"NOWPayments invoice lookup {r.status_code}: {r.text[:200]}")
         inv = r.json()
     # Normalise invoice → payment-shaped dict so downstream credit logic works
@@ -7307,7 +7383,12 @@ async def _discord_bot_start_from_config() -> dict:
     if not token:
         raise HTTPException(status_code=400, detail="No bot token saved — enter it in the Discord tab first")
     words = [w.strip() for w in (cfg.get("banned_words") or "").split(",") if w.strip()]
-    return await bot_manager.start(db, token, activity_text=cfg.get("activity_text") or "", banned_words=words)
+    welcome = {
+        "enabled": cfg.get("welcome_enabled"),
+        "message": cfg.get("welcome_message"),
+        "channel": cfg.get("welcome_channel"),
+    }
+    return await bot_manager.start(db, token, activity_text=cfg.get("activity_text") or "", banned_words=words, welcome=welcome)
 
 
 @api_router.get("/admin/discord/status")
@@ -7318,6 +7399,11 @@ async def discord_bot_status(x_admin_token: Optional[str] = Header(None)):
     info["token_saved"] = bool(cfg.get("bot_token"))
     info["banned_words"] = cfg.get("banned_words") or ""
     info["saved_activity_text"] = cfg.get("activity_text") or ""
+    info["saved_welcome"] = {
+        "enabled": bool(cfg.get("welcome_enabled")),
+        "message": cfg.get("welcome_message") or "Welcome {user} to {server}! 🎉",
+        "channel": cfg.get("welcome_channel") or "",
+    }
     return info
 
 
@@ -7433,6 +7519,61 @@ async def discord_bot_dm_send(duid: str, body: DiscordDmSendReq, x_admin_token: 
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"DM failed: {str(e)[:200]}")
+
+
+class DiscordWelcomeReq(BaseModel):
+    enabled: bool = False
+    message: str = Field(default="Welcome {user} to {server}! 🎉", max_length=1000)
+    channel: str = Field(default="", max_length=100)
+
+
+@api_router.post("/admin/discord/welcome")
+async def discord_bot_welcome_config(body: DiscordWelcomeReq, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    await db.discord_config.update_one({}, {"$set": {
+        "welcome_enabled": body.enabled,
+        "welcome_message": body.message,
+        "welcome_channel": body.channel.strip(),
+    }}, upsert=True)
+    bot_manager.welcome_enabled = body.enabled
+    bot_manager.welcome_message = body.message
+    bot_manager.welcome_channel = body.channel.strip()
+    return {"ok": True}
+
+
+@api_router.get("/admin/discord/servers")
+async def discord_bot_servers(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    try:
+        return {"servers": bot_manager.list_servers()}
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@api_router.post("/admin/discord/servers/{gid}/leave")
+async def discord_bot_leave_server(gid: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    try:
+        return await bot_manager.leave_server(gid)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Leave failed: {str(e)[:200]}")
+
+
+class DiscordMassDmReq(BaseModel):
+    text: str = Field(..., min_length=1, max_length=2000)
+
+
+@api_router.post("/admin/discord/mass-dm")
+async def discord_bot_mass_dm(body: DiscordMassDmReq, x_admin_token: Optional[str] = Header(None)):
+    """Send a custom DM to every unique (non-bot) member across all servers the
+    bot is in. Runs in the background with rate limiting; progress shows in status."""
+    check_admin(x_admin_token, "discord")
+    try:
+        return bot_manager.start_mass_dm(body.text)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 class DiscordOrderRequest(BaseModel):

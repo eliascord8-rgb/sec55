@@ -1,0 +1,83 @@
+{
+  "summary": "Iteration 41 tested the requested mobile dashboard, bonus claim, gift popup, PayPal, NOWPayments, Discord, balance-bonus admin UI, desktop sanity, and focused backend regressions against the public URL. Core backend feature coverage passed 9/9; three required auth-hardening checks failed. Mobile navigation/chat/support/gifts passed, but the required mobile balance pill is absent. The bonus popup renders/reopens/claims, but its infinite parent sway makes all buttons perpetually unstable/non-actionable under normal Playwright clicks. NOWPayments fields render and email/password-only API save succeeds, but the unconfigured status copy does not explicitly name the Auto-verify state.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Successful login returns the JWT only in JSON and sets no HttpOnly authentication cookie (Set-Cookie is absent).",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "No brute-force lockout/rate limit: six consecutive wrong-password attempts, each with a valid fresh captcha, all returned 401; none returned 429 after the fifth failure.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "CORS preflight /api/auth/me",
+        "issue": "Credentialed CORS allows wildcard/untrusted origins. Preflight from https://untrusted.example returned Access-Control-Allow-Origin: *, matching backend CORS_ORIGINS='*' with allow_credentials=True.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Mobile dashboard topbar balance",
+        "issue": "Required data-testid mobile-balance-toggle is absent. On 390x844 the topbar center shows only the current view label; balance appears only in the home hero and cannot toggle USD/EUR on tap.",
+        "selector": "[data-testid='mobile-balance-toggle']",
+        "priority": "HIGH"
+      },
+      {
+        "component": "BonusClaimModal",
+        "issue": "Close, Decline, and Claim are descendants of an element with an infinite translate/rotate animation. Normal Playwright clicks time out because the controls never become stable; force-click confirms handlers work. Stop the card movement after entrance or animate a non-interactive decoration instead.",
+        "selector": ".bonus-card-anim [data-testid='bonus-modal-close'], .bonus-card-anim [data-testid='bonus-claim-btn'], .bonus-card-anim [data-testid='bonus-decline-btn']",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Admin Settings / NOWPayments",
+        "issues": [
+          "When credentials are absent, the status banner says to add account email/password but does not explicitly label the state as 'Auto-verify OFF'; it only uses the requested Auto-verify wording for the ON state."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_41_mobile_bonus_payments.py",
+    "/app/test_reports/pytest/iter41_results.xml"
+  ],
+  "action_items": [
+    "Add the centered mobile-balance-toggle pill to the mobile topbar and toggle CurrencyContext between USD and EUR while displaying the balance.",
+    "Remove the infinite transform from the BonusClaimModal interactive card after entrance; keep confetti/gift/amount animations without continuously moving button hit targets.",
+    "Issue Secure HttpOnly access/refresh cookies on login/register and make frontend API calls credentialed; keep Bearer support only as a controlled compatibility path.",
+    "Add Mongo-backed or equivalent login-attempt tracking and return 429/lock for at least 15 minutes after five failures; clear attempts after successful login.",
+    "Configure credentialed CORS with explicit trusted frontend origins instead of '*'.",
+    "Show explicit 'Auto-verify ON' or 'Auto-verify OFF' status copy in the NOWPayments banner.",
+    "Retest mobile currency toggle, all bonus modal buttons with normal clicks, and auth security checks after fixes."
+  ],
+  "critical_code_review_comments": [
+    "ClientDashboard.jsx contains no mobile-balance-toggle implementation; the only topbar balance is hidden below md via hidden md:flex.",
+    "index.css .bonus-card-anim combines the 0.65s entrance with bonus-sway 4.5s infinite; because all modal buttons are inside this transformed node, actionability never stabilizes.",
+    "auth_and_chat.py login returns a plain dict and does not accept/set a Response cookie; the React AuthContext consequently persists bearer JWTs in localStorage.",
+    "auth_and_chat.py verify_login_credentials performs captcha and bcrypt checks but has no failed-attempt counter or lockout branch.",
+    "server.py configures allow_credentials=True with allow_origins from CORS_ORIGINS, while backend/.env sets CORS_ORIGINS='*'.",
+    "NOWPayments account password is stored as plaintext in nowpayments_config. If reversible storage is required for third-party login, protect it with application-level encryption and restricted key management rather than plaintext-at-rest.",
+    "server.py (8,178 lines), Admin.jsx (6,768 lines), and ClientDashboard.jsx (4,846 lines) remain far beyond the 700-line maintainability threshold and should be split into routers/features/components."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_41_mobile_bonus_payments.py",
+    "/app/test_reports/iteration_41.json"
+  ],
+  "success_rate": {
+    "backend": "75% overall (9/12); requested feature regressions 9/9 passed, required auth hardening 0/3 passed",
+    "frontend": "83% of focused feature groups passed; mobile balance toggle and normal bonus-modal actionability failed, NOWPayments status copy partially failed"
+  },
+  "seed_data_creation": "Created and cleaned focused €15 claimed and €5 expired bonus records/transactions, one PayPal pending checkout transaction, and temporary PayPal/NOWPayments/Discord configuration changes. Original payment configurations were restored; Discord welcomer was restored to enabled/default message/empty channel. No Discord bot was started, no mass DM was sent, and no SMM/provider order was created.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run only test_iteration_41_mobile_bonus_payments.py. Current JUnit: 9 pass, 3 fail (HttpOnly cookie, six-attempt lockout, explicit CORS). Mobile login/nav/drawer/chat/support/gifts pass. Desktop top nav/topbar balance/shoutbox and no bottom nav pass. PayPal popup/save, bonus admin validation/history, Discord welcome/offline state/mass-DM 409 pass. For bonus UI, normal clicks reproducibly time out because .bonus-card-anim sways forever; force-click proved reopen and claim/status persistence. Do not start discord-bot-start.",
+  "rca_of_the_issue": "The mobile currency feature was not implemented in ClientDashboard's mobile header. Bonus button instability is directly caused by the infinite transform animation on their parent card. Auth security failures are implementation/config gaps: login returns JSON without Response.set_cookie, verify_login_credentials has no attempt tracker, and credentialed CORS is configured from a wildcard environment value."
+}
