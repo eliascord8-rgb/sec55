@@ -229,6 +229,31 @@ class DiscordBotManager:
         await self._store_dm(user, text, direction="out")
         return {"ok": True, "to": str(user)}
 
+    async def send_channel_message(self, channel_id: str, text: str) -> dict:
+        """Post a message to a specific Discord channel by ID. Silent no-op if
+        the bot is not currently running so callers don't have to guard it."""
+        if self.status != "running" or not self.client:
+            return {"ok": False, "reason": "bot not running"}
+        try:
+            ch = self.client.get_channel(int(channel_id))
+            if ch is None:
+                ch = await self.client.fetch_channel(int(channel_id))
+            await ch.send(text)
+            return {"ok": True, "channel": str(channel_id)}
+        except Exception as e:
+            logger.warning("[discord] send_channel_message failed: %s", e)
+            return {"ok": False, "reason": str(e)}
+
+    @staticmethod
+    def mask_username(name: str) -> str:
+        """Privacy-preserving username mask. 'balkin' → 'b****n', 'jo' → 'j*'."""
+        if not name:
+            return "***"
+        name = str(name)
+        if len(name) <= 2:
+            return name[0] + "*"
+        return name[0] + "*" * (len(name) - 2) + name[-1]
+
     # ---------- servers ----------
     def list_servers(self) -> list:
         self._require_running()

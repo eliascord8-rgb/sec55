@@ -1902,6 +1902,7 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
             "provider_id": None,
         }
         await db.orders.insert_one(order_doc.copy())
+        await _notify_discord_purchase(order_doc)
         new_balance = await _get_user_balance(user.id)
         return {
             "ok": True,
@@ -1965,6 +1966,7 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
         "provider_id": svc.get("provider_id"),
     }
     await db.orders.insert_one(order_doc.copy())
+    await _notify_discord_purchase(order_doc)
     new_balance = await _get_user_balance(user.id)
     # Fire-and-forget order confirmation email
     try:
@@ -2086,6 +2088,7 @@ async def place_multi_order(body: MultiOrderRequest, user: CurrentUser = Depends
                 "delivery_minutes": svc.get("delivery_minutes"),
             }
             await db.orders.insert_one(order_doc.copy())
+            await _notify_discord_purchase(order_doc)
             order_ids.append(order_id)
             results.append({"service_id": item.service_id, "service_name": order_doc["service_name"], "ok": True, "order_id": order_id, "smm_order_id": None, "charge": charge, "manual": True})
             continue
@@ -2122,6 +2125,7 @@ async def place_multi_order(body: MultiOrderRequest, user: CurrentUser = Depends
         debited += charge
         order_doc = {**base_doc, "smm_order_id": smm_order_id, "status": "Pending"}
         await db.orders.insert_one(order_doc.copy())
+        await _notify_discord_purchase(order_doc)
         order_ids.append(order_id)
         results.append({"service_id": item.service_id, "service_name": base_doc["service_name"], "ok": True, "order_id": order_id, "smm_order_id": smm_order_id, "charge": charge})
 
@@ -2256,6 +2260,15 @@ async def order_bulk(body: BulkOrderRequest, user: CurrentUser = Depends(current
         })
     if order_docs:
         await db_local.orders.insert_many(order_docs)
+        # One consolidated Discord notification for the whole bulk purchase.
+        if order_docs:
+            rollup = {
+                "username": user.username,
+                "service_name": svc_name,
+                "quantity": f"{len(order_docs)} × {body.quantity}",
+                "charge": charged,
+            }
+            await _notify_discord_purchase(rollup)
 
     new_balance = await _get_user_balance(user.id)
     return {
@@ -7340,6 +7353,76 @@ async def set_discord_config(payload: DiscordConfig, x_admin_token: Optional[str
 
 # ===== In-process Discord moderation bot (managed from admin panel) =====
 from discord_bot import bot_manager  # noqa: E402
+
+
+# Default channel where "new purchase" notifications go. Can be overridden via
+# discord_config.purchase_channel_id (admin panel) or DISCORD_PURCHASE_CHANNEL_ID env.
+DISCORD_PURCHASE_CHANNEL_DEFAULT = os.environ.get("DISCORD_PURCHASE_CHANNEL_ID", "1477630409742221499")
+
+
+class DiscordPurchaseCfg(BaseModel):
+    purchase_channel_id: Optional[str] = None
+    purchase_notify_enabled: Optional[bool] = None
+
+
+@api_router.get("/admin/discord-purchase-config")
+async def get_discord_purchase_config(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    cfg = await db.discord_config.find_one({}, {"_id": 0}) or {}
+    return {
+        "purchase_channel_id": cfg.get("purchase_channel_id") or DISCORD_PURCHASE_CHANNEL_DEFAULT,
+        "purchase_notify_enabled": cfg.get("purchase_notify_enabled", True),
+        "default_channel_id": DISCORD_PURCHASE_CHANNEL_DEFAULT,
+    }
+
+
+@api_router.post("/admin/discord-purchase-config")
+async def set_discord_purchase_config(payload: DiscordPurchaseCfg, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    doc = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    if not doc:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.discord_config.update_one({}, {"$set": doc}, upsert=True)
+    return {"ok": True, **doc}
+
+
+@api_router.post("/admin/discord-purchase-config/test")
+async def test_discord_purchase_notification(x_admin_token: Optional[str] = Header(None)):
+    """Fire a fake purchase notification so the owner can confirm the channel wiring."""
+    check_admin(x_admin_token)
+    fake = {"username": "testuser", "service_name": "Test service", "quantity": 100, "charge": 9.99}
+    await _notify_discord_purchase(fake)
+    return {"ok": True, "sent": True}
+
+
+async def _notify_discord_purchase(order_doc: dict) -> None:
+    """Fire-and-forget: post a masked purchase notification to the configured
+    Discord channel. Never raises — a Discord outage must NEVER break a real
+    purchase. Bot must be running; otherwise silently no-op."""
+    try:
+        cfg = await db.discord_config.find_one({}, {"_id": 0}) or {}
+        if cfg.get("purchase_notify_enabled") is False:
+            return
+        channel_id = str(cfg.get("purchase_channel_id") or DISCORD_PURCHASE_CHANNEL_DEFAULT).strip()
+        if not channel_id:
+            return
+        masked = bot_manager.mask_username(order_doc.get("username") or "user")
+        service = order_doc.get("service_name") or f"#{order_doc.get('service_id', '?')}"
+        qty = order_doc.get("quantity") or ""
+        charge = order_doc.get("charge") or 0
+        try:
+            charge_str = f"${float(charge):.2f}"
+        except Exception:
+            charge_str = ""
+        line = f"🛒 **New client bought!** `{masked}` just ordered **{service}**"
+        if qty:
+            line += f" × **{qty}**"
+        if charge_str:
+            line += f" — {charge_str}"
+        asyncio.create_task(bot_manager.send_channel_message(channel_id, line))
+    except Exception as e:
+        logger.warning("[discord] purchase notify failed: %s", e)
 
 
 async def _discord_bot_start_from_config() -> dict:

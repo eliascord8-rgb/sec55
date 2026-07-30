@@ -4,7 +4,6 @@ import { Sparkles, Loader2, X, MessageCircle, ShoppingBag } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { useLang, LanguagePicker } from "@/context/LanguageContext";
-import { CurrencyPicker } from "@/context/CurrencyContext";
 import GoalNotifier from "@/components/GoalNotifier";
 
 // Green-themed guest landing shown on /client/dashboard when the user is NOT
@@ -32,7 +31,6 @@ export default function GuestLanding() {
           <div className="flex-1" />
           <div className="flex items-center gap-2">
             <LanguagePicker />
-            <CurrencyPicker />
             <button
               onClick={() => setAuthOpen("login")}
               data-testid="guest-signin-btn"
@@ -221,6 +219,9 @@ function AuthModal({ mode, onClose, switchMode }) {
   const [captcha, setCaptcha] = useState(null);
   const [form, setForm] = useState({ identifier: "", username: "", email: "", password: "", answer: "" });
   const [submitting, setSubmitting] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotSending, setForgotSending] = useState(false);
 
   const loadCaptcha = async () => {
     try {
@@ -264,6 +265,20 @@ function AuthModal({ mode, onClose, switchMode }) {
       loadCaptcha(); // refresh captcha on failure
       setForm((f) => ({ ...f, answer: "" }));
     } finally { setSubmitting(false); }
+  };
+
+  const sendForgot = async (e) => {
+    e.preventDefault();
+    const em = forgotEmail.trim().toLowerCase();
+    if (!em) { toast.error("Enter your email"); return; }
+    setForgotSending(true);
+    try {
+      await api.post("/auth/forgot-password", { email: em });
+      toast.success("✉️ If that email exists, a reset link is on its way. Check spam too.");
+      setForgotOpen(false); setForgotEmail("");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not send reset email");
+    } finally { setForgotSending(false); }
   };
 
   return (
@@ -343,6 +358,19 @@ function AuthModal({ mode, onClose, switchMode }) {
           </button>
         </form>
 
+        {isLogin && (
+          <div className="mt-3 text-center">
+            <button
+              type="button"
+              onClick={() => setForgotOpen(true)}
+              data-testid="modal-forgot-password"
+              className="text-xs text-emerald-300/80 hover:text-emerald-200 underline underline-offset-2"
+            >
+              Forgot password?
+            </button>
+          </div>
+        )}
+
         <div className="mt-6 text-center text-sm text-white/60">
           {isLogin ? "New here? " : "Already have an account? "}
           <button onClick={() => switchMode(isLogin ? "signup" : "login")}
@@ -352,6 +380,36 @@ function AuthModal({ mode, onClose, switchMode }) {
           </button>
         </div>
       </div>
+
+      {forgotOpen && (
+        <div className="fixed inset-0 z-[95] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+             onClick={() => !forgotSending && setForgotOpen(false)} data-testid="forgot-modal-backdrop">
+          <div onClick={(e) => e.stopPropagation()} data-testid="forgot-modal"
+               className="w-full max-w-md bg-gradient-to-br from-emerald-500/15 via-[#0e2f18] to-[#0a1a0a] border-2 border-emerald-400/50 rounded-2xl p-8 shadow-2xl">
+            <h3 className="font-display font-black text-xl text-white mb-2">Reset your password</h3>
+            <p className="text-sm text-white/60 mb-5">
+              Enter the email you signed up with. We'll send you a reset link — check your spam too.
+            </p>
+            <form onSubmit={sendForgot} className="space-y-4">
+              <input required type="email" value={forgotEmail}
+                onChange={(e) => setForgotEmail(e.target.value)}
+                placeholder="you@example.com"
+                data-testid="forgot-email-input"
+                className="w-full bg-emerald-950/40 border-2 border-emerald-500/25 rounded-lg px-4 py-3 text-base text-white outline-none focus:border-emerald-400 transition placeholder-white/40" />
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setForgotOpen(false)} disabled={forgotSending}
+                  className="flex-1 py-3 rounded-lg border border-white/15 text-white/80 hover:bg-white/5 font-bold text-sm">
+                  Cancel
+                </button>
+                <button type="submit" disabled={forgotSending} data-testid="forgot-submit"
+                  className="flex-1 py-3 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-black font-bold text-sm disabled:opacity-50 inline-flex items-center justify-center gap-2">
+                  {forgotSending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Send reset link"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
