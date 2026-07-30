@@ -462,6 +462,33 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
               Reports
             </TabsTrigger>
             )}
+            {role === "owner" && (
+            <TabsTrigger
+              value="livesubs"
+              data-testid="tab-livesubs"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Live Subs
+            </TabsTrigger>
+            )}
+            {role === "owner" && (
+            <TabsTrigger
+              value="aiactions"
+              data-testid="tab-aiactions"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              AI Actions
+            </TabsTrigger>
+            )}
+            {role === "owner" && (
+            <TabsTrigger
+              value="backups"
+              data-testid="tab-backups"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              DB Backups
+            </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="orders">
@@ -512,6 +539,15 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
           </TabsContent>
           <TabsContent value="reports">
             <ReportsPanel token={token} />
+          </TabsContent>
+          <TabsContent value="livesubs">
+            <LiveSubsAdminPanel token={token} />
+          </TabsContent>
+          <TabsContent value="aiactions">
+            <AIActionsPanel token={token} />
+          </TabsContent>
+          <TabsContent value="backups">
+            <DbBackupsPanel token={token} />
           </TabsContent>
         </Tabs>
       </main>
@@ -6765,3 +6801,332 @@ function ReportsPanel({ token }) {
 }
 
 
+
+
+// ============ Admin Live Subs Manager ============
+function LiveSubsAdminPanel({ token }) {
+  const [subs, setSubs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [cancelSub, setCancelSub] = useState(null);
+  const [refundAmt, setRefundAmt] = useState("");
+  const [reason, setReason] = useState("Cancelled by admin");
+  const [openTicket, setOpenTicket] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const p = new URLSearchParams();
+      if (statusFilter) p.set("status", statusFilter);
+      if (q.trim()) p.set("q", q.trim());
+      const r = await adminApi(token).get(`/admin/live-subs?${p.toString()}`);
+      setSubs(r.data.subs || []);
+    } catch {
+      toast.error("Failed to load subscriptions");
+    }
+    setLoading(false);
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [token, statusFilter]);
+
+  const doCancel = async () => {
+    if (!cancelSub) return;
+    setBusy(true);
+    try {
+      const amt = parseFloat(refundAmt || "0") || 0;
+      const r = await adminApi(token).post(`/admin/live-subs/${cancelSub.id}/cancel`, {
+        refund_amount: amt, reason, open_ticket: openTicket,
+      });
+      toast.success(`Cancelled. Refunded $${(r.data.refunded || 0).toFixed(2)}${r.data.ticket_id ? " · ticket opened" : ""}`);
+      setCancelSub(null); setRefundAmt(""); setReason("Cancelled by admin");
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Cancel failed");
+    }
+    setBusy(false);
+  };
+
+  const canRefundMax = cancelSub ? Math.max(0, (Number(cancelSub.total_spent) || 0) - (Number(cancelSub.already_refunded) || 0)) : 0;
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6">
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <h2 className="font-display font-bold text-lg mr-auto">Live Subscriptions</h2>
+        <input
+          data-testid="livesubs-search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && load()}
+          placeholder="Search user / @tiktok / service"
+          className="bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm w-72"
+        />
+        <select
+          data-testid="livesubs-status"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm"
+        >
+          <option value="">All</option>
+          <option value="active">Active</option>
+          <option value="waiting_for_live">Waiting</option>
+          <option value="paused">Paused</option>
+          <option value="cancelled">Cancelled</option>
+          <option value="expired">Expired</option>
+          <option value="refunded">Refunded</option>
+        </select>
+        <button data-testid="livesubs-refresh" onClick={load} className="px-3 py-2 text-xs uppercase tracking-wider text-white/60 hover:text-white">
+          Refresh
+        </button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm" data-testid="livesubs-table">
+          <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14]">
+            <tr>
+              <th className="text-left px-4 py-3">User</th>
+              <th className="text-left px-4 py-3">@TikTok</th>
+              <th className="text-left px-4 py-3">Service</th>
+              <th className="text-left px-4 py-3">Status</th>
+              <th className="text-left px-4 py-3">Spent</th>
+              <th className="text-left px-4 py-3">Refunded</th>
+              <th className="text-left px-4 py-3">Refundable</th>
+              <th className="text-left px-4 py-3">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan={8} className="text-center py-12 text-white/40">Loading…</td></tr>}
+            {!loading && subs.length === 0 && <tr><td colSpan={8} className="text-center py-12 text-white/40">No subscriptions</td></tr>}
+            {subs.map((s) => {
+              const spent = Number(s.total_spent || 0);
+              const refunded = Number(s.already_refunded || 0);
+              const refundable = Math.max(0, spent - refunded);
+              const closed = ["cancelled", "expired", "refunded"].includes(s.status);
+              return (
+                <tr key={s.id} className="border-t border-white/5 hover:bg-white/[0.03]" data-testid={`livesubs-row-${s.id}`}>
+                  <td className="px-4 py-3 font-mono">@{s.username || s.user_id?.slice(0, 8)}</td>
+                  <td className="px-4 py-3">@{s.tiktok_username}</td>
+                  <td className="px-4 py-3 text-white/70">{s.service_name || `#${s.service_id}`}</td>
+                  <td className="px-4 py-3"><span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
+                    s.status === "active" ? "bg-emerald-500/20 text-emerald-300" :
+                    s.status === "waiting_for_live" ? "bg-amber-500/20 text-amber-200" :
+                    closed ? "bg-white/10 text-white/50" : "bg-sky-500/20 text-sky-300"
+                  }`}>{s.status}</span></td>
+                  <td className="px-4 py-3">${spent.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-emerald-300">${refunded.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-amber-300">${refundable.toFixed(2)}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      data-testid={`livesubs-cancel-${s.id}`}
+                      onClick={() => { setCancelSub(s); setRefundAmt(refundable > 0 ? refundable.toFixed(2) : "0"); }}
+                      disabled={closed}
+                      className="px-3 py-1 rounded bg-[#FF007F] text-white text-xs font-bold disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {closed ? "Refund only" : "Cancel + Refund"}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {cancelSub && (
+        <div className="fixed inset-0 z-[95] bg-black/80 backdrop-blur flex items-center justify-center p-4" onClick={() => !busy && setCancelSub(null)}>
+          <div className="bg-[#1a1525] border border-white/10 rounded max-w-md w-full p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-display font-bold text-lg">Cancel Auto-Live @{cancelSub.tiktok_username}</h3>
+            <div className="text-xs text-white/60">
+              User: <span className="text-white">@{cancelSub.username}</span> · Spent ${Number(cancelSub.total_spent || 0).toFixed(2)} · Already refunded ${Number(cancelSub.already_refunded || 0).toFixed(2)}<br />
+              Refundable up to <span className="text-amber-300 font-bold">${canRefundMax.toFixed(2)}</span>
+            </div>
+            <div>
+              <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">Refund to user balance ($)</label>
+              <input
+                data-testid="livesubs-refund-amount"
+                type="number" min="0" step="0.01" max={canRefundMax}
+                value={refundAmt}
+                onChange={(e) => setRefundAmt(e.target.value)}
+                className="w-full bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">Reason (shown to user)</label>
+              <textarea
+                data-testid="livesubs-reason"
+                rows={3}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                className="w-full bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm"
+              />
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={openTicket} onChange={(e) => setOpenTicket(e.target.checked)} data-testid="livesubs-open-ticket" />
+              <span>Open support ticket & notify user (AI assistant will handle follow-ups)</span>
+            </label>
+            <div className="flex gap-2 justify-end pt-2">
+              <button onClick={() => setCancelSub(null)} disabled={busy} className="px-4 py-2 border border-white/10 rounded text-sm hover:bg-white/5">
+                Close
+              </button>
+              <button data-testid="livesubs-confirm-cancel" onClick={doCancel} disabled={busy} className="px-4 py-2 bg-[#FF007F] rounded text-sm font-bold disabled:opacity-50">
+                {busy ? "Working…" : "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ============ Admin AI Actions History ============
+function AIActionsPanel({ token }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await adminApi(token).get("/admin/ai-actions");
+      setRows(r.data.actions || []);
+    } catch { toast.error("Failed to load AI actions"); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, [token]);
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-display font-bold text-lg">AI Actions History</h2>
+        <button data-testid="aiactions-refresh" onClick={load} className="text-xs uppercase tracking-wider text-white/60 hover:text-white">Refresh</button>
+      </div>
+      <div className="text-xs text-white/50 mb-3">
+        Every action taken by the AI support assistant (auto-replies, refunds) and every admin cancellation flows here. Last 100 rows.
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm" data-testid="aiactions-table">
+          <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14]">
+            <tr>
+              <th className="text-left px-4 py-3">When</th>
+              <th className="text-left px-4 py-3">Actor</th>
+              <th className="text-left px-4 py-3">Kind</th>
+              <th className="text-left px-4 py-3">User</th>
+              <th className="text-left px-4 py-3">Target</th>
+              <th className="text-left px-4 py-3">Amount</th>
+              <th className="text-left px-4 py-3">Reason / Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan={7} className="text-center py-10 text-white/40">Loading…</td></tr>}
+            {!loading && rows.length === 0 && <tr><td colSpan={7} className="text-center py-10 text-white/40">Nothing yet</td></tr>}
+            {rows.map((a) => (
+              <tr key={a.id} className="border-t border-white/5 hover:bg-white/[0.03]">
+                <td className="px-4 py-3 text-white/60 text-xs whitespace-nowrap">{a.created_at ? new Date(a.created_at).toLocaleString() : ""}</td>
+                <td className="px-4 py-3"><span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${a.actor === "ai" ? "bg-emerald-500/20 text-emerald-300" : "bg-sky-500/20 text-sky-300"}`}>{a.actor}</span></td>
+                <td className="px-4 py-3 text-white/80">{a.kind}</td>
+                <td className="px-4 py-3 font-mono">@{a.username || (a.user_id || "").slice(0, 8)}</td>
+                <td className="px-4 py-3 text-white/70 text-xs">{a.target_label || a.target_id || "—"}</td>
+                <td className="px-4 py-3 text-amber-300">{a.amount ? `$${Number(a.amount).toFixed(2)}` : "—"}</td>
+                <td className="px-4 py-3 text-white/60 text-xs max-w-[380px] truncate" title={a.reason || a.details || ""}>{a.reason || a.details || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+
+// ============ Admin DB Backups Panel ============
+function DbBackupsPanel({ token }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [meta, setMeta] = useState({ next_run_hours: 6, keep: 20 });
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await adminApi(token).get("/admin/db-backups");
+      setRows(r.data.backups || []);
+      setMeta({ next_run_hours: r.data.next_run_hours, keep: r.data.keep });
+    } catch { toast.error("Failed to load backups"); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, [token]);
+
+  const runNow = async () => {
+    setRunning(true);
+    try {
+      const r = await adminApi(token).post("/admin/db-backups/run", {});
+      toast.success(`Snapshot ${r.data.name} — ${r.data.docs} docs`);
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Backup failed");
+    }
+    setRunning(false);
+  };
+
+  const downloadUrl = (name) => `${(process.env.REACT_APP_BACKEND_URL || "").replace(/\/$/, "")}/api/admin/db-backups/${name}/download?t=${encodeURIComponent(token)}`;
+
+  const remove = async (name) => {
+    if (!window.confirm(`Delete backup ${name}?`)) return;
+    try {
+      await adminApi(token).delete(`/admin/db-backups/${name}`);
+      toast.success("Deleted");
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h2 className="font-display font-bold text-lg">DB Backups</h2>
+          <div className="text-xs text-white/50 mt-1">Automatic snapshot every {meta.next_run_hours}h · keeps last {meta.keep}</div>
+        </div>
+        <div className="flex gap-2">
+          <button data-testid="dbbackups-run" onClick={runNow} disabled={running} className="px-4 py-2 bg-[#FF007F] rounded text-sm font-bold disabled:opacity-50">
+            {running ? "Snapshotting…" : "Run backup now"}
+          </button>
+          <button data-testid="dbbackups-refresh" onClick={load} className="px-3 py-2 text-xs uppercase tracking-wider text-white/60 hover:text-white">
+            Refresh
+          </button>
+        </div>
+      </div>
+      <div className="text-xs text-white/50 mb-3">
+        Editing the DB safely: go to <a href="/db-manager" target="_blank" rel="noreferrer" className="text-emerald-300 underline">/db-manager</a> (dedicated <code>dbmanager</code> login).
+        Balance/role/password fields on <code>users</code> are locked and the <code>users</code> collection can&apos;t be wiped. Snapshots below are your rollback net.
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm" data-testid="dbbackups-table">
+          <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14]">
+            <tr>
+              <th className="text-left px-4 py-3">Snapshot</th>
+              <th className="text-left px-4 py-3">Created</th>
+              <th className="text-left px-4 py-3">Size</th>
+              <th className="text-left px-4 py-3">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td colSpan={4} className="text-center py-10 text-white/40">Loading…</td></tr>}
+            {!loading && rows.length === 0 && <tr><td colSpan={4} className="text-center py-10 text-white/40">No backups yet</td></tr>}
+            {rows.map((b) => (
+              <tr key={b.name} className="border-t border-white/5 hover:bg-white/[0.03]">
+                <td className="px-4 py-3 font-mono text-xs">{b.name}</td>
+                <td className="px-4 py-3 text-white/60 text-xs">{new Date(b.created_at).toLocaleString()}</td>
+                <td className="px-4 py-3">{(b.size / 1024).toFixed(1)} KB</td>
+                <td className="px-4 py-3 flex gap-2">
+                  <a href={downloadUrl(b.name)} data-testid={`dbbackups-download-${b.name}`} className="px-2 py-1 rounded bg-emerald-500/20 text-emerald-300 text-xs font-bold hover:bg-emerald-500/30">Download</a>
+                  <button data-testid={`dbbackups-delete-${b.name}`} onClick={() => remove(b.name)} className="px-2 py-1 rounded bg-red-500/20 text-red-300 text-xs font-bold hover:bg-red-500/30">Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}

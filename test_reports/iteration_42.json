@@ -1,0 +1,72 @@
+{
+  "summary": "Iteration 42 tested the requested sports shutdown, dedicated DB-manager authentication and guards, backup lifecycle, admin live-sub cancellation/refund/ticket/action flow, asynchronous AI ticket replies, signed-in AI chat, public chat, transaction-history balance safety, and the new Admin UI tabs against the public URL. Backend focused suite passed 9/11. Core AI, backup, DB user protection, chat, and live-sub flows passed. Sports remains exposed through active APIs, deleting approved transaction history changes the user's actual wallet balance, and the visible /admin login form rejects the documented Balkin credentials even though user-login plus session elevation works.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/dbadmin/transactions/delete-many",
+        "issue": "Deleting an approved transaction changes the user's usable balance. Reproduction: a TEST approved +$0.37 transaction made /api/client/balance $231.89; delete-many removed it and balance fell to $231.52. The users.balance field guard does not protect the real wallet because _get_user_balance derives it from transactions.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "GET /api/sports/livescores (and other /api/sports/* routes)",
+        "issue": "Sports is not fully removed: /api/sports/livescores still returns 200 and invokes SofaScore logic; upcoming/leagues and sports betting/admin routes remain registered in server.py. The current feature response is false and the client nav is hidden, but the APIs are active.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "DELETE /api/admin/db-backups/{name}",
+        "issue": "Deleting a backup removes only the gzip file, not its db_backups metadata document, leaving orphaned records and unbounded metadata growth. Test-created orphan metadata was cleaned manually."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Admin login form",
+        "issue": "The visible /admin form rejects Balkin / Dennis123.@@: it calls legacy /admin/login and then /admin/staff/login, both returning 401. The same credentials succeed through /auth/login followed by /admin/session-from-user, which was used to continue tab testing.",
+        "selector": "[data-testid='admin-login-form']",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Sports removal",
+        "issue": "Client Sports navigation is correctly hidden on desktop, mobile bottom navigation, and mobile drawer while sports=false, but SportsView remains imported/renderable and Admin Settings still contains a Sports toggle; backend sports APIs remain live, so the feature can be reintroduced rather than being fully removed.",
+        "affected_selectors": ["[data-testid='nav-sports']", "[data-testid='bottomnav-sports']", "[data-testid='m-nav-sports']"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_42_admin_ai_db.py",
+    "/app/test_reports/pytest/iter42_results.xml"
+  ],
+  "action_items": [
+    "Make transaction-history deletion balance-safe. Since the live wallet is transaction-derived, either block destructive deletion of balance-bearing transactions, archive rather than delete, or atomically preserve a canonical wallet ledger/balance before deletion.",
+    "Remove all /api/sports/*, /api/client/sports/*, and /api/admin/sports/* routes/workers, remove SportsView/imports and the Admin Sports toggle, and prevent stored feature settings from overriding sports back to true.",
+    "Wire the /admin form to dashboard owner authentication plus /admin/session-from-user (or /admin/login-with-account with captcha) so Balkin credentials work without a preloaded user token.",
+    "Delete the matching db_backups metadata row when deleting a backup file.",
+    "Retest sports route absence, transaction deletion with a real approved ledger item, direct Admin form login, and backup metadata cleanup after fixes."
+  ],
+  "critical_code_review_comments": [
+    "server.py:_get_user_balance aggregates approved transaction documents, while dbadmin permits transactions/delete-many. Protecting only users.balance cannot satisfy the requirement that history deletion not wipe balances.",
+    "server.py still contains the full sports API/router implementation and external-source logic; ClientDashboard.jsx imports SportsView and conditionally renders it, and Admin.jsx still exposes the sports feature key. DEFAULT_FEATURES sports=false is only concealment, not removal.",
+    "Admin.jsx login submits to legacy /admin/login using ADMIN_USER/ADMIN_PASS defaults, not OWNER_USERNAME/OWNER_PASSWORD; unlike DbManager.jsx, it never performs /auth/login then /admin/session-from-user.",
+    "_db_backup_run_once inserts db_backups metadata on each snapshot, but admin_delete_db_backup only unlinks the file and never deletes metadata.",
+    "server.py (8,582 lines), Admin.jsx (7,133 lines), and ClientDashboard.jsx remain far beyond the 700-line maintainability threshold; focused linting of Admin.jsx also reports 55 existing errors/warnings. Split these into feature routers/components."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_42_admin_ai_db.py",
+    "/app/test_reports/iteration_42.json"
+  ],
+  "success_rate": {
+    "backend": "82% (9/11 focused tests passed)",
+    "frontend": "80% of focused UI groups passed; sports UI hiding, DB-manager login, new Admin tabs/backup, and live-sub cancellation passed; direct Admin login failed"
+  },
+  "seed_data_creation": "Created temporary live subscriptions, approved spend/refund transactions, cancellation tickets/actions, AI support tickets/actions, public/AI chat messages, safe user-note edits, and backup snapshots. All TEST_iter42/TEST_ui42 records, files, and test-created orphan backup metadata were cleaned; the original user note and AI session state were restored.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run only test_iteration_42_admin_ai_db.py. Current JUnit is 9 pass / 2 fail: sports routes remain active and transaction deletion changes /client/balance. AI ticket auto-reply and AI chat both completed quickly and passed. Browser testing confirmed no Sports UI on desktop/mobile, dedicated dbmanager UI login, all three Admin tabs/tables, Run backup now, and the full Live Subs modal/refund/ticket/action flow. The visible Admin login form still rejects Balkin; preloading tokens through /auth/login + /admin/session-from-user works.",
+  "rca_of_the_issue": "Balance safety fails because the application has no balance independent of transaction history: _get_user_balance sums approved transactions, while dbadmin delete-many can physically remove those ledger rows. Sports was disabled only through a feature flag; route implementations, external API calls, UI imports, and the admin toggle were retained. Admin credential failure is caused by the form using the separate legacy ADMIN_USER/ADMIN_PASS route instead of the seeded dashboard owner authentication flow. Backup metadata is orphaned because file deletion lacks a matching db.db_backups.delete operation."
+}

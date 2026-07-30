@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Header, Depends, Body
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -1032,7 +1033,7 @@ async def get_maintenance():
 # and the direct route becomes a friendly "not available" screen.
 
 DEFAULT_FEATURES = {
-    "sports": True,
+    "sports": False,  # Removed per owner request (Feb 2026)
     "numbers": True,
     "games": True,
     "addons": True,
@@ -3239,8 +3240,8 @@ async def _process_live_sub_burst(sub: dict):
 async def _start_live_sub_worker():
     # Fire-and-forget; the loop catches its own errors and reschedules.
     asyncio.create_task(_live_sub_worker_loop())
-    # Sports goal watcher — polls the RapidAPI livescore feed and emits events.
-    asyncio.create_task(_sports_watcher_loop())
+    # Sports goal watcher DISABLED per owner request (Feb 2026) — remove all sport APIs.
+    # asyncio.create_task(_sports_watcher_loop())
     # NOWPayments auto-reconciler — auto-credits paid invoices if the webhook missed.
     asyncio.create_task(_nowpayments_reconciler_loop())
     # Monthly chat cleanup — hourly worker that trims public_chat, ai_chat_messages
@@ -3248,6 +3249,8 @@ async def _start_live_sub_worker():
     asyncio.create_task(_chat_retention_loop())
     # Auto-restart the Discord bot if it was running before the last reload.
     asyncio.create_task(_discord_bot_autostart())
+    # DB backup worker — snapshot every 6 hours to /app/backups.
+    asyncio.create_task(_db_backup_loop())
 
 
 async def _discord_bot_autostart():
@@ -4237,6 +4240,22 @@ DBADMIN_SECRET_KEYS = {
 DBADMIN_REDACTED = "•••REDACTED•••"
 
 
+# Collections that can NEVER be dropped/emptied via the DB manager. Users can
+# still edit individual documents, but no wipe. This preserves user balances /
+# staff credentials even if the owner accidentally clicks "delete history".
+DBADMIN_PROTECTED_COLLECTIONS = {
+    "users", "admin_users", "smm_providers", "wallets",
+    "app_settings", "nowpayments_config", "paypal_config",
+    "coinpayments_config", "selly_config",
+}
+# Fields inside a `users` document that must never be touched from the DB
+# manager. Balance changes happen through purchases/refunds only.
+DBADMIN_PROTECTED_USER_FIELDS = {
+    "balance", "withdrawable_balance", "role", "password_hash",
+    "banned", "session_epoch",
+}
+
+
 def _dbadmin_redact(obj):
     if isinstance(obj, dict):
         return {
@@ -4323,6 +4342,13 @@ async def dbadmin_update_doc(coll: str, doc_id: str, body: DbAdminDocBody, x_adm
     check_owner(x_admin_token)
     doc = _dbadmin_strip_redacted(dict(body.doc))
     doc.pop("_id", None)
+    if coll == "users":
+        # Never let the DB manager overwrite money / role / auth fields on users.
+        blocked = [f for f in DBADMIN_PROTECTED_USER_FIELDS if f in doc]
+        for f in blocked:
+            doc.pop(f, None)
+        if blocked:
+            logger.warning("[dbadmin] blocked protected user fields on update: %s", blocked)
     r = await db[coll].update_one(_dbadmin_id_query(doc_id), {"$set": doc})
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -4332,6 +4358,9 @@ async def dbadmin_update_doc(coll: str, doc_id: str, body: DbAdminDocBody, x_adm
 @api_router.delete("/dbadmin/{coll}/doc/{doc_id}")
 async def dbadmin_delete_doc(coll: str, doc_id: str, x_admin_token: Optional[str] = Header(None)):
     check_owner(x_admin_token)
+    if coll in DBADMIN_PROTECTED_COLLECTIONS:
+        raise HTTPException(status_code=403,
+                            detail=f"Collection '{coll}' is protected and can't be deleted from the DB manager.")
     r = await db[coll].delete_one(_dbadmin_id_query(doc_id))
     if r.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -4346,11 +4375,122 @@ class DbAdminDeleteManyBody(BaseModel):
 @api_router.post("/dbadmin/{coll}/delete-many")
 async def dbadmin_delete_many(coll: str, body: DbAdminDeleteManyBody, x_admin_token: Optional[str] = Header(None)):
     check_owner(x_admin_token)
+    if coll in DBADMIN_PROTECTED_COLLECTIONS:
+        raise HTTPException(status_code=403,
+                            detail=f"Collection '{coll}' is protected — mass-delete is disabled to preserve user balances / staff credentials.")
     if not body.filter and not body.confirm_all:
         raise HTTPException(status_code=400, detail="Empty filter deletes ALL documents — set confirm_all=true to proceed")
     r = await db[coll].delete_many(body.filter or {})
     logger.warning("[dbadmin] delete-many on %s filter=%s → deleted %s", coll, body.filter, r.deleted_count)
     return {"ok": True, "deleted": r.deleted_count}
+
+
+# ============ DB BACKUPS (auto every 6 hours, owner-only) ============
+DB_BACKUP_DIR = "/app/backups"
+DB_BACKUP_INTERVAL_SEC = 6 * 60 * 60      # every 6 hours
+DB_BACKUP_KEEP = 20                        # keep last 20 snapshots
+
+
+async def _db_backup_run_once() -> dict:
+    """Snapshot every collection to a single JSON file. Returns {name, path, size, collections, docs}."""
+    import gzip
+    os.makedirs(DB_BACKUP_DIR, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    name = f"backup_{ts}.json.gz"
+    path = os.path.join(DB_BACKUP_DIR, name)
+    payload = {"created_at": datetime.now(timezone.utc).isoformat(), "collections": {}}
+    total_docs = 0
+    for coll in await db.list_collection_names():
+        try:
+            docs = await db[coll].find({}).to_list(None)
+        except Exception as e:
+            logger.warning("[db-backup] skip %s: %s", coll, e)
+            continue
+        payload["collections"][coll] = jsonlib.loads(jsonlib.dumps(docs, default=str))
+        total_docs += len(docs)
+    raw = jsonlib.dumps(payload, ensure_ascii=False).encode("utf-8")
+    with gzip.open(path, "wb") as fh:
+        fh.write(raw)
+    size = os.path.getsize(path)
+    # rotate — keep only DB_BACKUP_KEEP most recent
+    files = sorted(
+        [f for f in os.listdir(DB_BACKUP_DIR) if f.startswith("backup_") and f.endswith(".json.gz")],
+        reverse=True,
+    )
+    for old in files[DB_BACKUP_KEEP:]:
+        try:
+            os.remove(os.path.join(DB_BACKUP_DIR, old))
+        except Exception:
+            pass
+    await db.db_backups.insert_one({
+        "id": str(uuid.uuid4()), "name": name, "size": size,
+        "collections": len(payload["collections"]), "docs": total_docs,
+        "created_at": payload["created_at"],
+    })
+    logger.info("[db-backup] wrote %s (%.1f KB, %s docs)", name, size / 1024, total_docs)
+    return {"name": name, "path": path, "size": size,
+            "collections": len(payload["collections"]), "docs": total_docs}
+
+
+async def _db_backup_loop():
+    """Background worker — snapshot the DB every 6 hours forever."""
+    # Small startup delay so we don't collide with other startup work.
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await _db_backup_run_once()
+        except Exception as e:
+            logger.warning("[db-backup] scheduled run failed: %s", e)
+        await asyncio.sleep(DB_BACKUP_INTERVAL_SEC)
+
+
+@api_router.get("/admin/db-backups")
+async def admin_list_db_backups(x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    os.makedirs(DB_BACKUP_DIR, exist_ok=True)
+    out = []
+    for name in sorted(os.listdir(DB_BACKUP_DIR), reverse=True):
+        if not (name.startswith("backup_") and name.endswith(".json.gz")):
+            continue
+        full = os.path.join(DB_BACKUP_DIR, name)
+        try:
+            st = os.stat(full)
+        except Exception:
+            continue
+        out.append({
+            "name": name, "size": st.st_size,
+            "created_at": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+        })
+    return {"backups": out, "next_run_hours": DB_BACKUP_INTERVAL_SEC / 3600, "keep": DB_BACKUP_KEEP}
+
+
+@api_router.post("/admin/db-backups/run")
+async def admin_run_db_backup(x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    return await _db_backup_run_once()
+
+
+@api_router.get("/admin/db-backups/{name}/download")
+async def admin_download_db_backup(name: str, x_admin_token: Optional[str] = Header(None), t: Optional[str] = None):
+    check_owner(x_admin_token or t)
+    if not (name.startswith("backup_") and name.endswith(".json.gz")):
+        raise HTTPException(status_code=400, detail="Invalid backup name")
+    path = os.path.join(DB_BACKUP_DIR, name)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Backup not found")
+    return FileResponse(path, filename=name, media_type="application/gzip")
+
+
+@api_router.delete("/admin/db-backups/{name}")
+async def admin_delete_db_backup(name: str, x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    if not (name.startswith("backup_") and name.endswith(".json.gz")):
+        raise HTTPException(status_code=400, detail="Invalid backup name")
+    path = os.path.join(DB_BACKUP_DIR, name)
+    if os.path.exists(path):
+        os.remove(path)
+        return {"ok": True, "deleted": name}
+    raise HTTPException(status_code=404, detail="Backup not found")
 
 
 # ============ Public group chat (shoutbox) ============

@@ -301,6 +301,33 @@ async def seed_owner(db: AsyncIOMotorDatabase):
         )
         logger.info(f"Owner password/role synced: {username}")
 
+    # Dedicated DB-manager owner account so the main owner login doesn't have
+    # to be shared. Uses env overrides if present; falls back to sane defaults.
+    dbm_user = os.environ.get("DBMGR_USERNAME", "dbmanager")
+    dbm_email = os.environ.get("DBMGR_EMAIL", "dbmanager@better-social.local")
+    dbm_pass = os.environ.get("DBMGR_PASSWORD", "DbM4nager!2026")
+    existing_dbm = await db.users.find_one({"username": dbm_user})
+    if existing_dbm is None:
+        await db.users.insert_one({
+            "id": str(uuid.uuid4()),
+            "username": dbm_user,
+            "username_lower": dbm_user.lower(),
+            "email": dbm_email.lower(),
+            "password_hash": hash_password(dbm_pass),
+            "role": "owner",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "muted_until": None,
+            "is_db_manager": True,
+        })
+        logger.info(f"DB-manager owner seeded: {dbm_user}")
+    elif not verify_password(dbm_pass, existing_dbm.get("password_hash", "")):
+        await db.users.update_one(
+            {"username": dbm_user},
+            {"$set": {"password_hash": hash_password(dbm_pass), "role": "owner",
+                      "email": dbm_email.lower(), "is_db_manager": True}},
+        )
+        logger.info(f"DB-manager password/role synced: {dbm_user}")
+
 
 # ================= AUTH ROUTES =================
 
