@@ -179,3 +179,4 @@ frontend/node_modules/.cache/default-development/12.pack
 frontend/node_modules/.cache/default-development/16.pack
 frontend/node_modules/.cache/default-development/18.pack
 frontend/node_modules/.cache/default-development/3.pack
+mongo_export_*
