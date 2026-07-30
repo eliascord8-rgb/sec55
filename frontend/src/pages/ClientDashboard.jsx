@@ -50,7 +50,6 @@ import MessagesView from "./MessagesView";
 import GamesView from "./GamesView";
 import { InvoicesView, HelpCenterView } from "./InvoicesAndHelp";
 import { AviatorGame, SettingsView } from "./SettingsAndAviator";
-import SportsView from "./SportsView";
 import GuestLanding from "./GuestLanding";
 import GoalNotifier from "@/components/GoalNotifier";
 import BrandLoader from "@/components/BrandLoader";
@@ -425,7 +424,6 @@ export default function ClientDashboard() {
     { id: "buy", label: t("nav_buy"), testId: "nav-buy" },
     ...(ownsAutoLive && feat("live_orders") ? [{ id: "live", label: t("nav_live"), testId: "nav-live", isNew: true }] : []),
     ...(feat("addons") ? [{ id: "addons", label: t("nav_addons"), testId: "nav-addons" }] : []),
-    ...(feat("sports") ? [{ id: "sports", label: t("nav_sports") || "Sports", testId: "nav-sports", isNew: true }] : []),
     ...(feat("numbers") ? [{ id: "numbers", label: t("nav_numbers"), testId: "nav-numbers" }] : []),
     ...(feat("games") ? [{ id: "games", label: t("nav_games"), testId: "nav-games" }] : []),
   ];
@@ -939,7 +937,6 @@ export default function ClientDashboard() {
               {view === "addons" && (
                 <AddonsView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} reloadAddons={loadAddons} onGoBuy={() => changeView("buy")} onGoLive={() => changeView("live")} />
               )}
-              {view === "sports" && <SportsView />}
               {view === "numbers" && (
                 <NumbersView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
               )}
@@ -1016,19 +1013,11 @@ export default function ClientDashboard() {
               <ShoppingBag className="w-5 h-5" />
               <span className="text-[9px] font-bold uppercase tracking-wider">{t("nav_buy") || "Buy"}</span>
             </button>
-            {feat("sports") ? (
-              <button onClick={() => changeView("sports")} data-testid="bottomnav-sports"
-                      className={`flex flex-col items-center justify-center gap-0.5 active:scale-95 transition ${view === "sports" ? "text-emerald-300" : "text-white/60"}`}>
-                <Trophy className="w-5 h-5" />
-                <span className="text-[9px] font-bold uppercase tracking-wider">Sports</span>
-              </button>
-            ) : (
-              <button onClick={() => changeView("funds")} data-testid="bottomnav-funds"
-                      className={`flex flex-col items-center justify-center gap-0.5 active:scale-95 transition ${view === "funds" ? "text-emerald-300" : "text-white/60"}`}>
-                <CreditCard className="w-5 h-5" />
-                <span className="text-[9px] font-bold uppercase tracking-wider">Funds</span>
-              </button>
-            )}
+            <button onClick={() => changeView("funds")} data-testid="bottomnav-funds"
+                    className={`flex flex-col items-center justify-center gap-0.5 active:scale-95 transition ${view === "funds" ? "text-emerald-300" : "text-white/60"}`}>
+              <CreditCard className="w-5 h-5" />
+              <span className="text-[9px] font-bold uppercase tracking-wider">Funds</span>
+            </button>
             <button onClick={() => window.dispatchEvent(new CustomEvent("bs-open-community-chat"))} data-testid="bottomnav-chat"
                     className="flex flex-col items-center justify-center gap-0.5 text-white/60 active:scale-95 transition">
               <MessageCircle className="w-5 h-5" />

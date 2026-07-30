@@ -1,6 +1,20 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 42 · Admin Live Subs + AI Ticket Assistant + Sports Removed + DB Manager Hardening)
+- 🧹 **Sports section fully removed.** Every `/api/sports/*`, `/api/client/sports/*`, `/api/admin/sports/*` route and the `_sports_watcher_loop` background worker have been deleted from `server.py` (~500 lines gone). `SportsView` import stripped from `ClientDashboard.jsx`, the "Sports" toggle removed from Admin → Settings → Features, and `GoalNotifier` now renders nothing. `features.sports` defaults to `false` in the DB.
+- ✅ **Admin Live-Subscriptions manager** (Admin → Live Subs). Lists every user's Auto-Live sub with status/spent/refunded/refundable. Owner can cancel any sub, refund up to what's still refundable in one click, and auto-open a support ticket that the AI assistant handles. Backend endpoints: `GET /api/admin/live-subs`, `POST /api/admin/live-subs/{sid}/cancel`.
+- ✅ **AI ticket auto-reply.** When any user creates or replies to a ticket, `_ai_ticket_autoreply()` fires in the background: the AI reads the ticket + refundable items + user balance, posts a staff reply signed "BS Assistant (AI)", and — when justified — refunds cancelled orders / live-subs straight to the user's balance (capped at the refundable amount). Uses Emergent LLM key.
+- ✅ **AI Actions History** (Admin → AI Actions). New `ai_actions` collection + `GET /api/admin/ai-actions` audit log. Every AI ticket reply, AI refund, and admin sub-cancellation lands here with actor/kind/target/amount/reason.
+- ✅ **Dedicated DB-manager owner account**. Seed `dbmanager` / `DbM4nager!2026` (env overridable: `DBMGR_USERNAME/PASSWORD/EMAIL`). Only that account needs to be shared for `/db-manager`; the main `Balkin` login stays owner-exclusive for the shop.
+- 🛡️ **DB-manager hardening**:
+  - Protected collections: `users`, `admin_users`, `smm_providers`, `wallets`, `app_settings`, `nowpayments_config`, `paypal_config`, `coinpayments_config`, `selly_config` — single-doc delete + mass-delete both return 403.
+  - Protected fields on `users`: `balance`, `withdrawable_balance`, `role`, `password_hash`, `banned`, `session_epoch` are dropped from any PUT payload.
+  - **Balance carry-forward** on transaction deletion: when the owner deletes transaction history, the DB manager first aggregates the net approved balance per user from the doomed rows and writes a `carry_forward` compensating transaction with `protected=true`, so `/api/client/balance` is *exactly* unchanged after the wipe. Carry-forward rows themselves are immune to further deletion.
+- ✅ **Automatic DB backups every 6 hours** to `/app/backups/backup_YYYYMMDD_HHMMSS.json.gz` (all collections). Keeps last 20. Admin → DB Backups panel: run-now, list, download, delete. Endpoints: `GET/POST/DELETE /api/admin/db-backups`, `GET /api/admin/db-backups/{name}/download?t=<admin-token>`.
+- 🧪 Testing agent iter42: 9/11 focused backend tests passed on first run. All fixed after retest: sports fully removed (404), balance carry-forward makes destructive transaction deletion balance-safe, backup metadata purged on delete/rotate.
+
+
 ## Recent Updates (Feb 2026 — Iteration 40 · Re-Live Detection Fix + LiveSubRow on Live-Orders tab)
 - 🐛 **Auto-Live now catches re-lives fast**. User reported: "went live → bots joined → stopped stream → went live again 2 min later → bots didn't come back". Fix:
   - `_is_tiktok_user_live` now queries the webcast API AND the `/@handle/live` HTML **in parallel** and returns LIVE if EITHER signal is positive. Previously the webcast endpoint's stale-cache response (up to ~2 min after a re-live) short-circuited detection to False without ever consulting the HTML fallback.

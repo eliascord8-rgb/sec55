@@ -2012,7 +2012,6 @@ function FeatureTogglesPanel({ token }) {
   // in the sidebar/top nav; direct URL access can still work (server data will
   // return empty). Handy for temporarily hiding Sports during off-season, etc.
   const FEATURES = [
-    { key: "sports",      label: "Sports betting",  desc: "Live scores + upcoming matches + bet slip" },
     { key: "numbers",     label: "Virtual Numbers", desc: "5sim SMS rental service" },
     { key: "games",       label: "Games",           desc: "Slots, spin wheel, mini-games" },
     { key: "addons",      label: "Add-ons store",   desc: "Auto-Live unlock + premium features" },

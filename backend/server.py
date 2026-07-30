@@ -1033,7 +1033,6 @@ async def get_maintenance():
 # and the direct route becomes a friendly "not available" screen.
 
 DEFAULT_FEATURES = {
-    "sports": False,  # Removed per owner request (Feb 2026)
     "numbers": True,
     "games": True,
     "addons": True,
@@ -3240,8 +3239,7 @@ async def _process_live_sub_burst(sub: dict):
 async def _start_live_sub_worker():
     # Fire-and-forget; the loop catches its own errors and reschedules.
     asyncio.create_task(_live_sub_worker_loop())
-    # Sports goal watcher DISABLED per owner request (Feb 2026) — remove all sport APIs.
-    # asyncio.create_task(_sports_watcher_loop())
+    # Sports goal watcher removed per owner request (Feb 2026).
     # NOWPayments auto-reconciler — auto-credits paid invoices if the webhook missed.
     asyncio.create_task(_nowpayments_reconciler_loop())
     # Monthly chat cleanup — hourly worker that trims public_chat, ai_chat_messages
@@ -4337,6 +4335,48 @@ async def dbadmin_insert_doc(coll: str, body: DbAdminDocBody, x_admin_token: Opt
     return {"ok": True, "inserted_id": str(r.inserted_id)}
 
 
+async def _dbadmin_snapshot_balances_before_delete(coll: str, filter_query: dict) -> int:
+    """Before deleting transaction rows, aggregate the net approved amount PER user
+    from the doomed rows and insert a compensating 'carry_forward' transaction so
+    every user's derived balance stays exactly the same after the deletion.
+
+    Returns the number of carry-forward rows inserted (one per affected user).
+    Only runs for the `transactions` collection — no-op for anything else.
+    """
+    if coll != "transactions":
+        return 0
+    match: dict = {"status": "approved"}
+    if filter_query:
+        match = {"$and": [match, filter_query]}
+    pipeline = [
+        {"$match": match},
+        {"$group": {"_id": {"user_id": "$user_id", "username": "$username"},
+                     "net": {"$sum": "$amount"}}},
+    ]
+    rows = await db.transactions.aggregate(pipeline).to_list(None)
+    now = datetime.now(timezone.utc).isoformat()
+    inserted = 0
+    for r in rows:
+        user_id = r["_id"].get("user_id")
+        if not user_id or not r["net"]:
+            continue
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "username": r["_id"].get("username"),
+            "amount": float(r["net"]),
+            "method": "balance",
+            "status": "approved",
+            "type": "carry_forward",
+            "note": "Carry-forward preserving balance after history deletion from DB manager",
+            "created_at": now,
+            "approved_at": now,
+            "protected": True,
+        })
+        inserted += 1
+    return inserted
+
+
 @api_router.put("/dbadmin/{coll}/doc/{doc_id}")
 async def dbadmin_update_doc(coll: str, doc_id: str, body: DbAdminDocBody, x_admin_token: Optional[str] = Header(None)):
     check_owner(x_admin_token)
@@ -4361,6 +4401,15 @@ async def dbadmin_delete_doc(coll: str, doc_id: str, x_admin_token: Optional[str
     if coll in DBADMIN_PROTECTED_COLLECTIONS:
         raise HTTPException(status_code=403,
                             detail=f"Collection '{coll}' is protected and can't be deleted from the DB manager.")
+    if coll == "transactions":
+        # Never delete carry-forward or a single row without preserving balance.
+        target = await db.transactions.find_one(_dbadmin_id_query(doc_id), {"_id": 0})
+        if target and target.get("protected"):
+            raise HTTPException(status_code=403, detail="This is a balance carry-forward row and can't be deleted.")
+        if target and target.get("status") == "approved" and target.get("user_id") and target.get("amount"):
+            await _dbadmin_snapshot_balances_before_delete(
+                "transactions", {"id": target.get("id"), "user_id": target["user_id"]}
+            )
     r = await db[coll].delete_one(_dbadmin_id_query(doc_id))
     if r.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -4380,9 +4429,16 @@ async def dbadmin_delete_many(coll: str, body: DbAdminDeleteManyBody, x_admin_to
                             detail=f"Collection '{coll}' is protected — mass-delete is disabled to preserve user balances / staff credentials.")
     if not body.filter and not body.confirm_all:
         raise HTTPException(status_code=400, detail="Empty filter deletes ALL documents — set confirm_all=true to proceed")
-    r = await db[coll].delete_many(body.filter or {})
-    logger.warning("[dbadmin] delete-many on %s filter=%s → deleted %s", coll, body.filter, r.deleted_count)
-    return {"ok": True, "deleted": r.deleted_count}
+    carry = 0
+    filt = dict(body.filter or {})
+    if coll == "transactions":
+        # Never touch carry-forward rows — they hold accumulated balance.
+        filt.setdefault("protected", {"$ne": True})
+        carry = await _dbadmin_snapshot_balances_before_delete("transactions", filt)
+    r = await db[coll].delete_many(filt)
+    logger.warning("[dbadmin] delete-many on %s filter=%s → deleted %s (carry-forwarded %s users)",
+                   coll, filt, r.deleted_count, carry)
+    return {"ok": True, "deleted": r.deleted_count, "carry_forwarded_users": carry}
 
 
 # ============ DB BACKUPS (auto every 6 hours, owner-only) ============
@@ -4420,6 +4476,7 @@ async def _db_backup_run_once() -> dict:
     for old in files[DB_BACKUP_KEEP:]:
         try:
             os.remove(os.path.join(DB_BACKUP_DIR, old))
+            await db.db_backups.delete_many({"name": old})
         except Exception:
             pass
     await db.db_backups.insert_one({
@@ -4489,6 +4546,7 @@ async def admin_delete_db_backup(name: str, x_admin_token: Optional[str] = Heade
     path = os.path.join(DB_BACKUP_DIR, name)
     if os.path.exists(path):
         os.remove(path)
+        await db.db_backups.delete_many({"name": name})
         return {"ok": True, "deleted": name}
     raise HTTPException(status_code=404, detail="Backup not found")
 
@@ -5161,504 +5219,7 @@ async def free_bet_claim(user: CurrentUser = Depends(current_user_dep)):
     return {"ok": True, "amount": DAILY_FREE_BET_AMOUNT, "balance": new_balance, "claim_id": claim_id}
 
 
-# ============ Sports (RapidAPI live football data) ============
-# Uses the user-provided RapidAPI key for free-api-live-football-data.  A
-# non-fatal timeout returns an empty payload so the UI can degrade gracefully.
-SPORTS_RAPID_KEY = os.environ.get("SPORTS_RAPID_KEY", "31215e25a5msh485e5613d28cd76p15b417jsna5b7f50de8ee")
-SPORTS_RAPID_HOST = "free-api-live-football-data.p.rapidapi.com"
-# TheSportsDB free tier uses public "123" test key for extra coverage of
-# upcoming fixtures across major leagues.
-TSDB_KEY = os.environ.get("TSDB_KEY", "123")
-TSDB_LEAGUES = [
-    ("4328", "English Premier League"),
-    ("4335", "Spanish La Liga"),
-    ("4331", "German Bundesliga"),
-    ("4332", "Italian Serie A"),
-    ("4334", "French Ligue 1"),
-    ("4480", "UEFA Champions League"),
-    ("4481", "UEFA Europa League"),
-    ("4346", "MLS"),
-    ("4344", "Portuguese Primeira Liga"),
-    ("4337", "Dutch Eredivisie"),
-]
-
-
-async def _rapid_get(path: str, params: dict = None):
-    url = f"https://{SPORTS_RAPID_HOST}{path}"
-    headers = {
-        "x-rapidapi-key": SPORTS_RAPID_KEY,
-        "x-rapidapi-host": SPORTS_RAPID_HOST,
-    }
-    async with httpx.AsyncClient(timeout=10) as c:
-        r = await c.get(url, headers=headers, params=params or {})
-        r.raise_for_status()
-        return r.json()
-
-
-async def _sofascore_live_matches() -> list:
-    """Free public API — SofaScore returns all currently-live football matches.
-    No key required. Normalized to our frontend shape."""
-    try:
-        async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "Mozilla/5.0"}) as c:
-            r = await c.get("https://api.sofascore.com/api/v1/sport/football/events/live")
-            r.raise_for_status()
-            data = r.json()
-    except Exception as e:
-        logger.warning("[sports] sofascore live failed: %s", e)
-        return []
-    out = []
-    for ev in (data.get("events") or [])[:60]:
-        try:
-            hs = ((ev.get("homeScore") or {}).get("current") or 0)
-            as_ = ((ev.get("awayScore") or {}).get("current") or 0)
-            status_map = {"inprogress": "LIVE", "notstarted": "SCHEDULED", "finished": "FT", "postponed": "POSTPONED"}
-            status_type = (ev.get("status") or {}).get("type", "")
-            out.append({
-                "id": f"sofa-{ev.get('id')}",
-                "home": {"name": (ev.get("homeTeam") or {}).get("name") or "Home"},
-                "away": {"name": (ev.get("awayTeam") or {}).get("name") or "Away"},
-                "homeScore": {"current": hs},
-                "awayScore": {"current": as_},
-                "status": {"description": (ev.get("status") or {}).get("description", "Live"), "code": status_map.get(status_type, status_type)},
-                "startTime": ev.get("startTimestamp"),
-                "league": {"name": ((ev.get("tournament") or {}).get("name") or "")},
-                "source": "sofascore",
-            })
-        except Exception:
-            continue
-    return out
-
-
-@api_router.get("/sports/livescores")
-async def sports_livescores():
-    """Currently-live football matches. Tries RapidAPI first, falls back to
-    SofaScore's free public API when RapidAPI is unavailable/expired."""
-    try:
-        data = await _rapid_get("/football-current-live")
-        resp = data.get("response") if isinstance(data, dict) else None
-        matches = (
-            (resp or {}).get("live")
-            or (resp or {}).get("matches")
-            if isinstance(resp, dict)
-            else (resp or [])
-        )
-        if matches:
-            return {"matches": matches, "source": "rapidapi"}
-    except Exception as e:
-        logger.info("[sports] rapid livescores failed, using sofascore: %s", e)
-    # Free fallback — no key, no KYC, no subscription
-    sofa = await _sofascore_live_matches()
-    return {"matches": sofa, "source": "sofascore"}
-
-
-# ============ SPORTS BETTING SYSTEM ============
-# Simple but complete: users place single or combo (accumulator) bets on live
-# or upcoming matches. Odds are admin-editable. Cashout returns a dynamic
-# refund based on the current live-implied odds. All bet money is deducted
-# from balance immediately and settled to withdrawable_balance on win.
-
-MIN_STAKE = 0.10
-MAX_STAKE = 20.0
-DEFAULT_MARKETS = {  # sensible defaults if admin hasn't set odds for a match
-    "1X2":       {"home": 2.10, "draw": 3.20, "away": 3.40},
-    "over_0_5":  {"over": 1.15, "under": 4.50},
-    "over_1_5":  {"over": 1.55, "under": 2.30},
-    "over_2_5":  {"over": 2.05, "under": 1.75},
-    "btts":      {"yes": 1.80, "no": 1.90},   # both teams to score
-}
-
-
-class BetSelection(BaseModel):
-    match_id: str = Field(..., min_length=3, max_length=80)
-    match_label: Optional[str] = ""  # e.g. "Arsenal vs Chelsea"
-    market: str = Field(..., pattern="^(1X2|over_0_5|over_1_5|over_2_5|btts)$")
-    selection: str = Field(..., min_length=1, max_length=20)  # "home"|"draw"|"away"|"over"|"under"|"yes"|"no"
-    odds: float = Field(..., gt=1.0, lt=100.0)
-
-
-class PlaceBetRequest(BaseModel):
-    selections: List[BetSelection] = Field(..., min_length=1, max_length=10)
-    stake: float = Field(..., ge=MIN_STAKE, le=MAX_STAKE)
-
-
-@api_router.get("/sports/odds/{match_id}")
-async def get_match_odds(match_id: str):
-    """Return the odds board for a given match — admin overrides + defaults."""
-    doc = await db.match_odds.find_one({"match_id": match_id}, {"_id": 0}) or {}
-    markets = doc.get("markets") or {}
-    # Merge with defaults so every match has a full board
-    merged = {m: {**opts, **(markets.get(m) or {})} for m, opts in DEFAULT_MARKETS.items()}
-    return {"match_id": match_id, "markets": merged, "suspended": bool(doc.get("suspended"))}
-
-
-@client_router.post("/sports/bet")
-async def place_bet(body: PlaceBetRequest, user: CurrentUser = Depends(current_user_dep)):
-    """Place a single or combo bet. Combos multiply odds. Deducts stake from balance."""
-    stake = round(float(body.stake), 2)
-    if stake < MIN_STAKE or stake > MAX_STAKE:
-        raise HTTPException(status_code=400, detail=f"Stake must be between ${MIN_STAKE:.2f} and ${MAX_STAKE:.2f}")
-    balance = await _get_user_balance(user.id)
-    if balance < stake:
-        raise HTTPException(status_code=400, detail="Insufficient balance")
-    combined_odds = 1.0
-    for sel in body.selections:
-        odds_doc = await db.match_odds.find_one({"match_id": sel.match_id}, {"_id": 0, "suspended": 1, "markets": 1}) or {}
-        if odds_doc.get("suspended"):
-            raise HTTPException(status_code=400, detail=f"Market suspended for {sel.match_label or sel.match_id}")
-        combined_odds *= float(sel.odds)
-    combined_odds = round(combined_odds, 2)
-    potential_win = round(stake * combined_odds, 2)
-    bet_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    bet_doc = {
-        "id": bet_id,
-        "user_id": user.id,
-        "username": user.username,
-        "selections": [s.dict() for s in body.selections],
-        "stake": stake,
-        "combined_odds": combined_odds,
-        "potential_win": potential_win,
-        "status": "open",
-        "is_combo": len(body.selections) > 1,
-        "cashout_offered": None,
-        "created_at": now,
-        "settled_at": None,
-    }
-    await db.bets.insert_one(bet_doc.copy())
-    # Deduct stake
-    await db.transactions.insert_one({
-        "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
-        "amount": -stake, "method": "balance", "status": "approved",
-        "type": "bet_stake", "note": f"Bet #{bet_id[:8]} — {len(body.selections)} pick(s)",
-        "bet_id": bet_id, "created_at": now, "approved_at": now,
-    })
-    return {"ok": True, "bet": bet_doc, "new_balance": balance - stake}
-
-
-@client_router.get("/sports/my-bets")
-async def my_bets(user: CurrentUser = Depends(current_user_dep), status: Optional[str] = None):
-    q = {"user_id": user.id}
-    if status: q["status"] = status
-    bets = await db.bets.find(q, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
-    return {"bets": bets}
-
-
-@client_router.post("/sports/bet/{bet_id}/cashout")
-async def cashout_bet(bet_id: str, user: CurrentUser = Depends(current_user_dep)):
-    """Dynamic cashout — offers 85% of `stake * (elapsed_progress_toward_win)`.
-    For MVP, cashout = stake × 0.85 if bet is open + at least 1 selection is
-    still live. Admin can override per-bet via /admin/sports/cashout-rate."""
-    bet = await db.bets.find_one({"id": bet_id, "user_id": user.id}, {"_id": 0})
-    if not bet:
-        raise HTTPException(status_code=404, detail="Bet not found")
-    if bet.get("status") != "open":
-        raise HTTPException(status_code=400, detail=f"Bet is {bet.get('status')} — cannot cash out")
-    rate = float(bet.get("cashout_rate_override") or 0.85)
-    refund = round(float(bet["stake"]) * rate, 2)
-    now = datetime.now(timezone.utc).isoformat()
-    await db.bets.update_one(
-        {"id": bet_id, "status": "open"},
-        {"$set": {"status": "cashed_out", "settled_at": now, "cashout_amount": refund}},
-    )
-    await db.transactions.insert_one({
-        "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
-        "amount": refund, "method": "balance", "status": "approved",
-        "type": "bet_cashout", "note": f"Cashout bet #{bet_id[:8]} @ {int(rate*100)}%",
-        "bet_id": bet_id, "created_at": now, "approved_at": now,
-    })
-    return {"ok": True, "refund": refund, "rate": rate}
-
-
-class AdminOddsUpdate(BaseModel):
-    markets: dict = Field(..., description="e.g. {'1X2': {'home': 1.9, 'draw': 3.2}, 'over_1_5': {'over': 1.4}}")
-    suspended: Optional[bool] = None
-
-
-@api_router.patch("/admin/sports/odds/{match_id}")
-async def admin_update_odds(match_id: str, body: AdminOddsUpdate, x_admin_token: Optional[str] = Header(None)):
-    """Owner/staff can override odds per market or suspend the whole match."""
-    check_admin(x_admin_token)
-    upd = {"match_id": match_id, "markets": body.markets, "updated_at": datetime.now(timezone.utc).isoformat()}
-    if body.suspended is not None:
-        upd["suspended"] = bool(body.suspended)
-    await db.match_odds.update_one({"match_id": match_id}, {"$set": upd}, upsert=True)
-    return {"ok": True, "match_id": match_id}
-
-
-@api_router.post("/admin/sports/settle-bet/{bet_id}")
-async def admin_settle_bet(bet_id: str, won: bool, x_admin_token: Optional[str] = Header(None)):
-    """Owner settles a bet as won/lost. Won → credit potential_win to
-    withdrawable balance; Lost → nothing (stake already taken)."""
-    check_admin(x_admin_token)
-    bet = await db.bets.find_one({"id": bet_id}, {"_id": 0})
-    if not bet:
-        raise HTTPException(status_code=404, detail="Bet not found")
-    if bet.get("status") != "open":
-        raise HTTPException(status_code=400, detail=f"Bet already {bet.get('status')}")
-    now = datetime.now(timezone.utc).isoformat()
-    new_status = "won" if won else "lost"
-    await db.bets.update_one({"id": bet_id}, {"$set": {"status": new_status, "settled_at": now}})
-    if won:
-        await db.transactions.insert_one({
-            "id": str(uuid.uuid4()), "user_id": bet["user_id"], "username": bet["username"],
-            "amount": bet["potential_win"], "method": "balance", "status": "approved",
-            "type": "bet_win", "note": f"Bet #{bet_id[:8]} won @ {bet['combined_odds']}x",
-            "bet_id": bet_id, "created_at": now, "approved_at": now,
-        })
-    return {"ok": True, "status": new_status}
-
-
-async def _tsdb_upcoming_for_league(league_id: str, league_name: str) -> list:
-    """Fetch next few fixtures for a league from TheSportsDB. Returns items
-    in a shape compatible with the frontend normaliser."""
-    try:
-        async with httpx.AsyncClient(timeout=8) as c:
-            r = await c.get(f"https://www.thesportsdb.com/api/v1/json/{TSDB_KEY}/eventsnextleague.php", params={"id": league_id})
-            r.raise_for_status()
-            data = r.json()
-    except Exception:
-        return []
-    out = []
-    for ev in (data.get("events") or [])[:15]:
-        out.append({
-            "id": f"tsdb-{ev.get('idEvent')}",
-            "home": {"name": ev.get("strHomeTeam") or ev.get("strEvent", "").split(" vs ")[0] or "Home"},
-            "away": {"name": ev.get("strAwayTeam") or (ev.get("strEvent", "").split(" vs ")[1] if " vs " in (ev.get("strEvent") or "") else "Away")},
-            "startTime": ev.get("strTimestamp"),
-            "league": {"name": league_name},
-            "source": "tsdb",
-        })
-    return out
-
-
-@api_router.get("/sports/upcoming")
-async def sports_upcoming():
-    """Football matches scheduled for tomorrow (upcoming fixtures). Merges the
-    RapidAPI feed with TheSportsDB's per-league next-fixtures for extra
-    coverage across major European leagues + MLS."""
-    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y%m%d")
-    matches: list = []
-    try:
-        data = await _rapid_get("/football-get-matches-by-date", {"date": tomorrow})
-        resp = data.get("response") if isinstance(data, dict) else None
-        m1 = (resp or {}).get("matches") if isinstance(resp, dict) else (resp or [])
-        matches.extend(m1 or [])
-    except Exception as e:
-        logger.warning("[sports] upcoming rapid failed: %s", e)
-    # TheSportsDB fallback + merge — run all league requests concurrently
-    try:
-        tsdb_results = await asyncio.gather(
-            *[_tsdb_upcoming_for_league(lid, lname) for lid, lname in TSDB_LEAGUES],
-            return_exceptions=True,
-        )
-        for res in tsdb_results:
-            if isinstance(res, list):
-                matches.extend(res)
-    except Exception as e:
-        logger.warning("[sports] tsdb upcoming failed: %s", e)
-    # De-dupe by (home, away, date) to avoid showing the same fixture from both
-    # sources. RapidAPI wins over TSDB when both are present.
-    seen = set()
-    deduped = []
-    for m in matches:
-        home = ((m.get("home") or {}).get("name") or m.get("homeTeam") or "").strip().lower()
-        away = ((m.get("away") or {}).get("name") or m.get("awayTeam") or "").strip().lower()
-        day = (str(m.get("time") or m.get("startTime") or ""))[:10]
-        k = (home, away, day)
-        if not home or not away or k in seen:
-            continue
-        seen.add(k)
-        deduped.append(m)
-    return {"matches": deduped, "error": None if deduped else "sports_source_unavailable"}
-
-
-@api_router.get("/sports/leagues")
-async def sports_leagues():
-    """Popular football leagues (for browsing)."""
-    try:
-        data = await _rapid_get("/football-popular-leagues")
-    except Exception as e:
-        logger.warning("[sports] leagues failed: %s", e)
-        return {"leagues": [], "error": "sports_source_unavailable"}
-    return {"leagues": (data.get("response") or data.get("leagues") or data) or []}
-
-
-# ============ Sports goal watcher — polls the livescore feed and emits events ============
-# The free-tier RapidAPI feed doesn't ship per-event data (offside review,
-# penalty awarded, etc.), so we derive events from successive livescore
-# snapshots. A score delta becomes a `goal` event. Half-time / full-time
-# and match cancellation are detected from the status object.
-SPORTS_WATCH_INTERVAL_SEC = 20  # how often the watcher polls the feed
-
-
-@api_router.get("/sports/events")
-async def sports_events(since: Optional[str] = None, limit: int = 50):
-    """Recently-emitted sports events. Frontend polls this to draw goal
-    notifications and play a sound."""
-    q = {}
-    if since:
-        q = {"created_at": {"$gt": since}}
-    cursor = db.sports_events.find(q, {"_id": 0}).sort("created_at", -1).limit(min(int(limit or 50), 100))
-    events = await cursor.to_list(limit)
-    return {"events": list(reversed(events))}
-
-
-async def _sports_watcher_loop():
-    """Background task: polls livescores every 20s, diffs scores + status
-    against the last snapshot, writes any changes to `sports_events`.
-
-    Smart backoff: on 401/403 (invalid key) or 429 (rate limited), we back off
-    exponentially so a broken/expired RapidAPI subscription doesn't spam the
-    logs 3 times a minute forever. Reset to normal interval on first success.
-    """
-    logger.info("[sports] goal watcher started (interval=%ss)", SPORTS_WATCH_INTERVAL_SEC)
-    backoff = 0        # seconds of extra sleep beyond the base interval
-    fail_streak = 0    # consecutive failures for exponential ramp
-    while True:
-        try:
-            data = await _rapid_get("/football-current-live")
-            resp = data.get("response") if isinstance(data, dict) else None
-            matches = (resp or {}).get("live") or (resp or {}).get("matches") or []
-            # First success after failures → reset backoff
-            if backoff or fail_streak:
-                logger.info("[sports] watcher recovered — resuming normal polling")
-            backoff = 0
-            fail_streak = 0
-        except Exception as e:
-            fail_streak += 1
-            msg = str(e)
-            # Auth-style failures (401/403/429): back off HARD to avoid burning
-            # rate-limit quota and log-spamming — max 10 min between polls.
-            if "401" in msg or "403" in msg or "429" in msg or "Forbidden" in msg or "Too Many" in msg:
-                backoff = min(600, 30 * (2 ** min(fail_streak, 5)))
-                # Log only on transitions (streak==1) and every 5th to keep logs quiet
-                if fail_streak == 1 or fail_streak % 5 == 0:
-                    logger.warning(
-                        "[sports] auth/rate-limit failure (streak=%s, sleeping +%ss): %s",
-                        fail_streak, backoff, msg[:140],
-                    )
-            else:
-                backoff = min(120, 15 * fail_streak)
-                if fail_streak == 1 or fail_streak % 5 == 0:
-                    logger.warning("[sports] watcher poll failed (streak=%s): %s", fail_streak, msg[:140])
-            await asyncio.sleep(SPORTS_WATCH_INTERVAL_SEC + backoff)
-            continue
-
-        now = datetime.now(timezone.utc).isoformat()
-        for m in matches:
-            try:
-                mid = m.get("id")
-                if mid is None:
-                    continue
-                home = m.get("home") or {}
-                away = m.get("away") or {}
-                home_score = int(home.get("score") or 0)
-                away_score = int(away.get("score") or 0)
-                status = m.get("status") or {}
-                minute = ((status.get("liveTime") or {}).get("short") or "").strip()
-                league_id = m.get("leagueId")
-
-                prev = await db.sports_match_state.find_one({"match_id": mid}, {"_id": 0})
-                new_state = {
-                    "match_id": mid,
-                    "home_id": home.get("id"),
-                    "away_id": away.get("id"),
-                    "home_name": home.get("name") or home.get("longName") or "Home",
-                    "away_name": away.get("name") or away.get("longName") or "Away",
-                    "home_score": home_score,
-                    "away_score": away_score,
-                    "status_id": m.get("statusId"),
-                    "minute": minute,
-                    "league_id": league_id,
-                    "updated_at": now,
-                }
-                # First time seeing this match — just record state, no event.
-                if not prev:
-                    new_state["created_at"] = now
-                    await db.sports_match_state.insert_one(new_state)
-                    continue
-
-                events_to_emit = []
-                # Goal detection: any score increase
-                if home_score > int(prev.get("home_score") or 0):
-                    events_to_emit.append({
-                        "type": "goal",
-                        "team": new_state["home_name"],
-                        "opponent": new_state["away_name"],
-                        "score": f"{home_score} - {away_score}",
-                        "minute": minute or "—",
-                        "match_id": mid,
-                        "league_id": league_id,
-                    })
-                if away_score > int(prev.get("away_score") or 0):
-                    events_to_emit.append({
-                        "type": "goal",
-                        "team": new_state["away_name"],
-                        "opponent": new_state["home_name"],
-                        "score": f"{home_score} - {away_score}",
-                        "minute": minute or "—",
-                        "match_id": mid,
-                        "league_id": league_id,
-                    })
-                # Goal reversal (VAR / offside): any score decrease
-                if home_score < int(prev.get("home_score") or 0):
-                    events_to_emit.append({
-                        "type": "goal_disallowed",
-                        "team": new_state["home_name"],
-                        "opponent": new_state["away_name"],
-                        "score": f"{home_score} - {away_score}",
-                        "minute": minute or "—",
-                        "match_id": mid,
-                        "reason": "VAR / offside",
-                    })
-                if away_score < int(prev.get("away_score") or 0):
-                    events_to_emit.append({
-                        "type": "goal_disallowed",
-                        "team": new_state["away_name"],
-                        "opponent": new_state["home_name"],
-                        "score": f"{home_score} - {away_score}",
-                        "minute": minute or "—",
-                        "match_id": mid,
-                        "reason": "VAR / offside",
-                    })
-                # Kickoff, halftime, fulltime derived from statusId
-                new_status_id = m.get("statusId")
-                if new_status_id != prev.get("status_id"):
-                    label = None
-                    if new_status_id == 2:  # started (some feeds)
-                        label = "kickoff"
-                    elif new_status_id == 3:  # halftime
-                        label = "halftime"
-                    elif new_status_id in (100, 6, 7):  # finished
-                        label = "fulltime"
-                    if label:
-                        events_to_emit.append({
-                            "type": label,
-                            "team": new_state["home_name"],
-                            "opponent": new_state["away_name"],
-                            "score": f"{home_score} - {away_score}",
-                            "minute": minute or "—",
-                            "match_id": mid,
-                        })
-
-                # Write events + update snapshot
-                for ev in events_to_emit:
-                    ev["id"] = str(uuid.uuid4())
-                    ev["created_at"] = now
-                    await db.sports_events.insert_one(ev.copy())
-                    logger.info("[sports] %s — %s @ %s (%s)", ev["type"], ev["team"], ev.get("minute"), ev.get("score"))
-                await db.sports_match_state.update_one({"match_id": mid}, {"$set": new_state})
-            except Exception as e:  # never break the loop over a single match
-                logger.exception("[sports] failed to process match: %s", e)
-
-        # Trim old state (matches that haven't ticked in >12h) so memory doesn't grow
-        try:
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
-            await db.sports_match_state.delete_many({"updated_at": {"$lt": cutoff}})
-        except Exception:
-            pass
-
-        await asyncio.sleep(SPORTS_WATCH_INTERVAL_SEC)
+# ============ Sports section REMOVED per owner request (Feb 2026) ============
 
 
 

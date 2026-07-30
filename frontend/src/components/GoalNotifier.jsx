@@ -43,6 +43,9 @@ const LABELS = {
 };
 
 export default function GoalNotifier() {
+  // Sports removed — component intentionally renders nothing.
+  return null;
+  // eslint-disable-next-line no-unreachable
   const sinceRef = useRef(localStorage.getItem(LS_KEY) || new Date(Date.now() - 60000).toISOString());
   const [muted, setMuted] = useState(() => localStorage.getItem("bs_sports_muted") === "1");
 
