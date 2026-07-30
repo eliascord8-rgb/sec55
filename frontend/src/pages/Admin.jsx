@@ -3453,6 +3453,154 @@ function DiscordDmConsole({ token }) {
   );
 }
 
+function DiscordPurchaseChannelPanel({ token }) {
+  const [cfg, setCfg] = useState({ purchase_channel_id: "", purchase_notify_enabled: true, default_channel_id: "" });
+  const [log, setLog] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  const load = async () => {
+    try {
+      const [c, l] = await Promise.all([
+        adminApi(token).get("/admin/discord-purchase-config"),
+        adminApi(token).get("/admin/discord-notify-log?limit=15"),
+      ]);
+      setCfg(c.data);
+      setLog(l.data.log || []);
+    } catch { /* silent */ }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [token]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/discord-purchase-config", {
+        purchase_channel_id: cfg.purchase_channel_id,
+        purchase_notify_enabled: cfg.purchase_notify_enabled,
+      });
+      toast.success("Purchase channel saved");
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Save failed");
+    }
+    setSaving(false);
+  };
+
+  const test = async () => {
+    setTesting(true);
+    try {
+      await adminApi(token).post("/admin/discord-purchase-config/test", {});
+      toast.success("Test notification sent — check the channel & log below");
+      setTimeout(load, 800);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Test failed");
+    }
+    setTesting(false);
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="discord-purchase-panel">
+      <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+        <div>
+          <h2 className="font-display font-bold text-lg">Purchase notifications</h2>
+          <p className="text-xs text-white/50 mt-1">
+            Every time a client buys something, the bot posts a masked line like
+            <code className="mx-1 px-1 bg-black/40 rounded">🛒 New client bought! `b***n` just ordered **Instagram Followers** × 500 — $2.50</code>
+            to this channel. Bot must be running for it to post.
+          </p>
+        </div>
+        <button
+          data-testid="discord-purchase-test"
+          onClick={test}
+          disabled={testing}
+          className="px-4 py-2 bg-[#FF007F] rounded text-sm font-bold disabled:opacity-50"
+        >
+          {testing ? "Sending…" : "Send test message"}
+        </button>
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-4 mb-4">
+        <div className="md:col-span-2">
+          <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">Channel ID</label>
+          <input
+            data-testid="discord-purchase-channel-id"
+            value={cfg.purchase_channel_id || ""}
+            onChange={(e) => setCfg({ ...cfg, purchase_channel_id: e.target.value.trim() })}
+            placeholder={cfg.default_channel_id || "1477630409742221499"}
+            className="w-full bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm font-mono"
+          />
+          <p className="text-[10px] text-white/40 mt-1">
+            Right-click a Discord channel → <span className="text-white/70">Copy Channel ID</span> (Developer Mode must be on).
+            Default: <code>{cfg.default_channel_id}</code>
+          </p>
+        </div>
+        <div>
+          <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">Notifications</label>
+          <label className="flex items-center gap-2 bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm cursor-pointer">
+            <input
+              data-testid="discord-purchase-toggle"
+              type="checkbox"
+              checked={!!cfg.purchase_notify_enabled}
+              onChange={(e) => setCfg({ ...cfg, purchase_notify_enabled: e.target.checked })}
+            />
+            <span>{cfg.purchase_notify_enabled ? "Enabled" : "Disabled"}</span>
+          </label>
+        </div>
+      </div>
+
+      <button
+        data-testid="discord-purchase-save"
+        onClick={save}
+        disabled={saving}
+        className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black rounded text-sm font-bold disabled:opacity-50"
+      >
+        {saving ? "Saving…" : "Save"}
+      </button>
+
+      <div className="mt-6">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs uppercase tracking-wider text-white/60 font-bold">Recent notification log</h3>
+          <button onClick={load} className="text-[10px] uppercase text-white/40 hover:text-white">Refresh</button>
+        </div>
+        <div className="overflow-x-auto bg-[#0d0a14] rounded border border-white/5" data-testid="discord-purchase-log">
+          <table className="w-full text-xs">
+            <thead className="text-[9px] uppercase tracking-widest text-white/40 bg-black/30">
+              <tr>
+                <th className="text-left px-3 py-2">When</th>
+                <th className="text-left px-3 py-2">Status</th>
+                <th className="text-left px-3 py-2">User</th>
+                <th className="text-left px-3 py-2">Service</th>
+                <th className="text-left px-3 py-2">Reason / message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {log.length === 0 && (
+                <tr><td colSpan={5} className="text-center py-5 text-white/40">No notifications logged yet</td></tr>
+              )}
+              {log.map((r) => (
+                <tr key={r.id} className="border-t border-white/5">
+                  <td className="px-3 py-2 text-white/50 whitespace-nowrap">{r.created_at ? new Date(r.created_at).toLocaleString() : ""}</td>
+                  <td className="px-3 py-2">
+                    <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${
+                      r.status === "sent" ? "bg-emerald-500/20 text-emerald-300" :
+                      r.status === "skipped" ? "bg-amber-500/20 text-amber-200" :
+                      "bg-red-500/20 text-red-300"
+                    }`}>{r.status || "?"}</span>
+                  </td>
+                  <td className="px-3 py-2 font-mono">{r.username || "—"}</td>
+                  <td className="px-3 py-2 text-white/70">{r.service_name || "—"}</td>
+                  <td className="px-3 py-2 text-white/50 max-w-[420px] truncate" title={r.reason || r.message || ""}>{r.reason || r.message || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function DiscordPanel({ token }) {
   const [cfg, setCfg] = useState(null);
   const [role, setRole] = useState("Developer");
@@ -3510,6 +3658,7 @@ function DiscordPanel({ token }) {
   return (
     <div className="space-y-6">
       <DiscordBotControl token={token} />
+      <DiscordPurchaseChannelPanel token={token} />
       <DiscordServersPanel token={token} />
       <DiscordDmConsole token={token} />
       <form

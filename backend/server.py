@@ -7399,14 +7399,29 @@ async def test_discord_purchase_notification(x_admin_token: Optional[str] = Head
 async def _notify_discord_purchase(order_doc: dict) -> None:
     """Fire-and-forget: post a masked purchase notification to the configured
     Discord channel. Never raises — a Discord outage must NEVER break a real
-    purchase. Bot must be running; otherwise silently no-op."""
+    purchase. Every attempt is logged to `discord_notify_log` so the owner can
+    debug even when the bot is currently stopped."""
+    log_entry = {
+        "id": str(uuid.uuid4()),
+        "kind": "purchase",
+        "username": order_doc.get("username"),
+        "service_name": order_doc.get("service_name"),
+        "quantity": order_doc.get("quantity"),
+        "charge": order_doc.get("charge"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
     try:
         cfg = await db.discord_config.find_one({}, {"_id": 0}) or {}
         if cfg.get("purchase_notify_enabled") is False:
-            return
+            log_entry.update({"status": "skipped", "reason": "purchase_notify_enabled=False"})
+            await db.discord_notify_log.insert_one(log_entry); return
         channel_id = str(cfg.get("purchase_channel_id") or DISCORD_PURCHASE_CHANNEL_DEFAULT).strip()
         if not channel_id:
-            return
+            log_entry.update({"status": "skipped", "reason": "no channel configured"})
+            await db.discord_notify_log.insert_one(log_entry); return
+        if bot_manager.status != "running":
+            log_entry.update({"status": "skipped", "reason": f"bot {bot_manager.status} — start it in Admin → Discord Bot", "channel_id": channel_id})
+            await db.discord_notify_log.insert_one(log_entry); return
         masked = bot_manager.mask_username(order_doc.get("username") or "user")
         service = order_doc.get("service_name") or f"#{order_doc.get('service_id', '?')}"
         qty = order_doc.get("quantity") or ""
@@ -7420,9 +7435,34 @@ async def _notify_discord_purchase(order_doc: dict) -> None:
             line += f" × **{qty}**"
         if charge_str:
             line += f" — {charge_str}"
-        asyncio.create_task(bot_manager.send_channel_message(channel_id, line))
+
+        async def _send_and_log():
+            r = await bot_manager.send_channel_message(channel_id, line)
+            log_entry.update({
+                "status": "sent" if r.get("ok") else "failed",
+                "reason": r.get("reason") or "",
+                "channel_id": channel_id,
+                "message": line,
+            })
+            try:
+                await db.discord_notify_log.insert_one(log_entry)
+            except Exception:
+                pass
+        asyncio.create_task(_send_and_log())
     except Exception as e:
+        log_entry.update({"status": "failed", "reason": f"{type(e).__name__}: {e}"})
+        try:
+            await db.discord_notify_log.insert_one(log_entry)
+        except Exception:
+            pass
         logger.warning("[discord] purchase notify failed: %s", e)
+
+
+@api_router.get("/admin/discord-notify-log")
+async def get_discord_notify_log(x_admin_token: Optional[str] = Header(None), limit: int = 30):
+    check_admin(x_admin_token)
+    rows = await db.discord_notify_log.find({}, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 200))
+    return {"log": rows}
 
 
 async def _discord_bot_start_from_config() -> dict:

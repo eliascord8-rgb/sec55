@@ -136,32 +136,16 @@ class DiscordBotManager:
                 except Exception as e:
                     logger.warning("[discord] mod delete failed: %s", e)
                 return
-            # --- simple mod commands (admins only) ---
+            # --- simple mod commands (admins only, prefix $) ---
+            if message.content.startswith("$") and message.guild:
+                await mgr._handle_mod_command(message)
+                return
+            # --- legacy ! prefix still works as an alias ---
             if message.content.startswith("!") and message.guild:
-                perms = message.author.guild_permissions
-                if not (perms.administrator or perms.manage_messages):
-                    return
-                parts = message.content.split()
-                cmd = parts[0].lower()
-                try:
-                    if cmd == "!purge" and len(parts) > 1 and parts[1].isdigit():
-                        n = min(int(parts[1]), 100)
-                        await message.channel.purge(limit=n + 1)
-                        await message.channel.send(f"🧹 Purged {n} messages.", delete_after=5)
-                        await mgr._mod_log(f"purge {n}", message)
-                    elif cmd == "!kick" and message.mentions:
-                        await message.guild.kick(message.mentions[0], reason=f"by {message.author}")
-                        await message.channel.send(f"👢 Kicked {message.mentions[0].mention}.")
-                        await mgr._mod_log("kick", message)
-                    elif cmd == "!ban" and message.mentions:
-                        await message.guild.ban(message.mentions[0], reason=f"by {message.author}")
-                        await message.channel.send(f"🔨 Banned {message.mentions[0].mention}.")
-                        await mgr._mod_log("ban", message)
-                except Exception as e:
-                    try:
-                        await message.channel.send(f"⚠️ Command failed: {e}", delete_after=8)
-                    except Exception:
-                        pass
+                # Rewrite the leading "!" to "$" and dispatch through the same handler.
+                message.content = "$" + message.content[1:]
+                await mgr._handle_mod_command(message)
+                return
 
         async def runner():
             try:
@@ -209,6 +193,266 @@ class DiscordBotManager:
     def _require_running(self):
         if self.status != "running" or not self.client or not self.client.user:
             raise RuntimeError("Bot is not running — start it first")
+
+    # ---------- $-prefix moderation commands ----------
+    MOD_HELP_TEXT = (
+        "🛡️ **Moderation commands** (staff only, prefix `$`)\n"
+        "```\n"
+        "$help                     — show this list\n"
+        "$ping                     — bot latency check\n"
+        "$purge <n>                — delete last <n> messages (1-100)\n"
+        "$kick @user [reason]      — kick a member\n"
+        "$ban @user [reason]       — permanent ban\n"
+        "$softban @user [reason]   — ban then unban (deletes their messages)\n"
+        "$unban <user_id>          — reverse a ban\n"
+        "$mute @user <mins> [reason] — timeout a member (max 40320 mins = 28d)\n"
+        "$unmute @user             — clear the timeout\n"
+        "$warn @user <reason>      — log a warning to the mod-log\n"
+        "$slowmode <seconds>       — set channel slowmode (0 = off, max 21600)\n"
+        "$lock                     — lock the current channel (@everyone can't send)\n"
+        "$unlock                   — reverse $lock\n"
+        "$nick @user <new nick>    — rename a member (empty = reset)\n"
+        "$role @user <role name>   — toggle a role on/off\n"
+        "$say <text>               — bot repeats your message and deletes yours\n"
+        "$userinfo @user           — show account age / joined / roles\n"
+        "$serverinfo               — show server stats\n"
+        "$avatar @user             — show a user's avatar\n"
+        "$modlog                   — show last 10 mod actions in this server\n"
+        "```"
+    )
+
+    async def _handle_mod_command(self, message: discord.Message):
+        """Central dispatcher for every $-prefix moderation command.
+        Every path replies with a clear success/error line so staff always know
+        what happened. Silent failures are forbidden here."""
+        content = (message.content or "").strip()
+        parts = content.split()
+        if not parts:
+            return
+        cmd = parts[0].lower().lstrip("$!")
+        args = parts[1:]
+        perms = message.author.guild_permissions
+        is_mod = perms.administrator or perms.manage_messages or perms.kick_members or perms.ban_members
+        # $help and $ping are public — everyone can use them.
+        public_cmds = {"help", "ping", "userinfo", "serverinfo", "avatar", "commands"}
+        if cmd not in public_cmds and not is_mod:
+            try:
+                await message.channel.send(
+                    f"❌ {message.author.mention} you don't have permission for `${cmd}`.",
+                    delete_after=6,
+                )
+            except Exception:
+                pass
+            return
+
+        async def reply(text: str, *, delete_after: Optional[int] = None):
+            try:
+                await message.channel.send(text, delete_after=delete_after)
+            except Exception as e:
+                logger.warning("[discord] reply failed: %s", e)
+
+        try:
+            if cmd in ("help", "commands"):
+                await reply(self.MOD_HELP_TEXT)
+
+            elif cmd == "ping":
+                ms = round(self.client.latency * 1000) if self.client else 0
+                await reply(f"🏓 Pong! Latency **{ms} ms**")
+
+            elif cmd == "purge":
+                if not args or not args[0].isdigit():
+                    await reply("Usage: `$purge <1-100>`", delete_after=8); return
+                n = max(1, min(int(args[0]), 100))
+                deleted = await message.channel.purge(limit=n + 1)
+                await reply(f"🧹 Purged **{len(deleted) - 1}** messages (requested by {message.author.mention}).", delete_after=6)
+                await self._mod_log(f"purge {n}", message)
+
+            elif cmd == "kick":
+                if not message.mentions:
+                    await reply("Usage: `$kick @user [reason]`", delete_after=8); return
+                target = message.mentions[0]
+                reason = " ".join(a for a in args if not a.startswith("<@")) or f"by {message.author}"
+                await message.guild.kick(target, reason=reason)
+                await reply(f"👢 Kicked {target.mention} — reason: `{reason}`")
+                await self._mod_log(f"kick {target} — {reason}", message)
+
+            elif cmd == "ban":
+                if not message.mentions:
+                    await reply("Usage: `$ban @user [reason]`", delete_after=8); return
+                target = message.mentions[0]
+                reason = " ".join(a for a in args if not a.startswith("<@")) or f"by {message.author}"
+                await message.guild.ban(target, reason=reason, delete_message_days=0)
+                await reply(f"🔨 Banned {target.mention} — reason: `{reason}`")
+                await self._mod_log(f"ban {target} — {reason}", message)
+
+            elif cmd == "softban":
+                if not message.mentions:
+                    await reply("Usage: `$softban @user [reason]`", delete_after=8); return
+                target = message.mentions[0]
+                reason = " ".join(a for a in args if not a.startswith("<@")) or f"by {message.author}"
+                await message.guild.ban(target, reason=reason, delete_message_days=1)
+                await message.guild.unban(target, reason=f"softban by {message.author}")
+                await reply(f"♻️ Softbanned {target.mention} (msgs cleared) — reason: `{reason}`")
+                await self._mod_log(f"softban {target} — {reason}", message)
+
+            elif cmd == "unban":
+                if not args:
+                    await reply("Usage: `$unban <user_id>`", delete_after=8); return
+                uid = int(args[0])
+                user = await self.client.fetch_user(uid)
+                await message.guild.unban(user, reason=f"unban by {message.author}")
+                await reply(f"✅ Unbanned **{user}** (`{uid}`)")
+                await self._mod_log(f"unban {user}", message)
+
+            elif cmd == "mute":
+                if not message.mentions or len(args) < 2:
+                    await reply("Usage: `$mute @user <minutes> [reason]`", delete_after=8); return
+                target = message.mentions[0]
+                mins_str = next((a for a in args if a.isdigit()), None)
+                if not mins_str:
+                    await reply("Give a numeric minutes value.", delete_after=8); return
+                mins = max(1, min(int(mins_str), 40320))
+                reason = " ".join(a for a in args if not a.startswith("<@") and not a.isdigit()) or f"by {message.author}"
+                from datetime import timedelta
+                until = datetime.now(timezone.utc) + timedelta(minutes=mins)
+                await target.timeout(until, reason=reason)
+                await reply(f"🔇 Timed out {target.mention} for **{mins} min** — reason: `{reason}`")
+                await self._mod_log(f"mute {target} {mins}m — {reason}", message)
+
+            elif cmd == "unmute":
+                if not message.mentions:
+                    await reply("Usage: `$unmute @user`", delete_after=8); return
+                target = message.mentions[0]
+                await target.timeout(None, reason=f"unmute by {message.author}")
+                await reply(f"🔊 Timeout cleared for {target.mention}.")
+                await self._mod_log(f"unmute {target}", message)
+
+            elif cmd == "warn":
+                if not message.mentions or len(args) < 2:
+                    await reply("Usage: `$warn @user <reason>`", delete_after=8); return
+                target = message.mentions[0]
+                reason = " ".join(a for a in args if not a.startswith("<@")) or "(no reason)"
+                await self.db.discord_warnings.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "guild_id": str(message.guild.id),
+                    "user_id": str(target.id),
+                    "user_tag": str(target),
+                    "moderator": str(message.author),
+                    "reason": reason,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                })
+                count = await self.db.discord_warnings.count_documents({"guild_id": str(message.guild.id), "user_id": str(target.id)})
+                await reply(f"⚠️ Warned {target.mention} — `{reason}` (**{count}** total)")
+                await self._mod_log(f"warn {target} — {reason}", message)
+
+            elif cmd == "slowmode":
+                if not args or not args[0].isdigit():
+                    await reply("Usage: `$slowmode <seconds 0-21600>`", delete_after=8); return
+                secs = max(0, min(int(args[0]), 21600))
+                await message.channel.edit(slowmode_delay=secs, reason=f"slowmode by {message.author}")
+                await reply(f"🐢 Slowmode set to **{secs}s** in {message.channel.mention}.")
+                await self._mod_log(f"slowmode {secs}s", message)
+
+            elif cmd == "lock":
+                await message.channel.set_permissions(
+                    message.guild.default_role, send_messages=False,
+                    reason=f"lock by {message.author}",
+                )
+                await reply(f"🔒 Locked {message.channel.mention}. Use `$unlock` to reopen.")
+                await self._mod_log("lock", message)
+
+            elif cmd == "unlock":
+                await message.channel.set_permissions(
+                    message.guild.default_role, send_messages=None,
+                    reason=f"unlock by {message.author}",
+                )
+                await reply(f"🔓 Unlocked {message.channel.mention}.")
+                await self._mod_log("unlock", message)
+
+            elif cmd == "nick":
+                if not message.mentions:
+                    await reply("Usage: `$nick @user <new nick — empty resets>`", delete_after=8); return
+                target = message.mentions[0]
+                new_nick = " ".join(a for a in args if not a.startswith("<@")).strip() or None
+                await target.edit(nick=new_nick, reason=f"nick by {message.author}")
+                await reply(f"📝 Nick for {target.mention} → **{new_nick or '(reset)'}**")
+                await self._mod_log(f"nick {target} = {new_nick or '(reset)'}", message)
+
+            elif cmd == "role":
+                if not message.mentions or len(args) < 2:
+                    await reply("Usage: `$role @user <role name>`", delete_after=8); return
+                target = message.mentions[0]
+                role_name = " ".join(a for a in args if not a.startswith("<@")).strip()
+                role = discord.utils.get(message.guild.roles, name=role_name)
+                if not role:
+                    role = discord.utils.find(lambda r: r.name.lower() == role_name.lower(), message.guild.roles)
+                if not role:
+                    await reply(f"Role **{role_name}** not found.", delete_after=8); return
+                if role in target.roles:
+                    await target.remove_roles(role, reason=f"$role toggle by {message.author}")
+                    await reply(f"🎭 Removed **{role.name}** from {target.mention}.")
+                    await self._mod_log(f"role_remove {role.name} → {target}", message)
+                else:
+                    await target.add_roles(role, reason=f"$role toggle by {message.author}")
+                    await reply(f"🎭 Gave **{role.name}** to {target.mention}.")
+                    await self._mod_log(f"role_add {role.name} → {target}", message)
+
+            elif cmd == "say":
+                text = " ".join(args).strip()
+                if not text:
+                    await reply("Usage: `$say <text>`", delete_after=8); return
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                await reply(text)
+                await self._mod_log(f"say: {text[:100]}", message)
+
+            elif cmd == "userinfo":
+                target = message.mentions[0] if message.mentions else message.author
+                created = target.created_at.strftime("%Y-%m-%d")
+                joined = target.joined_at.strftime("%Y-%m-%d") if getattr(target, "joined_at", None) else "?"
+                roles = ", ".join(r.name for r in getattr(target, "roles", []) if r.name != "@everyone") or "—"
+                await reply(
+                    f"👤 **{target}** (`{target.id}`)\n"
+                    f"Account created: **{created}** · Joined server: **{joined}**\n"
+                    f"Roles: {roles}"
+                )
+
+            elif cmd == "serverinfo":
+                g = message.guild
+                created = g.created_at.strftime("%Y-%m-%d")
+                await reply(
+                    f"🏛️ **{g.name}** (`{g.id}`)\n"
+                    f"Created: **{created}** · Owner: **{g.owner}**\n"
+                    f"Members: **{g.member_count}** · Channels: **{len(g.channels)}** · Roles: **{len(g.roles)}**"
+                )
+
+            elif cmd == "avatar":
+                target = message.mentions[0] if message.mentions else message.author
+                url = str(target.display_avatar.url)
+                await reply(f"🖼️ Avatar for **{target}**\n{url}")
+
+            elif cmd == "modlog":
+                rows = await self.db.discord_mod_log.find(
+                    {"guild_id": str(message.guild.id)}, {"_id": 0}
+                ).sort("created_at", -1).to_list(10)
+                if not rows:
+                    await reply("No mod actions logged in this server yet.")
+                else:
+                    lines = [f"• `{r.get('created_at', '')[:19]}` **{r.get('action', '')}** by `{r.get('moderator', '?')}`" for r in rows]
+                    await reply("📋 **Last 10 mod actions**\n" + "\n".join(lines))
+
+            else:
+                await reply(f"❓ Unknown command `${cmd}`. Type `$help` for the list.", delete_after=8)
+
+        except discord.Forbidden:
+            await reply("❌ I don't have permission to do that. Check my role & channel perms.", delete_after=10)
+        except discord.HTTPException as e:
+            await reply(f"⚠️ Discord API error: `{e}`", delete_after=10)
+        except Exception as e:
+            logger.warning("[discord] $%s failed: %s", cmd, e)
+            await reply(f"⚠️ `${cmd}` failed: `{e}`", delete_after=10)
 
     # ---------- actions ----------
     async def set_activity(self, text: str):
