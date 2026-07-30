@@ -1,6 +1,35 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 43 · Mod role, 2FA, Discord OAuth scaffolding, Live Activity, Fake social-proof)
+
+**Backend**
+- **2FA (TOTP) opt-in** — `pyotp` + `qrcode`. New endpoints: `POST /api/auth/2fa/setup` (returns QR image + secret), `POST /api/auth/2fa/enable` (verify + issues 8 one-time recovery codes), `POST /api/auth/2fa/disable`, `GET /api/auth/2fa/status`. `LoginRequest` and `AdminAccountLogin` accept an optional `totp_code`; login returns HTTP 401 `TOTP_REQUIRED` if the account has 2FA on and no code was sent. Recovery codes are also accepted at login/disable and consumed once.
+- **STAFF_PERMS expanded** to 21 keys (`tickets, ai_inbox, orders, discord, withdrawals, services, providers, users, coupons, giveaways, payments, deposits, livesubs, aiactions, backups, reports, settings, sim5, games, invoices, audit`). Owner can now grant any subset to any moderator via `PATCH /api/admin/users/{uid}/admin-perms`.
+- **Discord OAuth scaffolding** — `GET /api/auth/discord/login-url`, `POST /api/auth/discord/callback` (login or auto-create), `POST /api/client/discord/link`, `POST /api/client/discord/unlink`, plus owner-only `GET/POST /api/admin/discord/oauth-config` for pasting Client ID / Secret / Redirect URI. `discord_id` + `discord_username` stored on the user document.
+- **Live activity feed** — `POST /api/client/activity/heartbeat` (route + viewport + last action tag, no form values), `GET /api/admin/activity/live?stale_minutes=5` and `GET /api/admin/activity/user/{id}` (recent breadcrumb trail). Gated by `audit` perm; owner has full access.
+- **Fake social-proof chat worker** — 15 personas (Serbian / English / German), 27 message templates with @-mentions across languages. Inserts one message every 4-8s (jittered), throttled when real human activity is high. Admin toggle: `GET/POST /api/admin/fake-chat/toggle`, `POST /api/admin/fake-chat/purge`.
+
+**Frontend**
+- **Support button + Mod badge** — moderators now see a yellow "Support" button in the header (instead of the emerald "Admin" one). Mod role tag switched from cyan `#00E5FF` to yellow `#FBBF24` everywhere (badge, side avatar shield, chat rendering).
+- **LiveChatFAB** — staff role tag styling: OWNER (amber), ADMIN (emerald), MOD (yellow), STAFF (sky). Each role tints the @username in the chat so users know a staff member is talking to them.
+- **Client Dashboard → Security & 2FA** — new page in the Profile menu with: QR enrolment flow (setup → confirm code → recovery codes shown once), disable (requires current code or recovery), and a "Link with Discord" card that hits the OAuth URL when the owner has configured OAuth.
+- **Activity heartbeat hook** — every dashboard sends a route/action heartbeat every 5s plus a click-tagged event whenever the user clicks any `data-testid` element.
+- **Admin → Live Activity tab** — real-time table of everyone online (auto-refresh 4s), clickable rows open a breadcrumb trail with viewport / IP / route history. Requires `audit` perm.
+- **Guest Landing "social proof" toasts** — `<FakePurchaseAlerts />` fires two randomised "Milan B. just bought Instagram Followers × 1500" toasts about 4s and 14s after page load, with country flag, timing and product name.
+- **NOWPayments deposit confirmed working end-to-end** — real invoice creation returned `iid=4916942043`, pending list shows it, IPN webhook wired to `/api/nowpayments/webhook`.
+
+**Files touched**
+- `backend/server.py` — 2FA hooks in admin-login, activity endpoints, fake-chat worker + admin API, Discord OAuth endpoints, message-enrichment fix so fake avatars survive.
+- `backend/auth_and_chat.py` — /auth/2fa/* endpoints, TOTP gate in /auth/login, DB-manager owner seed (previously).
+- `backend/requirements.txt` — added PyOTP 2.10, qrcode 8.2, pillow 12.2.
+- `frontend/src/pages/GuestLanding.jsx` — FakePurchaseAlerts.
+- `frontend/src/pages/SettingsAndAviator.jsx` — new `SecurityView` export.
+- `frontend/src/pages/ClientDashboard.jsx` — activity heartbeat, Support button for mod/admin, security nav item, mod color yellow, view=security dispatch.
+- `frontend/src/components/LiveChatFAB.jsx` — role-tinted usernames + MOD yellow.
+- `frontend/src/pages/Admin.jsx` — Live Activity tab + `<LiveActivityPanel>`.
+
+
 ## Recent Updates (Feb 2026 — Iteration 42 · Admin Live Subs + AI Ticket Assistant + Sports Removed + DB Manager Hardening)
 - 🧹 **Sports section fully removed.** Every `/api/sports/*`, `/api/client/sports/*`, `/api/admin/sports/*` route and the `_sports_watcher_loop` background worker have been deleted from `server.py` (~500 lines gone). `SportsView` import stripped from `ClientDashboard.jsx`, the "Sports" toggle removed from Admin → Settings → Features, and `GoalNotifier` now renders nothing. `features.sports` defaults to `false` in the DB.
 - ✅ **Admin Live-Subscriptions manager** (Admin → Live Subs). Lists every user's Auto-Live sub with status/spent/refunded/refundable. Owner can cancel any sub, refund up to what's still refundable in one click, and auto-open a support ticket that the AI assistant handles. Backend endpoints: `GET /api/admin/live-subs`, `POST /api/admin/live-subs/{sid}/cancel`.

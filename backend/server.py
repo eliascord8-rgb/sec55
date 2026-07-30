@@ -41,7 +41,13 @@ OWNER_DISPLAY_NAME = ADMIN_USER  # in-mem, persisted in DB
 STAFF_SESSIONS = {}
 
 # Permission scopes a staff role can have
-STAFF_PERMS = {"tickets", "ai_inbox", "orders", "discord", "withdrawals"}
+STAFF_PERMS = {
+    "tickets", "ai_inbox", "orders", "discord", "withdrawals",
+    # Extended perms (Feb 2026) — owner can grant each individually to any mod.
+    "services", "providers", "users", "coupons", "giveaways",
+    "payments", "deposits", "livesubs", "aiactions", "backups",
+    "reports", "settings", "sim5", "games", "invoices", "audit",
+}
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -713,6 +719,7 @@ class AdminAccountLogin(BaseModel):
     password: str
     captcha_id: Optional[str] = None
     captcha_answer: Optional[str] = None
+    totp_code: Optional[str] = None
 
 
 @api_router.post("/admin/login-with-account")
@@ -732,6 +739,20 @@ async def admin_login_with_account(payload: AdminAccountLogin, request: Request)
     except HTTPException as e:
         _record_admin_login_fail(request)
         raise e
+    # 2FA gate — enforced on staff/owner just like the client login.
+    if u.get("totp_enabled") and u.get("totp_secret"):
+        import pyotp
+        code = (getattr(payload, "totp_code", None) or "").strip()
+        if not code:
+            raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
+        totp = pyotp.TOTP(u["totp_secret"])
+        recovery = code.upper().replace("-", "").replace(" ", "")
+        if not totp.verify(code, valid_window=1):
+            backups = u.get("totp_recovery", []) or []
+            if recovery in backups:
+                await db.users.update_one({"id": u["id"]}, {"$pull": {"totp_recovery": recovery}})
+            else:
+                raise HTTPException(status_code=401, detail="Invalid 2FA code")
     role = (u or {}).get("role")
     if role not in ("owner", "admin", "moderator"):
         _record_admin_login_fail(request)
@@ -3262,6 +3283,134 @@ async def _start_live_sub_worker():
     asyncio.create_task(_discord_bot_autostart())
     # DB backup worker — snapshot every 6 hours to /app/backups.
     asyncio.create_task(_db_backup_loop())
+    # Fake chat "social proof" activity — populates the public chat when quiet.
+    asyncio.create_task(_fake_chat_activity_loop())
+
+
+# ============ Fake social-proof chat activity (owner-toggleable) ============
+FAKE_CHAT_PERSONAS = [
+    {"username": "MilanBGD",     "level": 12, "avatar_url": None,                                 "lang": "sr"},
+    {"username": "AnaN",         "level": 8,  "avatar_url": "https://i.pravatar.cc/60?img=32",     "lang": "sr"},
+    {"username": "LukaViper",    "level": 24, "avatar_url": "https://i.pravatar.cc/60?img=15",     "lang": "sr"},
+    {"username": "JovanaXO",     "level": 17, "avatar_url": None,                                 "lang": "sr"},
+    {"username": "MikeFromDE",   "level": 5,  "avatar_url": "https://i.pravatar.cc/60?img=51",     "lang": "de"},
+    {"username": "LenaB",        "level": 11, "avatar_url": None,                                 "lang": "de"},
+    {"username": "FinnHH",       "level": 3,  "avatar_url": "https://i.pravatar.cc/60?img=68",     "lang": "de"},
+    {"username": "ClaraKM",      "level": 19, "avatar_url": "https://i.pravatar.cc/60?img=44",     "lang": "de"},
+    {"username": "SocialSean",   "level": 21, "avatar_url": None,                                 "lang": "en"},
+    {"username": "TrapHouse99",  "level": 14, "avatar_url": "https://i.pravatar.cc/60?img=12",     "lang": "en"},
+    {"username": "NadiaVibes",   "level": 9,  "avatar_url": "https://i.pravatar.cc/60?img=25",     "lang": "en"},
+    {"username": "kevin__ny",    "level": 6,  "avatar_url": None,                                 "lang": "en"},
+    {"username": "AlexisTikTok", "level": 28, "avatar_url": "https://i.pravatar.cc/60?img=47",     "lang": "en"},
+    {"username": "TarikSMM",     "level": 15, "avatar_url": None,                                 "lang": "sr"},
+    {"username": "PetraDE",      "level": 7,  "avatar_url": "https://i.pravatar.cc/60?img=36",     "lang": "de"},
+]
+FAKE_CHAT_LINES = {
+    "sr": [
+        "brate ovo je top, upravo mi je stigao order za 5 min",
+        "@{mention} jel ide kupovina followera stvarno tako brzo?",
+        "just bought 1000 tiktok views, works like magic",
+        "auto-live je car, ne mogu da verujem",
+        "@{mention} hvala za tip, refill mi je isao odmah",
+        "kad su najbolje cene? uvek gledam popuste",
+        "ljudi jel neko probao instagram likes od 5$?",
+        "moj profil je porastao za 3k pratilaca za dan lol",
+        "podrska je stvarno brza, 5* od mene",
+    ],
+    "en": [
+        "yo just bought 500 likes, arrived in 2 minutes",
+        "@{mention} does the tiktok live boost actually work?",
+        "the auto-live feature is honestly next level",
+        "bought a package yesterday, growth is real",
+        "@{mention} how long did your order take to complete?",
+        "10/10 recommend, been using this for months",
+        "just topped up with crypto, super smooth",
+        "anyone try the youtube subs? worth it?",
+        "customer support replied in like 30 seconds wtf",
+        "sold out on my listing thanks to the boost",
+    ],
+    "de": [
+        "gerade 1000 follower gekauft, war in 5 minuten da",
+        "@{mention} habt ihr das auto-live schon getestet?",
+        "das ist echt der beste smm den ich benutzt habe",
+        "support war mega schnell",
+        "@{mention} lohnt sich das paket fuer 20$?",
+        "bin richtig zufrieden, mein tiktok waechst wieder",
+        "kryptozahlung hat auf anhieb geklappt",
+        "die live-views sind unglaublich stabil, keine drops",
+    ],
+}
+
+
+async def _fake_chat_activity_loop():
+    import random
+    await asyncio.sleep(20)
+    while True:
+        try:
+            cfg = await db.app_settings.find_one({"_id": "singleton"}, {"fake_chat_enabled": 1})
+            enabled = (cfg or {}).get("fake_chat_enabled", True)
+            if not enabled:
+                await asyncio.sleep(15); continue
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+            recent_human = await db.public_chat.count_documents({
+                "created_at": {"$gte": cutoff},
+                "bot": {"$ne": True},
+                "kind": {"$ne": "system"},
+            })
+            if recent_human >= 20:
+                await asyncio.sleep(random.uniform(15, 25)); continue
+
+            persona = random.choice(FAKE_CHAT_PERSONAS)
+            lang = persona["lang"]
+            template = random.choice(FAKE_CHAT_LINES[lang])
+            mention_who = None
+            if "{mention}" in template:
+                other = random.choice([p for p in FAKE_CHAT_PERSONAS if p["username"] != persona["username"]])
+                mention_who = other["username"]
+                template = template.replace("{mention}", other["username"])
+            await db.public_chat.insert_one({
+                "id": str(uuid.uuid4()),
+                "user_id": f"fake:{persona['username']}",
+                "username": persona["username"],
+                "role": "user",
+                "level": persona["level"],
+                "avatar_url": persona.get("avatar_url"),
+                "text": template,
+                "bot": True,
+                "lang": lang,
+                "mentions": [mention_who] if mention_who else [],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            logger.warning("[fake-chat] tick failed: %s", e)
+        await asyncio.sleep(random.uniform(4, 8))
+
+
+class FakeChatToggleBody(BaseModel):
+    enabled: bool
+
+
+@api_router.get("/admin/fake-chat/status")
+async def admin_fake_chat_status(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "settings")
+    cfg = await db.app_settings.find_one({"_id": "singleton"}, {"_id": 0, "fake_chat_enabled": 1}) or {}
+    fake_count = await db.public_chat.count_documents({"bot": True})
+    return {"enabled": cfg.get("fake_chat_enabled", True), "fake_message_count": fake_count}
+
+
+@api_router.post("/admin/fake-chat/toggle")
+async def admin_fake_chat_toggle(body: FakeChatToggleBody, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "settings")
+    await db.app_settings.update_one({"_id": "singleton"}, {"$set": {"fake_chat_enabled": body.enabled}}, upsert=True)
+    return {"ok": True, "enabled": body.enabled}
+
+
+@api_router.post("/admin/fake-chat/purge")
+async def admin_fake_chat_purge(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "settings")
+    r = await db.public_chat.delete_many({"bot": True})
+    return {"ok": True, "deleted": r.deleted_count}
+
 
 
 async def _discord_bot_autostart():
@@ -4564,6 +4713,60 @@ async def admin_delete_db_backup(name: str, x_admin_token: Optional[str] = Heade
     raise HTTPException(status_code=404, detail="Backup not found")
 
 
+# ============ Live user activity feed (owner-only) ============
+# The client pings /client/activity/heartbeat every ~5s with its current route +
+# viewport + last user action. Owner can view /admin/activity/live to see every
+# active user in real time (Option A — lightweight activity feed, no DOM replay).
+
+class ActivityHeartbeatBody(BaseModel):
+    route: Optional[str] = None
+    viewport: Optional[str] = None
+    action: Optional[str] = None  # last click / nav / form field name (no values)
+    referrer: Optional[str] = None
+
+
+@api_router.post("/client/activity/heartbeat")
+async def client_activity_heartbeat(body: ActivityHeartbeatBody, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    now = datetime.now(timezone.utc)
+    ip = (request.headers.get("x-forwarded-for") or request.client.host if request else "") or ""
+    doc = {
+        "user_id": user.id,
+        "username": user.username,
+        "route": (body.route or "")[:120],
+        "viewport": (body.viewport or "")[:20],
+        "last_action": (body.action or "")[:120],
+        "referrer": (body.referrer or "")[:200],
+        "ip": ip.split(",")[0].strip(),
+        "user_agent": (request.headers.get("user-agent") or "")[:200] if request else "",
+        "updated_at": now.isoformat(),
+    }
+    await db.activity_live.update_one({"user_id": user.id}, {"$set": doc, "$setOnInsert": {"started_at": now.isoformat()}}, upsert=True)
+    # Also store the last 30 actions per user as a lightweight breadcrumb trail.
+    if body.action:
+        await db.activity_trail.insert_one({
+            "user_id": user.id, "username": user.username,
+            "route": body.route, "action": body.action,
+            "created_at": now.isoformat(),
+        })
+    return {"ok": True}
+
+
+@api_router.get("/admin/activity/live")
+async def admin_activity_live(x_admin_token: Optional[str] = Header(None), stale_minutes: int = 5):
+    check_admin(x_admin_token, "audit")
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)).isoformat()
+    rows = await db.activity_live.find({"updated_at": {"$gte": cutoff}}, {"_id": 0}).sort("updated_at", -1).to_list(200)
+    return {"active_users": rows, "stale_minutes": stale_minutes}
+
+
+@api_router.get("/admin/activity/user/{user_id}")
+async def admin_activity_user(user_id: str, x_admin_token: Optional[str] = Header(None), limit: int = 50):
+    check_admin(x_admin_token, "audit")
+    live = await db.activity_live.find_one({"user_id": user_id}, {"_id": 0})
+    trail = await db.activity_trail.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 200))
+    return {"live": live, "trail": trail}
+
+
 # ============ Public group chat (shoutbox) ============
 
 class PublicChatMessage(BaseModel):
@@ -4773,8 +4976,13 @@ async def public_chat_list(since: Optional[str] = None, limit: int = 50):
         m["rank_name"] = r["name"]
         m["rank_text_class"] = r["text_class"]
         m["rank_border_class"] = r["border_class"]
-        m["avatar_url"] = u.get("avatar_url")
-        m["level"] = int(u.get("chat_level") or _level_from_xp(u.get("chat_xp") or 0))
+        # Preserve the avatar/level already on the message (e.g. fake personas)
+        # when the user lookup didn't find a real user for that id.
+        if u:
+            m["avatar_url"] = u.get("avatar_url") or m.get("avatar_url")
+            m["level"] = int(u.get("chat_level") or _level_from_xp(u.get("chat_xp") or 0))
+        else:
+            m.setdefault("level", m.get("level") or 1)
     return {"messages": msgs}
 
 
@@ -7358,6 +7566,163 @@ from discord_bot import bot_manager  # noqa: E402
 # Default channel where "new purchase" notifications go. Can be overridden via
 # discord_config.purchase_channel_id (admin panel) or DISCORD_PURCHASE_CHANNEL_ID env.
 DISCORD_PURCHASE_CHANNEL_DEFAULT = os.environ.get("DISCORD_PURCHASE_CHANNEL_ID", "1477630409742221499")
+
+
+# ============ Discord OAuth2 — "Login with Discord" + account linking ============
+DISCORD_OAUTH_BASE = "https://discord.com/api/oauth2/authorize"
+DISCORD_TOKEN_URL = "https://discord.com/api/oauth2/token"
+DISCORD_USER_URL = "https://discord.com/api/users/@me"
+
+
+async def _discord_oauth_config() -> dict:
+    """Read Client ID / Client Secret / Redirect URI from discord_config.
+    Owner sets them via Admin → Discord panel."""
+    cfg = await db.discord_config.find_one({}, {"_id": 0}) or {}
+    return {
+        "client_id": cfg.get("oauth_client_id") or os.environ.get("DISCORD_CLIENT_ID", ""),
+        "client_secret": cfg.get("oauth_client_secret") or os.environ.get("DISCORD_CLIENT_SECRET", ""),
+        "redirect_uri": cfg.get("oauth_redirect_uri") or os.environ.get("DISCORD_REDIRECT_URI", ""),
+    }
+
+
+@api_router.get("/auth/discord/login-url")
+async def discord_login_url(state: Optional[str] = None):
+    """Return the Discord authorize URL the frontend should redirect to."""
+    cfg = await _discord_oauth_config()
+    if not cfg["client_id"] or not cfg["redirect_uri"]:
+        raise HTTPException(status_code=503, detail="Discord OAuth not configured yet — ask the owner.")
+    params = {
+        "client_id": cfg["client_id"],
+        "redirect_uri": cfg["redirect_uri"],
+        "response_type": "code",
+        "scope": "identify email",
+        "prompt": "consent",
+    }
+    if state:
+        params["state"] = state
+    from urllib.parse import urlencode
+    return {"url": f"{DISCORD_OAUTH_BASE}?{urlencode(params)}"}
+
+
+async def _discord_exchange_and_fetch(code: str) -> dict:
+    """Exchange OAuth code for token, then fetch the Discord user profile."""
+    cfg = await _discord_oauth_config()
+    if not cfg["client_id"] or not cfg["client_secret"] or not cfg["redirect_uri"]:
+        raise HTTPException(status_code=503, detail="Discord OAuth not configured")
+    async with httpx.AsyncClient(timeout=15) as http:
+        tok = await http.post(DISCORD_TOKEN_URL, data={
+            "client_id": cfg["client_id"],
+            "client_secret": cfg["client_secret"],
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": cfg["redirect_uri"],
+        }, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        if tok.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Discord token exchange failed: {tok.text[:200]}")
+        access = tok.json().get("access_token")
+        u = await http.get(DISCORD_USER_URL, headers={"Authorization": f"Bearer {access}"})
+        if u.status_code != 200:
+            raise HTTPException(status_code=502, detail="Discord /users/@me failed")
+        return u.json()
+
+
+class DiscordCallbackBody(BaseModel):
+    code: str
+
+
+@api_router.post("/auth/discord/callback")
+async def discord_callback(body: DiscordCallbackBody, request: Request = None):
+    """Login flow: exchange code → find OR create local user linked to that Discord id → return our own JWT."""
+    from auth_and_chat import create_token, _user_public, hash_password
+    d = await _discord_exchange_and_fetch(body.code)
+    discord_id = str(d.get("id") or "")
+    if not discord_id:
+        raise HTTPException(status_code=400, detail="No Discord user id returned")
+    email = (d.get("email") or "").lower()
+    handle = d.get("username") or f"discord_{discord_id[-6:]}"
+    # Prefer an existing local link, then match by email, else create.
+    doc = await db.users.find_one({"discord_id": discord_id})
+    if not doc and email:
+        doc = await db.users.find_one({"email": email})
+    if not doc:
+        # Create fresh user with a random password (they'll only use Discord to log in).
+        import secrets as _s
+        base = "".join(c for c in handle if c.isalnum())[:24] or f"user{_s.token_hex(3)}"
+        username = base
+        n = 1
+        while await db.users.find_one({"username_lower": username.lower()}):
+            n += 1; username = f"{base}{n}"
+        doc = {
+            "id": str(uuid.uuid4()),
+            "username": username,
+            "username_lower": username.lower(),
+            "email": email,
+            "password_hash": hash_password(_s.token_urlsafe(20)),
+            "role": "user",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "discord_id": discord_id,
+            "discord_username": d.get("username"),
+        }
+        await db.users.insert_one(doc)
+    else:
+        await db.users.update_one({"id": doc["id"]}, {"$set": {
+            "discord_id": discord_id,
+            "discord_username": d.get("username"),
+        }})
+    token = create_token(doc["id"], doc["username"], doc.get("role", "user"))
+    return {"token": token, "user": _user_public(doc)}
+
+
+@api_router.post("/client/discord/link")
+async def client_discord_link(body: DiscordCallbackBody, user: CurrentUser = Depends(current_user_dep)):
+    """Signed-in user linking their existing account to a Discord id."""
+    d = await _discord_exchange_and_fetch(body.code)
+    discord_id = str(d.get("id") or "")
+    if not discord_id:
+        raise HTTPException(status_code=400, detail="No Discord user id returned")
+    # Refuse to link if this Discord id is already linked to a different local account.
+    other = await db.users.find_one({"discord_id": discord_id, "id": {"$ne": user.id}})
+    if other:
+        raise HTTPException(status_code=409, detail=f"This Discord account is already linked to @{other.get('username')}")
+    await db.users.update_one({"id": user.id}, {"$set": {
+        "discord_id": discord_id,
+        "discord_username": d.get("username"),
+    }})
+    return {"ok": True, "discord_username": d.get("username")}
+
+
+@api_router.post("/client/discord/unlink")
+async def client_discord_unlink(user: CurrentUser = Depends(current_user_dep)):
+    await db.users.update_one({"id": user.id}, {"$unset": {"discord_id": "", "discord_username": ""}})
+    return {"ok": True}
+
+
+class DiscordOAuthCfg(BaseModel):
+    oauth_client_id: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
+    oauth_redirect_uri: Optional[str] = None
+
+
+@api_router.get("/admin/discord/oauth-config")
+async def admin_get_discord_oauth(x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    cfg = await db.discord_config.find_one({}, {"_id": 0}) or {}
+    return {
+        "client_id_set": bool(cfg.get("oauth_client_id")),
+        "client_secret_set": bool(cfg.get("oauth_client_secret")),
+        "redirect_uri": cfg.get("oauth_redirect_uri") or "",
+    }
+
+
+@api_router.post("/admin/discord/oauth-config")
+async def admin_set_discord_oauth(payload: DiscordOAuthCfg, x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    doc = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    if not doc:
+        raise HTTPException(status_code=400, detail="Nothing to save")
+    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.discord_config.update_one({}, {"$set": doc}, upsert=True)
+    return {"ok": True}
 
 
 class DiscordPurchaseCfg(BaseModel):

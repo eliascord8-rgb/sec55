@@ -496,3 +496,211 @@ function AppearanceSettings({ authedApi }) {
     </div>
   );
 }
+
+
+// -----------------------------------------------------------------------------
+// SecurityView — 2FA (TOTP) enable/disable + Discord link/unlink.
+// -----------------------------------------------------------------------------
+export function SecurityView({ authedApi, user }) {
+  const [status, setStatus] = useState({ enabled: false });
+  const [step, setStep] = useState("idle"); // idle | qr | confirm | done
+  const [qr, setQr] = useState(null); // { secret, qr_code, otpauth_url }
+  const [code, setCode] = useState("");
+  const [recovery, setRecovery] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [disableCode, setDisableCode] = useState("");
+  const [disableBusy, setDisableBusy] = useState(false);
+  const [dcConfigured, setDcConfigured] = useState(false);
+  const [dcLinked, setDcLinked] = useState(user?.discord_username || "");
+
+  const load = async () => {
+    try {
+      const [s, dcCfg] = await Promise.all([
+        authedApi.get("/auth/2fa/status").then((r) => r.data).catch(() => ({ enabled: false })),
+        authedApi.get("/auth/discord/login-url?state=probe").then(() => ({ ok: true })).catch(() => ({ ok: false })),
+      ]);
+      setStatus(s);
+      setDcConfigured(!!dcCfg.ok);
+      const me = await authedApi.get("/auth/me").then((r) => r.data).catch(() => null);
+      if (me?.discord_username) setDcLinked(me.discord_username);
+    } catch { /* silent */ }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const startEnroll = async () => {
+    setBusy(true);
+    try {
+      const r = await authedApi.post("/auth/2fa/setup", {});
+      setQr(r.data);
+      setStep("qr");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Setup failed");
+    }
+    setBusy(false);
+  };
+
+  const confirmEnroll = async () => {
+    setBusy(true);
+    try {
+      const r = await authedApi.post("/auth/2fa/enable", { code: code.trim() });
+      setRecovery(r.data.recovery_codes || []);
+      setStep("done");
+      setCode("");
+      await load();
+      toast.success("✅ 2FA enabled — save your recovery codes!");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Verification failed");
+    }
+    setBusy(false);
+  };
+
+  const disable2FA = async () => {
+    if (!disableCode.trim()) { toast.error("Enter your 6-digit code or a recovery code"); return; }
+    setDisableBusy(true);
+    try {
+      await authedApi.post("/auth/2fa/disable", { code: disableCode.trim() });
+      setStatus({ enabled: false });
+      setDisableCode("");
+      toast.success("2FA disabled");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Disable failed");
+    }
+    setDisableBusy(false);
+  };
+
+  const linkDiscord = async () => {
+    try {
+      const r = await authedApi.get("/auth/discord/login-url?state=link");
+      window.location.href = r.data.url;
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Discord OAuth not configured yet — ask the owner.");
+    }
+  };
+
+  const unlinkDiscord = async () => {
+    try {
+      await authedApi.post("/client/discord/unlink", {});
+      setDcLinked("");
+      toast.success("Discord unlinked");
+    } catch (e) {
+      toast.error("Unlink failed");
+    }
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-6" data-testid="security-view">
+      <div>
+        <h1 className="font-display font-black text-2xl md:text-3xl text-white mb-1">Security</h1>
+        <p className="text-white/60 text-sm">Protect your account with 2FA and link your Discord for one-click login.</p>
+      </div>
+
+      {/* 2FA card */}
+      <div className="bg-emerald-950/40 border border-emerald-500/25 rounded-xl p-6" data-testid="twofa-card">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-emerald-300 font-black">Two-factor authentication</div>
+            <h2 className="font-display font-bold text-xl text-white mt-1">Authenticator app (TOTP)</h2>
+            <p className="text-sm text-white/60 mt-1">
+              {status.enabled ? "🔒 Currently ENABLED — you'll be asked for a 6-digit code on every login." : "Currently disabled. Enable it to protect your balance and orders."}
+            </p>
+          </div>
+          <span className={`px-3 py-1 rounded-full text-[10px] uppercase font-black tracking-wider ${status.enabled ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40" : "bg-white/5 text-white/50 border border-white/10"}`}>
+            {status.enabled ? "ON" : "OFF"}
+          </span>
+        </div>
+
+        {!status.enabled && step === "idle" && (
+          <button onClick={startEnroll} disabled={busy} data-testid="twofa-enable-btn"
+            className="px-5 py-2.5 rounded-md bg-emerald-400 hover:bg-emerald-300 text-black font-bold text-sm disabled:opacity-50">
+            {busy ? "Loading…" : "Enable 2FA"}
+          </button>
+        )}
+
+        {step === "qr" && qr && (
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row gap-4 items-start">
+              <img src={qr.qr_code} alt="Scan this QR" className="w-44 h-44 rounded-md bg-white p-2" data-testid="twofa-qr" />
+              <div className="flex-1 text-sm space-y-2">
+                <div className="font-bold text-white">1. Scan this QR in your authenticator app</div>
+                <div className="text-white/60 text-xs">Google Authenticator, Authy, 1Password, Bitwarden — any TOTP app works.</div>
+                <div className="pt-2 border-t border-white/10">
+                  <div className="text-white/40 text-[10px] uppercase tracking-wider mb-1">Or enter manually</div>
+                  <code className="block text-emerald-200 bg-black/40 rounded px-2 py-1 text-xs break-all">{qr.secret}</code>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">2. Enter the 6-digit code from your app</label>
+              <div className="flex gap-2">
+                <input data-testid="twofa-verify-code" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  placeholder="123456" maxLength={6}
+                  className="flex-1 bg-black/40 border border-white/10 rounded px-3 py-2 text-lg font-mono tracking-widest text-center text-white" />
+                <button onClick={confirmEnroll} disabled={busy || code.length !== 6} data-testid="twofa-verify-btn"
+                  className="px-5 py-2 rounded bg-emerald-400 hover:bg-emerald-300 text-black font-bold text-sm disabled:opacity-50">
+                  {busy ? "…" : "Confirm"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === "done" && recovery && (
+          <div className="space-y-3">
+            <div className="p-3 bg-amber-500/10 border border-amber-500/40 rounded-md text-sm text-amber-200">
+              <b>⚠️ Save these recovery codes now.</b> Each works ONCE if you lose your phone. They will not be shown again.
+            </div>
+            <div className="grid grid-cols-2 gap-2 font-mono text-sm bg-black/40 p-4 rounded-md" data-testid="twofa-recovery-codes">
+              {recovery.map((r) => <div key={r} className="text-emerald-200">{r}</div>)}
+            </div>
+            <button onClick={() => { setStep("idle"); setRecovery(null); }}
+              className="px-5 py-2 rounded bg-white/10 hover:bg-white/15 text-white font-bold text-sm">
+              I saved them
+            </button>
+          </div>
+        )}
+
+        {status.enabled && step === "idle" && (
+          <div className="space-y-3 pt-4 border-t border-white/10">
+            <label className="block text-xs uppercase tracking-wider text-white/50 font-bold">Disable 2FA</label>
+            <div className="flex gap-2">
+              <input data-testid="twofa-disable-code" value={disableCode} onChange={(e) => setDisableCode(e.target.value)}
+                placeholder="Enter current 6-digit or recovery code"
+                className="flex-1 bg-black/40 border border-white/10 rounded px-3 py-2 text-sm text-white" />
+              <button onClick={disable2FA} disabled={disableBusy} data-testid="twofa-disable-btn"
+                className="px-5 py-2 rounded bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 font-bold text-sm disabled:opacity-50">
+                {disableBusy ? "…" : "Disable"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Discord link card */}
+      <div className="bg-emerald-950/40 border border-emerald-500/25 rounded-xl p-6" data-testid="discord-link-card">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-indigo-300 font-black">Discord</div>
+            <h2 className="font-display font-bold text-xl text-white mt-1">Link your Discord account</h2>
+            <p className="text-sm text-white/60 mt-1">
+              {dcLinked ? <>Linked to <b className="text-indigo-300">@{dcLinked}</b> — you can now use <code className="text-emerald-300">$deposit</code> and <code className="text-emerald-300">$buy</code> from Discord.</> : "One-click login next time · deposit crypto and place orders from Discord chat."}
+            </p>
+          </div>
+        </div>
+        {dcLinked ? (
+          <button onClick={unlinkDiscord} data-testid="discord-unlink-btn"
+            className="px-5 py-2 rounded bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 font-bold text-sm">
+            Unlink Discord
+          </button>
+        ) : (
+          <button onClick={linkDiscord} disabled={!dcConfigured} data-testid="discord-link-btn"
+            className="px-5 py-2 rounded bg-[#5865F2] hover:bg-[#4752C4] text-white font-bold text-sm disabled:opacity-40 inline-flex items-center gap-2">
+            <LinkIcon className="w-4 h-4" /> Link with Discord
+          </button>
+        )}
+        {!dcConfigured && !dcLinked && (
+          <p className="text-[10px] text-white/40 mt-2">Discord OAuth needs to be configured by the owner first.</p>
+        )}
+      </div>
+    </div>
+  );
+}

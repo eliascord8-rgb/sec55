@@ -325,6 +325,26 @@ export default function ClientDashboard() {
     loadBalance();
     loadAddons();
     loadFreeBet();
+    // Activity heartbeat — feeds Admin → Live Activity so owners/mods can
+    // see what a user is doing right now. Sends every 5s. Never sends form
+    // values, only route + last action tag + viewport.
+    const sendHeartbeat = (action) => {
+      try {
+        authedApi.post("/client/activity/heartbeat", {
+          route: `${window.location.pathname}#${view}`,
+          viewport: `${window.innerWidth}x${window.innerHeight}`,
+          action: action || `view:${view}`,
+          referrer: document.referrer || "",
+        }).catch(() => {});
+      } catch { /* ignore */ }
+    };
+    sendHeartbeat("session:start");
+    const hbInt = setInterval(() => sendHeartbeat(), 5000);
+    const onClick = (e) => {
+      const t = e.target.closest("[data-testid]");
+      if (t) sendHeartbeat(`click:${t.getAttribute("data-testid").slice(0, 40)}`);
+    };
+    window.addEventListener("click", onClick, { passive: true });
     const statInt = setInterval(loadStats, 12000);
     const msgInt = setInterval(loadMessages, POLL_MS);
     const balInt = setInterval(loadBalance, 15000);
@@ -332,6 +352,8 @@ export default function ClientDashboard() {
       clearInterval(statInt);
       clearInterval(msgInt);
       clearInterval(balInt);
+      clearInterval(hbInt);
+      window.removeEventListener("click", onClick);
     };
     // eslint-disable-next-line
   }, [user]);
@@ -661,6 +683,11 @@ export default function ClientDashboard() {
                         className="w-full text-left px-3 py-2 text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2">
                         ⚙️ Settings
                       </button>
+                      <button onClick={() => { setProfileOpen(false); changeView("security"); }}
+                        data-testid="profile-security-btn"
+                        className="w-full text-left px-3 py-2 text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2">
+                        🛡️ Security & 2FA
+                      </button>
                       <button onClick={() => { setProfileOpen(false); changeView("invoices"); }}
                         className="w-full text-left px-3 py-2 text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2">
                         🧾 My invoices
@@ -685,6 +712,13 @@ export default function ClientDashboard() {
                    className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition shadow-sm shadow-emerald-500/40">
                   <Sparkles className="w-3.5 h-3.5" />
                   Admin
+                </a>
+              )}
+              {(user.role === "moderator" || user.role === "admin") && (
+                <a href="/admin" data-testid="nav-support-green" title="Open support panel"
+                   className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-amber-400 hover:bg-amber-300 transition shadow-sm shadow-amber-500/40">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Support
                 </a>
               )}
               <button onClick={() => { logout(); nav("/"); }} data-testid="client-logout" className="hidden md:flex w-9 h-9 rounded-md hover:bg-white/10 items-center justify-center text-white/70" title="Logout">
@@ -744,6 +778,11 @@ export default function ClientDashboard() {
                 {user.role === "owner" && (
                   <div className="p-2 border-t border-emerald-500/20">
                     <a href="/admin" className="block px-3 py-2 rounded-md text-xs font-black uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 text-center">Admin panel</a>
+                  </div>
+                )}
+                {(user.role === "moderator" || user.role === "admin") && (
+                  <div className="p-2 border-t border-emerald-500/20">
+                    <a href="/admin" className="block px-3 py-2 rounded-md text-xs font-black uppercase tracking-wider text-black bg-amber-400 hover:bg-amber-300 text-center">Support panel</a>
                   </div>
                 )}
               </div>
@@ -948,6 +987,7 @@ export default function ClientDashboard() {
               )}
               {view === "help" && <HelpCenterView onOpenAI={openAI} />}
               {view === "settings" && <SettingsView authedApi={authedApi} user={user} />}
+              {view === "security" && <SecurityView authedApi={authedApi} user={user} />}
               {view === "redeem" && (
                 <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
               )}
@@ -1139,7 +1179,7 @@ function RoleBadge({ role }) {
     );
   if (role === "moderator")
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-1 bg-[#00E5FF]/15 border border-[#00E5FF]/40 text-[#00E5FF] text-[10px] uppercase tracking-wider rounded-sm font-bold">
+      <span className="inline-flex items-center gap-1 px-2 py-1 bg-[#FBBF24]/15 border border-[#FBBF24]/40 text-[#FBBF24] text-[10px] uppercase tracking-wider rounded-sm font-bold">
         <Shield className="w-3 h-3" /> Mod
       </span>
     );
@@ -1160,7 +1200,7 @@ function Msg({ m }) {
     );
   }
   const nameColor =
-    m.role === "owner" ? "text-[#FFB800]" : m.role === "moderator" ? "text-[#00E5FF]" : "text-[#FF007F]";
+    m.role === "owner" ? "text-[#FFB800]" : m.role === "moderator" ? "text-[#FBBF24]" : "text-[#FF007F]";
   return (
     <div className="flex flex-col group">
       <div className="flex items-baseline gap-2 flex-wrap">
@@ -1168,7 +1208,7 @@ function Msg({ m }) {
           @{m.username_display}
         </span>
         {m.role === "owner" && <Crown className="w-3 h-3 text-[#FFB800]" />}
-        {m.role === "moderator" && <Shield className="w-3 h-3 text-[#00E5FF]" />}
+        {m.role === "moderator" && <Shield className="w-3 h-3 text-[#FBBF24]" />}
         <span className="text-[10px] text-white/30 font-mono">
           {date} · {time}
         </span>

@@ -68,6 +68,7 @@ class LoginRequest(BaseModel):
     password: str
     captcha_id: Optional[str] = None
     captcha_answer: Optional[str] = None
+    totp_code: Optional[str] = None  # Required if the account has 2FA enabled
 
 
 class ChatSendRequest(BaseModel):
@@ -442,8 +443,113 @@ async def reset_password(req: ResetPasswordRequest, request: Request):
 async def login(req: LoginRequest, request: Request):
     db: AsyncIOMotorDatabase = request.app.state.db
     doc = await verify_login_credentials(req.identifier, req.password, req.captcha_id, req.captcha_answer, request)
+    # If the account has 2FA enabled, force the client to also submit a TOTP code.
+    if doc.get("totp_enabled") and doc.get("totp_secret"):
+        import pyotp
+        code = (getattr(req, "totp_code", None) or "").strip()
+        if not code:
+            raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
+        # Accept the 6-digit TOTP OR a one-time backup recovery code.
+        totp = pyotp.TOTP(doc["totp_secret"])
+        recovery = code.upper().replace("-", "").replace(" ", "")
+        used_recovery = None
+        if not totp.verify(code, valid_window=1):
+            backups = doc.get("totp_recovery", []) or []
+            if recovery in backups:
+                used_recovery = recovery
+            else:
+                raise HTTPException(status_code=401, detail="Invalid 2FA code")
+        if used_recovery:
+            await db.users.update_one({"id": doc["id"]}, {"$pull": {"totp_recovery": used_recovery}})
     token = create_token(doc["id"], doc["username"], doc.get("role", "user"))
     return {"token": token, "user": _user_public(doc)}
+
+
+# ============ TOTP 2FA (opt-in per user) ============
+@auth_router.post("/2fa/setup")
+async def totp_setup(user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Generate a fresh TOTP secret + QR code for the user. The secret is stored
+    in a `pending_totp_secret` field until the user confirms with a valid code
+    via /2fa/enable — this prevents users from locking themselves out."""
+    import pyotp, qrcode, io, base64
+    db: AsyncIOMotorDatabase = request.app.state.db
+    doc = await db.users.find_one({"id": user.id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    if doc.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA is already enabled — disable it first to re-enroll.")
+    secret = pyotp.random_base32()
+    otpauth = pyotp.TOTP(secret).provisioning_uri(name=doc["username"], issuer_name="Better Social")
+    img = qrcode.make(otpauth)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    await db.users.update_one({"id": user.id}, {"$set": {"pending_totp_secret": secret}})
+    return {"secret": secret, "otpauth_url": otpauth, "qr_code": qr_b64}
+
+
+class Totp2faEnableRequest(BaseModel):
+    code: str
+
+
+@auth_router.post("/2fa/enable")
+async def totp_enable(req: Totp2faEnableRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Confirm a pending TOTP secret with a valid code, then flip 2FA ON."""
+    import pyotp, secrets as _secrets
+    db: AsyncIOMotorDatabase = request.app.state.db
+    doc = await db.users.find_one({"id": user.id})
+    if not doc or not doc.get("pending_totp_secret"):
+        raise HTTPException(status_code=400, detail="Call /2fa/setup first")
+    if not pyotp.TOTP(doc["pending_totp_secret"]).verify((req.code or "").strip(), valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid code — try again with a fresh one from your authenticator app.")
+    # Generate 8 one-time recovery codes (8 chars, base32-style) — show them ONCE.
+    recovery = ["".join(_secrets.choice("ABCDEFGHIJKLMNPQRSTUVWXYZ23456789") for _ in range(8)) for _ in range(8)]
+    await db.users.update_one({"id": user.id}, {
+        "$set": {
+            "totp_secret": doc["pending_totp_secret"],
+            "totp_enabled": True,
+            "totp_recovery": recovery,
+            "totp_enabled_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "$unset": {"pending_totp_secret": ""},
+    })
+    return {"ok": True, "recovery_codes": recovery,
+            "warning": "Save these recovery codes somewhere safe — each works ONCE if you lose your phone."}
+
+
+class Totp2faDisableRequest(BaseModel):
+    code: str
+
+
+@auth_router.post("/2fa/disable")
+async def totp_disable(req: Totp2faDisableRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    """Require a valid current TOTP (or recovery code) to switch 2FA back OFF."""
+    import pyotp
+    db: AsyncIOMotorDatabase = request.app.state.db
+    doc = await db.users.find_one({"id": user.id})
+    if not doc or not doc.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA is not enabled")
+    code = (req.code or "").strip()
+    ok = pyotp.TOTP(doc.get("totp_secret", "")).verify(code, valid_window=1)
+    if not ok:
+        backups = doc.get("totp_recovery", []) or []
+        if code.upper().replace("-", "").replace(" ", "") not in backups:
+            raise HTTPException(status_code=400, detail="Invalid code")
+    await db.users.update_one({"id": user.id}, {
+        "$unset": {"totp_secret": "", "totp_recovery": "", "pending_totp_secret": ""},
+        "$set": {"totp_enabled": False},
+    })
+    return {"ok": True}
+
+
+@auth_router.get("/2fa/status")
+async def totp_status(user: CurrentUser = Depends(current_user_dep), request: Request = None):
+    db: AsyncIOMotorDatabase = request.app.state.db
+    doc = await db.users.find_one({"id": user.id}, {"_id": 0, "totp_enabled": 1, "totp_enabled_at": 1})
+    return {
+        "enabled": bool((doc or {}).get("totp_enabled")),
+        "enabled_at": (doc or {}).get("totp_enabled_at"),
+    }
 
 
 async def verify_login_credentials(identifier: str, password: str, captcha_id: Optional[str], captcha_answer: Optional[str], request: Request) -> dict:
@@ -1406,6 +1512,20 @@ async def ai_poll(request: Request, session_id: str, since: Optional[str] = None
                 staff_typing = True
         except (ValueError, TypeError):
             pass
+    # Waiting-queue position — starts at 10 when handover is requested and
+    # ticks down 1 per ~3s until 1. Once at 1 the user just sits there until a
+    # real staff joins the room (which flips status to "human").
+    queue_position = None
+    if sess and sess.get("needs_handover") and sess.get("status") != "human":
+        try:
+            requested = datetime.fromisoformat(sess.get("handover_requested_at") or sess.get("last_activity") or "")
+            if requested.tzinfo is None:
+                requested = requested.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - requested).total_seconds()
+            # 10 → 1 over ~30 seconds, then hold at 1.
+            queue_position = max(1, 10 - int(elapsed // 3))
+        except Exception:
+            queue_position = 10
     return {
         "messages": items,
         "human_takeover": bool(sess and sess.get("status") == "human"),
@@ -1418,6 +1538,9 @@ async def ai_poll(request: Request, session_id: str, since: Optional[str] = None
         "muted_until": muted_until,
         "banned": bool(sess and sess.get("banned")),
         "staff_typing": staff_typing,
+        "queue_position": queue_position,
+        "department": (sess or {}).get("department") or "support",
+        "assigned_staff": (sess or {}).get("assigned_staff_name"),
     }
 
 
@@ -1921,23 +2044,87 @@ async def admin_ai_takeover(session_id: str, request: Request):
     _admin_check(request)
     db: AsyncIOMotorDatabase = request.app.state.db
     now = datetime.now(timezone.utc).isoformat()
+    # Resolve the acting staff's login username so the message clearly says who joined.
+    from server import get_actor_display_name  # local import to avoid circular
+    actor_name = await get_actor_display_name(request.headers.get("x-admin-token"))
     res = await db.ai_sessions.update_one(
         {"session_id": session_id},
-        {"$set": {"status": "human", "last_activity": now, "needs_handover": False}},
+        {"$set": {
+            "status": "human", "last_activity": now, "needs_handover": False,
+            "assigned_staff_name": actor_name, "handover_completed_at": now,
+        }},
         upsert=True,
     )
-    # Insert a system-style assistant note so user sees who joined
-    settings = await get_ai_settings(db)
-    name = settings.get("staff_display_name") or STAFF_DISPLAY_NAME_DEFAULT
     await db.ai_chat_messages.insert_one({
         "id": str(uuid.uuid4()),
         "session_id": session_id,
         "role": "assistant",
-        "text": f"👋 @{name} joined the chat — you're now talking with a real person.",
+        "text": f"👋 @{actor_name} joined the chat — you're now talking with a real person.",
         "is_system_join": True,
         "created_at": now,
     })
-    return {"ok": True, "matched": res.matched_count}
+    return {"ok": True, "matched": res.matched_count, "staff": actor_name}
+
+
+AI_DEPARTMENTS = {
+    "support":       "Support",
+    "technical":     "Technical support",
+    "sales":         "Sales",
+    "billing":       "Billing / payments",
+    "call_support":  "Call support",
+}
+
+
+class DepartmentTransferBody(BaseModel):
+    department: str
+    note: Optional[str] = None
+
+
+@ai_router.post("/admin/sessions/{session_id}/transfer")
+async def admin_ai_transfer(session_id: str, body: DepartmentTransferBody, request: Request):
+    """Move an AI/live-chat session to another department. Everyone assigned
+    to that department will see it in their queue. The user gets a system
+    message ("You've been transferred to <department>")."""
+    _admin_check(request)
+    dept = (body.department or "").strip().lower()
+    if dept not in AI_DEPARTMENTS:
+        raise HTTPException(status_code=400, detail=f"Unknown department. Valid: {list(AI_DEPARTMENTS.keys())}")
+    db: AsyncIOMotorDatabase = request.app.state.db
+    now = datetime.now(timezone.utc).isoformat()
+    label = AI_DEPARTMENTS[dept]
+    from server import get_actor_display_name
+    actor = await get_actor_display_name(request.headers.get("x-admin-token"))
+    r = await db.ai_sessions.update_one(
+        {"session_id": session_id},
+        {"$set": {
+            "department": dept,
+            "department_label": label,
+            "status": "ai",           # re-queue so someone in that dept picks up
+            "needs_handover": True,
+            "transferred_from_staff": actor,
+            "transferred_at": now,
+            "handover_requested_at": now,   # restart the queue timer
+            "assigned_staff_name": None,
+        }},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Session not found")
+    note = f" — {body.note}" if body.note else ""
+    await db.ai_chat_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "role": "assistant",
+        "text": f"🔀 You've been transferred to the **{label}** department{note}. Someone from that team will be with you shortly.",
+        "is_system_join": True,
+        "created_at": now,
+    })
+    return {"ok": True, "department": dept, "label": label}
+
+
+@ai_router.get("/admin/departments")
+async def admin_ai_departments(request: Request):
+    _admin_check(request)
+    return {"departments": [{"id": k, "label": v} for k, v in AI_DEPARTMENTS.items()]}
 
 
 @ai_router.post("/admin/sessions/{session_id}/release")

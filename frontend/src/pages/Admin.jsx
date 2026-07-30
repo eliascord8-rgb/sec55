@@ -471,6 +471,15 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
               Live Subs
             </TabsTrigger>
             )}
+            {(role === "owner" || role === "admin") && (
+            <TabsTrigger
+              value="activity"
+              data-testid="tab-activity"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Live Activity
+            </TabsTrigger>
+            )}
             {role === "owner" && (
             <TabsTrigger
               value="aiactions"
@@ -542,6 +551,9 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
           </TabsContent>
           <TabsContent value="livesubs">
             <LiveSubsAdminPanel token={token} />
+          </TabsContent>
+          <TabsContent value="activity">
+            <LiveActivityPanel token={token} />
           </TabsContent>
           <TabsContent value="aiactions">
             <AIActionsPanel token={token} />
@@ -7278,3 +7290,115 @@ function DbBackupsPanel({ token }) {
     </div>
   );
 }
+
+// ============ Admin Live Activity — real-time user session viewer ============
+function LiveActivityPanel({ token }) {
+  const [rows, setRows] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [trail, setTrail] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [staleMin, setStaleMin] = useState(5);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get(`/admin/activity/live?stale_minutes=${staleMin}`);
+      setRows(r.data.active_users || []);
+    } catch { /* silent */ }
+    setLoading(false);
+  };
+  useEffect(() => {
+    load();
+    const i = setInterval(load, 4000);
+    return () => clearInterval(i);
+    // eslint-disable-next-line
+  }, [token, staleMin]);
+
+  const openTrail = async (u) => {
+    setSelected(u);
+    try {
+      const r = await adminApi(token).get(`/admin/activity/user/${u.user_id}?limit=50`);
+      setTrail(r.data.trail || []);
+    } catch { /* silent */ }
+  };
+
+  const ago = (iso) => {
+    if (!iso) return "";
+    const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+    return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="live-activity-panel">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h2 className="font-display font-bold text-lg">Live user activity</h2>
+          <p className="text-xs text-white/50 mt-1">Live audit trail — updates every 4s. Users only appear if they've pinged within the last {staleMin} min.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select value={staleMin} onChange={(e) => setStaleMin(Number(e.target.value))}
+            className="bg-[#0d0a14] border border-white/10 rounded px-2 py-1.5 text-xs">
+            <option value={2}>Active last 2 min</option>
+            <option value={5}>Active last 5 min</option>
+            <option value={15}>Active last 15 min</option>
+            <option value={60}>Active last 1 h</option>
+          </select>
+          <span data-testid="live-activity-count" className="px-2 py-1 rounded bg-emerald-500/20 text-emerald-300 text-xs font-bold">{rows.length} online</span>
+        </div>
+      </div>
+      <div className="grid md:grid-cols-[1fr_1fr] gap-4">
+        <div className="overflow-x-auto max-h-[560px]">
+          <table className="w-full text-sm" data-testid="live-activity-table">
+            <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40 bg-[#0d0a14] sticky top-0">
+              <tr>
+                <th className="text-left px-3 py-2">User</th>
+                <th className="text-left px-3 py-2">Route</th>
+                <th className="text-left px-3 py-2">Last action</th>
+                <th className="text-left px-3 py-2">Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan={4} className="text-center py-10 text-white/40">Loading…</td></tr>}
+              {!loading && rows.length === 0 && <tr><td colSpan={4} className="text-center py-10 text-white/40">No one online right now</td></tr>}
+              {rows.map((u) => (
+                <tr key={u.user_id} data-testid={`live-activity-row-${u.user_id}`}
+                    onClick={() => openTrail(u)}
+                    className={`border-t border-white/5 hover:bg-white/[0.03] cursor-pointer ${selected?.user_id === u.user_id ? "bg-white/[0.05]" : ""}`}>
+                  <td className="px-3 py-2 font-mono">@{u.username}</td>
+                  <td className="px-3 py-2 text-white/70 max-w-[220px] truncate" title={u.route}>{u.route}</td>
+                  <td className="px-3 py-2 text-white/60 text-xs max-w-[180px] truncate" title={u.last_action}>{u.last_action || "—"}</td>
+                  <td className="px-3 py-2 text-white/40 text-xs whitespace-nowrap">{ago(u.updated_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="bg-[#0d0a14] border border-white/5 rounded p-4 max-h-[560px] overflow-y-auto">
+          {!selected ? (
+            <div className="text-white/40 text-sm">Click a user to see their live breadcrumb trail →</div>
+          ) : (
+            <>
+              <div className="mb-3">
+                <div className="text-[10px] uppercase tracking-widest text-emerald-300 font-black">Session · @{selected.username}</div>
+                <div className="text-xs text-white/50 mt-1">
+                  Started {ago(selected.started_at)} · {selected.viewport || "?"} · IP {selected.ip || "?"}<br />
+                  <span className="text-white/40">Current route: <code className="text-emerald-200">{selected.route}</code></span>
+                </div>
+              </div>
+              <div className="space-y-1" data-testid="live-activity-trail">
+                {trail.length === 0 && <div className="text-white/40 text-xs">No actions recorded yet.</div>}
+                {trail.map((t, i) => (
+                  <div key={i} className="flex gap-2 text-xs border-l-2 border-emerald-500/30 pl-2 py-1">
+                    <span className="text-white/40 whitespace-nowrap">{new Date(t.created_at).toLocaleTimeString()}</span>
+                    <span className="text-emerald-200 font-mono truncate">{t.action}</span>
+                    <span className="text-white/40 ml-auto truncate">{t.route}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+

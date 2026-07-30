@@ -69,6 +69,9 @@ export default function AIWidget({ open, onOpenChange }) {
   const [staffTyping, setStaffTyping] = useState(false);
   const [muted, setMuted] = useState(false);
   const [banned, setBanned] = useState(false);
+  const [queuePosition, setQueuePosition] = useState(null);
+  const [departmentLabel, setDepartmentLabel] = useState("");
+  const [assignedStaff, setAssignedStaff] = useState("");
   // Tab state — 'chat' vs 'history' (signed-in users only)
   // View mode: 'home' (Rollbit-style welcome card), 'chat' (active conversation), 'history' (past sessions)
   const [activeTab, setActiveTab] = useState("home");
@@ -190,6 +193,9 @@ export default function AIWidget({ open, onOpenChange }) {
         setStaffTyping(!!r.data.staff_typing);
         setMuted(!!r.data.muted);
         setBanned(!!r.data.banned);
+        setQueuePosition(r.data.queue_position || null);
+        setDepartmentLabel(r.data.department || "");
+        setAssignedStaff(r.data.assigned_staff || "");
         if (r.data.banned) {
           // Persist so the floating launcher button can hide itself on next render
           try { localStorage.setItem("bs_chat_banned", "1"); } catch { /* localStorage disabled */ }
@@ -686,23 +692,10 @@ export default function AIWidget({ open, onOpenChange }) {
               Chat
             </button>
             {user && (
-              <button
-                onClick={() => { setActiveTab("history"); loadPastSessions(); }}
-                data-testid="ai-tab-history"
-                className={`px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-t-sm transition ${activeTab === "history" ? "text-white bg-[#1a1525] border-t border-x border-white/10" : "text-white/40 hover:text-white/70"}`}
-              >
-                Previous
-              </button>
+              <div className="ml-auto pr-2 pb-0.5 text-[9px] uppercase tracking-widest font-black text-white/30">
+                {/* Previous / Start new removed per owner request */}
+              </div>
             )}
-            <div className="ml-auto pr-2 pb-0.5">
-              <button
-                onClick={reset}
-                data-testid="ai-widget-start-new"
-                className="text-[9px] uppercase tracking-widest font-black text-emerald-300 hover:text-emerald-200 px-2 py-1 rounded-sm hover:bg-emerald-500/10 whitespace-nowrap"
-              >
-                + Start new
-              </button>
-            </div>
           </div>
         )}
 
@@ -818,6 +811,33 @@ export default function AIWidget({ open, onOpenChange }) {
             className="flex-1 overflow-y-auto px-3 py-4 space-y-3 bg-gradient-to-b from-[#0d0a14] to-[#080510]"
             data-testid="ai-widget-messages"
           >
+          {(queuePosition && !humanTakeover) ? (
+            <div
+              data-testid="ai-queue-banner"
+              className="sticky top-0 z-10 mx-auto mb-3 flex items-center gap-3 px-4 py-2.5 rounded-full bg-amber-500/15 border border-amber-500/40 shadow-lg shadow-amber-500/10 backdrop-blur"
+            >
+              <div className="relative flex items-center justify-center w-9 h-9">
+                <span className="absolute inset-0 rounded-full bg-amber-500/20 animate-ping" />
+                <span className="relative w-8 h-8 rounded-full bg-amber-400 text-black flex items-center justify-center text-sm font-black font-mono">
+                  {queuePosition}
+                </span>
+              </div>
+              <div className="flex-1 text-xs">
+                <div className="text-amber-200 font-bold">
+                  You're position <span className="text-white">#{queuePosition}</span> in the queue
+                </div>
+                <div className="text-amber-100/60 text-[10px]">
+                  Waiting for a {departmentLabel || "support"} agent — average pickup ~{queuePosition * 3}s
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {(humanTakeover && assignedStaff) ? (
+            <div data-testid="ai-assigned-banner"
+              className="mx-auto mb-3 px-4 py-2 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold text-emerald-200 text-center">
+              🟢 Talking with <b className="text-white">@{assignedStaff}</b>
+            </div>
+          ) : null}
           {messages.map((m, i) => (
             <div key={i}>
               <Bubble m={m} />

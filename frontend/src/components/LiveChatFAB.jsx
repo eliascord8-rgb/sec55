@@ -98,8 +98,15 @@ export default function LiveChatFAB() {
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2 text-xs" data-testid="live-chat-messages">
               {msgs.length === 0 && <div className="text-white/40 text-center py-6">Say hi 👋</div>}
               {msgs.map((m) => {
-                const roleTag = m.role === "owner" ? "OWNER" : m.role === "admin" ? "ADMIN" : m.role === "moderator" || m.role === "staff" ? "STAFF" : null;
-                const roleCls = m.role === "owner" ? "text-amber-300 bg-amber-500/20 border-amber-500/40" : m.role === "admin" ? "text-emerald-200 bg-emerald-500/20 border-emerald-500/40" : "text-sky-200 bg-sky-500/20 border-sky-500/40";
+                const roleTag = m.role === "owner" ? "OWNER" : m.role === "admin" ? "ADMIN" : m.role === "moderator" ? "MOD" : m.role === "staff" ? "STAFF" : null;
+                const roleCls = m.role === "owner"
+                  ? "text-amber-300 bg-amber-500/20 border-amber-500/40"
+                  : m.role === "admin"
+                    ? "text-emerald-200 bg-emerald-500/20 border-emerald-500/40"
+                    : m.role === "moderator"
+                      ? "text-yellow-200 bg-yellow-500/20 border-yellow-500/50"
+                      : "text-sky-200 bg-sky-500/20 border-sky-500/40";
+                const usernameCls = m.role === "moderator" ? "text-yellow-300 font-bold" : m.role === "owner" ? "text-amber-300 font-bold" : m.role === "admin" ? "text-emerald-300 font-bold" : "text-emerald-300 font-bold";
                 const backend = process.env.REACT_APP_BACKEND_URL || "";
                 const avatar = m.avatar_url ? (m.avatar_url.startsWith("http") ? m.avatar_url : `${backend}${m.avatar_url}`) : null;
                 return (
@@ -112,7 +119,7 @@ export default function LiveChatFAB() {
                           {(m.username || "?").slice(0, 2).toUpperCase()}
                         </div>
                       )}
-                      <span className="text-emerald-300 font-bold">@{m.username || "user"}</span>
+                      <span className={usernameCls}>@{m.username || "user"}</span>
                       {m.level > 1 && (
                         <span className="px-1 py-px rounded-sm bg-emerald-500/20 border border-emerald-500/40 text-[8px] font-black text-emerald-200 tracking-wider">L{m.level}</span>
                       )}

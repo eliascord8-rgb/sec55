@@ -6,6 +6,52 @@ import { useAuth } from "@/context/AuthContext";
 import { useLang, LanguagePicker } from "@/context/LanguageContext";
 import GoalNotifier from "@/components/GoalNotifier";
 
+// Fake "social proof" toasts on first visit — 2 randomised purchase alerts,
+// spaced 6-10s apart so they feel organic.
+const FAKE_BUYS = [
+  { user: "Milan B.",   country: "🇷🇸", service: "TikTok Followers",     qty: 1500, ago: "just now" },
+  { user: "Lena K.",    country: "🇩🇪", service: "Instagram Likes",       qty: 500,  ago: "2 min ago" },
+  { user: "Nadia V.",   country: "🇺🇸", service: "YouTube Views",         qty: 5000, ago: "just now" },
+  { user: "Tarik S.",   country: "🇧🇦", service: "Auto-Live TikTok Boost", qty: 250,  ago: "1 min ago" },
+  { user: "Alexis T.",  country: "🇬🇧", service: "Instagram Followers",   qty: 1000, ago: "just now" },
+  { user: "Petra M.",   country: "🇦🇹", service: "TikTok Live Views",     qty: 300,  ago: "3 min ago" },
+  { user: "Sean R.",    country: "🇺🇸", service: "YouTube Subscribers",   qty: 100,  ago: "just now" },
+  { user: "Jovana P.",  country: "🇷🇸", service: "Instagram Story Views", qty: 800,  ago: "1 min ago" },
+];
+
+function FakePurchaseAlerts() {
+  useEffect(() => {
+    const shown = new Set();
+    const pick = () => {
+      const remaining = FAKE_BUYS.filter((_, i) => !shown.has(i));
+      if (!remaining.length) return null;
+      const idx = FAKE_BUYS.indexOf(remaining[Math.floor(Math.random() * remaining.length)]);
+      shown.add(idx);
+      return FAKE_BUYS[idx];
+    };
+    const show = () => {
+      const b = pick(); if (!b) return;
+      toast(
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-md bg-emerald-500/25 border border-emerald-500/40 flex items-center justify-center text-lg">
+            {b.country}
+          </div>
+          <div className="text-sm leading-tight">
+            <div className="font-bold text-emerald-300">{b.user} just bought</div>
+            <div className="text-white/80 text-xs">{b.service} × <b>{b.qty.toLocaleString()}</b> · <span className="text-white/40">{b.ago}</span></div>
+          </div>
+        </div>,
+        { duration: 5500, position: "bottom-left", className: "fake-buy-toast" }
+      );
+    };
+    // 2 alerts per user visit, first ~4s in, second ~10s later
+    const t1 = setTimeout(show, 4000);
+    const t2 = setTimeout(show, 14000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, []);
+  return null;
+}
+
 // Green-themed guest landing shown on /client/dashboard when the user is NOT
 // signed in.  Renders a compact green header with Sign-in / Sign-up buttons
 // on the right and a two-column preview (live orders left, public chat right)
@@ -72,6 +118,7 @@ export default function GuestLanding() {
 
       {authOpen && <AuthModal mode={authOpen} onClose={() => setAuthOpen(null)} switchMode={setAuthOpen} />}
       <GoalNotifier />
+      <FakePurchaseAlerts />
     </div>
   );
 }
