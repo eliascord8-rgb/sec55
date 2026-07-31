@@ -6867,6 +6867,8 @@ async def nowpayments_create_funds(body: NowpaymentsFundsRequest, user: CurrentU
         or str(request.base_url).rstrip("/")
         or (request.headers.get("origin") or "").rstrip("/")
     )
+    if backend_url.startswith("http://") and "localhost" not in backend_url:
+        backend_url = "https://" + backend_url[len("http://"):]
     frontend_url = (
         (request.headers.get("origin") or "").rstrip("/")
         or (request.headers.get("referer") or "").split("/api")[0].rstrip("/")

@@ -60,6 +60,14 @@
 - `COUNTRY_TO_LANG` map: RS/ME/MK/HR/SI/BG/AL/XK → `sr`, BA → `bs`, DE/AT/CH/LI → `de`, ES → `es`, PT/BR → `pt`. Frontend can call this once on first mount and switch language if it hasn't been set manually.
 
 
+## Recent Updates (Jun 2026 — Iteration 50 · Live NOWPayments IPN end-to-end test PASSED)
+- Ran a full live IPN test against the real NOWPayments API + public webhook URL:
+  - Real invoice created via `/api/client/funds/nowpayments-create` (live API key works).
+  - HMAC-SHA512-signed IPN (real ipn_secret, sorted-JSON per NOWPayments spec) → auto-credited $10 + $7 (70% bonus), balance delta exactly +17.00.
+  - Bad signature → 401 rejected; replay → `already_credited` (idempotent); all 3 events logged in `nowpayments_events` with correct `signature_ok` flags.
+- **Bug fixed**: IPN callback URL registered with NOWPayments was `http://` (TLS terminates at ingress so `request.base_url` reports http). Now force-upgraded to `https://` in `nowpayments_create_funds`. Verified new invoices register the https callback.
+- Conclusion: automatic IPN crediting works end-to-end — users no longer need "Verify & Credit" as long as NOWPayments can reach the public URL. Test transactions cleaned from DB.
+
 ## Recent Updates (Feb 2026 — Iteration 46 · Discord community button + NOWPayments Verify-and-credit safety net)
 
 **Discord community links**
