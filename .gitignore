@@ -183,3 +183,4 @@ mongo_export_*
 mongodump/
 *.bson
 /backups/
+frontend/node_modules/.cache/default-development/13.pack
