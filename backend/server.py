@@ -7147,6 +7147,17 @@ async def _fetch_nowpayments_invoice_status(invoice_id: str) -> dict:
                     order = {s: i for i, s in enumerate(["finished", "confirmed", "sending", "partially_paid", "confirming", "waiting", "expired", "failed"])}
                     payments.sort(key=lambda p: order.get((p.get("payment_status") or "").lower(), 99))
                     return payments[0]
+                # JWT succeeded but no payments attached to this invoice → user
+                # hasn't paid yet (or the on-chain tx hasn't been detected).
+                # Return a "waiting" payment doc so upstream code shows a friendly
+                # message instead of falling through to the retired /invoice/{id}.
+                return {
+                    "payment_status": "waiting",
+                    "pay_amount": None,
+                    "actually_paid": 0,
+                    "invoice_id": invoice_id,
+                    "_source": "empty_payments",
+                }
             else:
                 logger.warning("[nowpay] /payment/ list failed %s: %s", r.status_code, r.text[:200])
         # Fallback: /invoice/{id} (x-api-key auth) — NOWPayments removed this on
@@ -7156,16 +7167,15 @@ async def _fetch_nowpayments_invoice_status(invoice_id: str) -> dict:
             headers={"x-api-key": cfg["api_key"]},
         )
         if r.status_code >= 400:
-            if not jwt:
-                raise HTTPException(
-                    status_code=502,
-                    detail=(
-                        "NOWPayments now requires your account login for payment lookups. "
-                        "Ask the admin to add the NOWPayments account EMAIL and PASSWORD in "
-                        "Admin → Funds → NOWPayments — then Verify deposit and auto-crediting will work."
-                    ),
-                )
-            raise HTTPException(status_code=502, detail=f"NOWPayments invoice lookup {r.status_code}: {r.text[:200]}")
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "NOWPayments now requires your account login for payment lookups. "
+                    "Please add the NOWPayments account EMAIL and PASSWORD in "
+                    "Admin → Funds → NOWPayments — Verify deposit will work after that. "
+                    "Auto-crediting via the webhook still works without email/password."
+                ),
+            )
         inv = r.json()
     # Normalise invoice → payment-shaped dict so downstream credit logic works
     return {
