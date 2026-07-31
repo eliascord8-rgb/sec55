@@ -2418,6 +2418,21 @@ ADDONS_CATALOG_DEFAULTS = [
         "flag": "blacklist_slots",
         "grants_slots": 2,
     },
+    {
+        "id": "id_finder",
+        "name": "TikTok ID → Username Finder",
+        "tagline": "Reverse-lookup any numeric TikTok user ID — unlimited checks",
+        "description": "Unlocks the User-ID reverse lookup on the TikTok Finder page. Paste any numeric TikTok user ID and get the @handle plus full profile stats (country, creation date, followers, likes, verification). One-time payment — unlimited checks forever.",
+        "price": 170.0,
+        "currency": "EUR",
+        "features": [
+            "Unlimited user_id → @username checks",
+            "Full profile snapshot with every lookup",
+            "Works on the public TikTok Finder page",
+            "One-time €170 — permanent access",
+        ],
+        "flag": "id_finder",
+    },
 ]
 
 
@@ -3060,8 +3075,9 @@ async def tiktok_lookup(username: str, request: Request):
 
 
 @api_router.get("/tools/tiktok-lookup-by-id")
-async def tiktok_lookup_by_id(user_id: str, request: Request):
+async def tiktok_lookup_by_id(user_id: str, request: Request, user: CurrentUser = Depends(current_user_dep)):
     """Find the @handle of a TikTok account by its numeric user_id.
+    PREMIUM: requires the `id_finder` addon (€170 — unlimited checks).
 
     Strategy:
       1. Check our own cache — every successful handle lookup writes its
@@ -3073,6 +3089,10 @@ async def tiktok_lookup_by_id(user_id: str, request: Request):
          paid signing, so the cache is populated when *anyone* first looks
          up that handle.
     """
+    if user.role not in ("owner", "moderator"):
+        u = await db.users.find_one({"id": user.id}, {"_id": 0, "addons": 1})
+        if "id_finder" not in ((u or {}).get("addons") or []):
+            raise HTTPException(status_code=402, detail="Reverse lookup is a premium addon — unlock 'TikTok ID → Username Finder' (€170, unlimited checks) in the Add-ons store.")
     uid = (user_id or "").strip().replace("@", "")
     if not uid.isdigit() or len(uid) < 6:
         raise HTTPException(status_code=400, detail="Enter a valid TikTok numeric user ID (e.g. 6656114453... )")
