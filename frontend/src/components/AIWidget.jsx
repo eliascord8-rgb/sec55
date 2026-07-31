@@ -824,7 +824,7 @@ export default function AIWidget({ open, onOpenChange }) {
               </div>
               <div className="flex-1 text-xs">
                 <div className="text-amber-200 font-bold">
-                  You're position <span className="text-white">#{queuePosition}</span> in the queue
+                  You&apos;re position <span className="text-white">#{queuePosition}</span> in the queue
                 </div>
                 <div className="text-amber-100/60 text-[10px]">
                   Waiting for a {departmentLabel || "support"} agent — average pickup ~{queuePosition * 3}s

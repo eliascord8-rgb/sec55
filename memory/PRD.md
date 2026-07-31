@@ -1,6 +1,26 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 44 · Live-chat queue + Department transfer + UI cleanup)
+
+**Backend (`auth_and_chat.py`)**
+- `/api/ai/poll` now returns `queue_position` (10 → 1 over ~30s starting from `handover_requested_at`), `department`, and `assigned_staff` so the widget can render a live-support waiting UX.
+- `/api/ai/admin/sessions/{sid}/takeover` now resolves the acting staff's login username via `get_actor_display_name()` and stores it in `assigned_staff_name`. The system message the user sees says *"👋 @{actor} joined the chat — you're now talking with a real person."* — no more generic "Support".
+- **New `/api/ai/admin/sessions/{sid}/transfer`** — Owner/staff can move any live session to another department. Departments: `support`, `technical`, `sales`, `billing`, `call_support`. Endpoint restarts the queue timer, clears the previous assignee, flips status back to AI so the receiving dept can pick it up, and inserts a system message *"🔀 You've been transferred to the **{label}** department. Someone from that team will be with you shortly."*
+- **New `GET /api/ai/admin/departments`** returns the department list for the admin UI dropdown.
+
+**Frontend**
+- `AIWidget.jsx` — **Previous** tab and **+ Start new** button removed from the chat tab bar (as requested).
+- Queue banner: sticky yellow pill at the top of the messages panel showing the position number in a pulsing orb, the department name, and estimated pickup time. Only appears when `queue_position` is set and no staff has taken over yet.
+- Assigned-staff banner: emerald pill saying *"🟢 Talking with @{staffname}"* once a staff joins.
+- `Admin.jsx` — new **`<TransferMenu>`** dropdown next to the Take-Over button in the AI Inbox panel. Fetches departments live, calls the transfer endpoint, and toasts the result. `data-testid` on every menu item (`inbox-transfer`, `inbox-transfer-support/technical/sales/billing/call_support`).
+
+**Files touched**
+- `backend/auth_and_chat.py` — enrich `/ai/poll`, staff-name in takeover, transfer + departments endpoints.
+- `frontend/src/components/AIWidget.jsx` — remove Previous/Start-new, add queue + assigned banners.
+- `frontend/src/pages/Admin.jsx` — add TransferMenu next to Take Over.
+
+
 ## Recent Updates (Feb 2026 — Iteration 43 · Mod role, 2FA, Discord OAuth scaffolding, Live Activity, Fake social-proof)
 
 **Backend**

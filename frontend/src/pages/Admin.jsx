@@ -4073,6 +4073,67 @@ function CoinPaymentsPanel({ token }) {
 }
 
 
+function TransferMenu({ token, activeId, onTransferred }) {
+  const [open, setOpen] = useState(false);
+  const [depts, setDepts] = useState([]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    adminApi(token).get("/ai/admin/departments")
+      .then((r) => setDepts(r.data.departments || []))
+      .catch(() => setDepts([
+        { id: "support", label: "Support" },
+        { id: "technical", label: "Technical support" },
+        { id: "sales", label: "Sales" },
+        { id: "billing", label: "Billing / payments" },
+        { id: "call_support", label: "Call support" },
+      ]));
+  }, [token]);
+  const transfer = async (d) => {
+    if (!activeId) return;
+    setBusy(true);
+    try {
+      await adminApi(token).post(`/ai/admin/sessions/${activeId}/transfer`, { department: d.id });
+      toast.success(`Transferred to ${d.label}`);
+      onTransferred && onTransferred();
+      setOpen(false);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Transfer failed");
+    }
+    setBusy(false);
+  };
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={!activeId || busy}
+        data-testid="inbox-transfer"
+        className="px-3 py-1.5 text-[10px] uppercase tracking-wider rounded-sm font-bold bg-amber-500/20 border border-amber-500/40 text-amber-200 hover:bg-amber-500/30 disabled:opacity-40"
+      >
+        {busy ? "…" : "Transfer ▾"}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1 w-56 bg-[#0d0a14] border border-amber-500/40 rounded-md shadow-2xl z-40 py-1" data-testid="inbox-transfer-menu">
+            <div className="px-3 py-2 text-[9px] uppercase tracking-widest text-amber-300 font-black border-b border-white/5">Send to department</div>
+            {depts.map((d) => (
+              <button
+                key={d.id}
+                onClick={() => transfer(d)}
+                data-testid={`inbox-transfer-${d.id}`}
+                className="w-full text-left px-3 py-2 text-sm text-white hover:bg-amber-500/10 hover:text-amber-200"
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+
 function AIInboxPanel({ token, displayName }) {
   const [sessions, setSessions] = useState([]);
   const [waiting, setWaiting] = useState(0);
@@ -4672,6 +4733,7 @@ function AIInboxPanel({ token, displayName }) {
                       Leave Chat
                     </button>
                   )}
+                  <TransferMenu token={token} activeId={activeId} onTransferred={() => { setActiveSess((s) => s ? { ...s, department: "queued" } : s); }} />
                   {activeSess?.muted_until ? (
                     <button
                       onClick={unmuteChat}
