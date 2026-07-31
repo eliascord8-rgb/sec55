@@ -109,7 +109,25 @@ export default function TikTokLookupBox({ variant = "hero" }) {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
             <InfoRow icon={Globe} label="Country / region">
-              {result.region ? <span className="text-white font-bold">{result.region}</span> : <span className="text-white/40">Not public</span>}
+              {result.detected_country?.country ? (
+                <span className="text-white font-bold inline-flex items-center gap-1.5">
+                  <span>{result.detected_country.name}</span>
+                  <span
+                    className={`text-[9px] uppercase font-black tracking-wider px-1.5 py-0.5 rounded ${
+                      result.detected_country.confidence === "high" ? "bg-emerald-500/25 text-emerald-200" :
+                      result.detected_country.confidence === "medium" ? "bg-sky-500/25 text-sky-200" :
+                      "bg-white/10 text-white/50"
+                    }`}
+                    title={`Detected from: ${result.detected_country.source}`}
+                  >
+                    {result.detected_country.confidence}
+                  </span>
+                </span>
+              ) : result.region ? (
+                <span className="text-white font-bold">{result.region}</span>
+              ) : (
+                <span className="text-white/40">Not public</span>
+              )}
             </InfoRow>
             <InfoRow icon={Calendar} label="Created">
               {result.created_at ? (

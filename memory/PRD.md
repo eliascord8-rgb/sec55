@@ -1,6 +1,22 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 48 · Fake orders + own-code country resolver)
+
+**Fake orders paired with the fake-chat toggle**
+- New background worker `_fake_order_activity_loop` — same on/off as fake chat (`app_settings.fake_chat_enabled`). Every 25-60s (jittered) it inserts a random order into `db.orders` with `bot: True` from one of the 15 fake personas, picking from 19 realistic service/quantity/price combos (Instagram Followers HQ × 500 / $2.50 up to YouTube Views × 10 000 / $12.40).
+- Throttled to skip when >15 real orders were placed in the last 10 min so it doesn't drown genuine activity.
+- These flow straight into `/api/orders/latest-global` → the "Latest Orders" panel on the client dashboard AND the guest landing feed with the standard username masking (`@Na***`).
+
+**TikTok country resolver — 100% own code, no external API**
+- Bio flag-emoji parser (`_flag_to_country`) decodes regional-indicator surrogate pairs from the bio (🇩🇪 → `DE`, 🇷🇸 → `RS`, …) — **high confidence**.
+- Fallback keyword scanner (`_BIO_KEYWORDS`) — 60+ country entries with city/country names in local languages (Deutschland, Beograd, İstanbul, São Paulo, Sarajevo, …) — **medium confidence**.
+- Then TikTok's own `region` field when present — **high confidence**.
+- Then TikTok's `language` code mapped via `_LANG_TO_COUNTRY` (de→DE, sr→RS, bs→BA, etc.) — **low confidence**.
+- Returns `{country, name, source, confidence}` and the frontend shows the confidence chip with a tooltip explaining which signal fired (`bio_flag`, `bio_keyword:beograd`, `tiktok_region`, `language:de`, `no_signal`).
+- Verified: `@bella.poarch` → PT (language:pt · low), `@charlidamelio` → no_signal (no signals in payload).
+
+
 ## Recent Updates (Feb 2026 — Iteration 47 · Two new addons + TikTok public lookup + Balkan geo language detect)
 
 **New addons in the store (Admin can price-override each)**

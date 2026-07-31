@@ -2810,7 +2810,139 @@ async def _tt_probe_apilive(handle: str, headers: dict) -> Optional[bool]:
 
 
 # ============ Free public TikTok lookup (no auth) ============
+# Heuristic country resolver — no external API. Combines:
+#   1) flag emoji in the bio (🇩🇪 🇷🇸 …)                — highest confidence
+#   2) explicit country / city keywords in the bio       — high confidence
+#   3) TikTok's own `region` field                       — high confidence when present
+#   4) TikTok's `language` code hint                     — fallback
+
+# ISO country → human name (short, US-English)
+_COUNTRY_NAMES = {
+    "US": "United States", "GB": "United Kingdom", "DE": "Germany", "AT": "Austria",
+    "CH": "Switzerland", "FR": "France", "IT": "Italy", "ES": "Spain", "PT": "Portugal",
+    "NL": "Netherlands", "BE": "Belgium", "SE": "Sweden", "NO": "Norway", "FI": "Finland",
+    "DK": "Denmark", "PL": "Poland", "CZ": "Czechia", "SK": "Slovakia", "HU": "Hungary",
+    "RO": "Romania", "BG": "Bulgaria", "GR": "Greece", "TR": "Turkey", "RU": "Russia",
+    "UA": "Ukraine", "BY": "Belarus", "RS": "Serbia", "HR": "Croatia", "SI": "Slovenia",
+    "BA": "Bosnia and Herzegovina", "ME": "Montenegro", "MK": "North Macedonia",
+    "AL": "Albania", "XK": "Kosovo", "IE": "Ireland", "IS": "Iceland",
+    "CA": "Canada", "MX": "Mexico", "BR": "Brazil", "AR": "Argentina", "CL": "Chile",
+    "CO": "Colombia", "PE": "Peru", "VE": "Venezuela",
+    "AU": "Australia", "NZ": "New Zealand", "JP": "Japan", "KR": "South Korea",
+    "CN": "China", "TW": "Taiwan", "HK": "Hong Kong", "SG": "Singapore",
+    "TH": "Thailand", "VN": "Vietnam", "PH": "Philippines", "ID": "Indonesia",
+    "MY": "Malaysia", "IN": "India", "PK": "Pakistan", "BD": "Bangladesh",
+    "SA": "Saudi Arabia", "AE": "UAE", "IL": "Israel", "EG": "Egypt", "MA": "Morocco",
+    "DZ": "Algeria", "TN": "Tunisia", "ZA": "South Africa", "NG": "Nigeria",
+}
+# TikTok `language` code → default country when no other hint fires
+_LANG_TO_COUNTRY = {
+    "de": "DE", "sr": "RS", "hr": "HR", "bs": "BA", "sl": "SI", "mk": "MK",
+    "sq": "AL", "bg": "BG", "ro": "RO", "hu": "HU", "cs": "CZ", "sk": "SK",
+    "pl": "PL", "ru": "RU", "uk": "UA", "es": "ES", "pt": "PT", "fr": "FR",
+    "it": "IT", "nl": "NL", "sv": "SE", "no": "NO", "da": "DK", "fi": "FI",
+    "tr": "TR", "ar": "SA", "he": "IL", "el": "GR", "ja": "JP", "ko": "KR",
+    "zh": "CN", "th": "TH", "vi": "VN", "id": "ID", "ms": "MY", "hi": "IN",
+}
+# Bio keyword → country. Case-insensitive, matched as whole word or substring.
+# Includes big cities, countries in local language, and common shorthand.
+_BIO_KEYWORDS = {
+    "DE": ["deutschland", "germany", "berlin", "hamburg", "münchen", "munich", "köln", "cologne", "frankfurt", "leipzig", "dortmund", "stuttgart", "🇩🇪"],
+    "AT": ["österreich", "austria", "wien", "vienna", "graz", "salzburg", "linz", "🇦🇹"],
+    "CH": ["schweiz", "switzerland", "zürich", "zurich", "basel", "geneva", "genf", "bern", "lausanne", "🇨🇭"],
+    "RS": ["serbia", "srbija", "beograd", "belgrade", "novi sad", "niš", "kragujevac", "🇷🇸"],
+    "HR": ["croatia", "hrvatska", "zagreb", "split", "rijeka", "osijek", "dubrovnik", "🇭🇷"],
+    "BA": ["bosnia", "bosna", "sarajevo", "banja luka", "mostar", "tuzla", "zenica", "🇧🇦"],
+    "ME": ["montenegro", "crna gora", "podgorica", "budva", "kotor", "🇲🇪"],
+    "MK": ["macedonia", "makedonija", "skopje", "bitola", "🇲🇰"],
+    "SI": ["slovenia", "slovenija", "ljubljana", "maribor", "🇸🇮"],
+    "AL": ["albania", "shqipëri", "shqiperia", "tirana", "durrës", "🇦🇱"],
+    "BG": ["bulgaria", "българия", "sofia", "plovdiv", "varna", "🇧🇬"],
+    "GR": ["greece", "hellas", "ελλάδα", "athens", "thessaloniki", "🇬🇷"],
+    "TR": ["türkiye", "turkey", "istanbul", "ankara", "izmir", "antalya", "🇹🇷"],
+    "PL": ["poland", "polska", "warsaw", "warszawa", "kraków", "cracow", "wrocław", "🇵🇱"],
+    "RU": ["russia", "россия", "moscow", "москва", "st petersburg", "санкт-петербург", "🇷🇺"],
+    "UA": ["ukraine", "україна", "kyiv", "kiev", "lviv", "odesa", "🇺🇦"],
+    "GB": ["united kingdom", "england", "london", "manchester", "birmingham", "liverpool", "🇬🇧"],
+    "US": ["usa", "united states", "america", "new york", "los angeles", "california", "texas", "florida", "chicago", "miami", "🇺🇸"],
+    "CA": ["canada", "toronto", "vancouver", "montreal", "ottawa", "🇨🇦"],
+    "AU": ["australia", "sydney", "melbourne", "brisbane", "perth", "🇦🇺"],
+    "FR": ["france", "paris", "lyon", "marseille", "toulouse", "🇫🇷"],
+    "IT": ["italy", "italia", "rome", "roma", "milan", "milano", "naples", "napoli", "🇮🇹"],
+    "ES": ["spain", "españa", "madrid", "barcelona", "valencia", "sevilla", "🇪🇸"],
+    "PT": ["portugal", "lisbon", "lisboa", "porto", "🇵🇹"],
+    "NL": ["netherlands", "nederland", "amsterdam", "rotterdam", "🇳🇱"],
+    "BR": ["brazil", "brasil", "são paulo", "rio de janeiro", "🇧🇷"],
+    "MX": ["mexico", "méxico", "cdmx", "guadalajara", "monterrey", "🇲🇽"],
+    "JP": ["japan", "日本", "tokyo", "osaka", "kyoto", "🇯🇵"],
+    "KR": ["korea", "한국", "seoul", "busan", "🇰🇷"],
+    "IN": ["india", "mumbai", "delhi", "bangalore", "bengaluru", "🇮🇳"],
+    "SA": ["saudi arabia", "riyadh", "jeddah", "🇸🇦"],
+    "AE": ["dubai", "abu dhabi", "united arab emirates", "uae", "🇦🇪"],
+    "MA": ["morocco", "maroc", "casablanca", "rabat", "🇲🇦"],
+    "EG": ["egypt", "مصر", "cairo", "🇪🇬"],
+    "ID": ["indonesia", "jakarta", "bali", "🇮🇩"],
+    "PH": ["philippines", "manila", "cebu", "🇵🇭"],
+    "TH": ["thailand", "bangkok", "🇹🇭"],
+    "VN": ["vietnam", "hanoi", "saigon", "🇻🇳"],
+    "MY": ["malaysia", "kuala lumpur", "🇲🇾"],
+}
+
+
+def _flag_to_country(text: str) -> Optional[str]:
+    """Detect a regional-indicator flag emoji (🇩🇪 = 0x1F1E9 0x1F1EA) in the bio.
+    Each flag is two RI symbols encoding 'DE', 'RS', etc. Returns the ISO code
+    of the first flag found or None."""
+    if not text:
+        return None
+    ri_base = 0x1F1E6  # Regional Indicator Symbol Letter A → 'A'
+    i = 0
+    while i < len(text) - 1:
+        a, b = ord(text[i]), ord(text[i + 1])
+        if 0x1F1E6 <= a <= 0x1F1FF and 0x1F1E6 <= b <= 0x1F1FF:
+            cc = chr(ord("A") + (a - ri_base)) + chr(ord("A") + (b - ri_base))
+            if cc in _COUNTRY_NAMES:
+                return cc
+            i += 2
+            continue
+        i += 1
+    return None
+
+
+def _resolve_country(*, region: Optional[str], language: Optional[str], signature: Optional[str], nickname: Optional[str]) -> dict:
+    """Best-effort country resolver from public profile data alone.
+    Returns {country, name, source, confidence}. `source` explains which signal fired."""
+    hay = " ".join([nickname or "", signature or ""]).lower()
+
+    # 1) Flag emoji in bio — strongest signal.
+    flag = _flag_to_country(f"{nickname or ''} {signature or ''}")
+    if flag:
+        return {"country": flag, "name": _COUNTRY_NAMES.get(flag, flag), "source": "bio_flag", "confidence": "high"}
+
+    # 2) TikTok's own region field — trusted when it's a valid ISO code.
+    if region and isinstance(region, str) and region.upper() in _COUNTRY_NAMES:
+        cc = region.upper()
+        return {"country": cc, "name": _COUNTRY_NAMES[cc], "source": "tiktok_region", "confidence": "high"}
+
+    # 3) City / country keyword in bio.
+    for cc, terms in _BIO_KEYWORDS.items():
+        for term in terms:
+            if term in hay:
+                return {"country": cc, "name": _COUNTRY_NAMES.get(cc, cc), "source": f"bio_keyword:{term}", "confidence": "medium"}
+
+    # 4) Language code fallback (weakest — e.g. many "en" users aren't US/UK).
+    if language:
+        lang = language.lower().split("-")[0]
+        cc = _LANG_TO_COUNTRY.get(lang)
+        if cc:
+            return {"country": cc, "name": _COUNTRY_NAMES.get(cc, cc), "source": f"language:{lang}", "confidence": "low"}
+
+    return {"country": None, "name": None, "source": "no_signal", "confidence": "none"}
+
+
 async def _tiktok_public_lookup(handle: str) -> dict:
+    """Scrape the public /@handle page for profile data — no API key required.
+    Returns country, creation date, follower/likes/videos count, verified, bio, avatar."""
     """Scrape the public /@handle page for profile data — no API key required.
     Returns country, creation date, follower/likes/videos count, verified, bio, avatar."""
     import time as _t
@@ -2870,6 +3002,12 @@ async def _tiktok_public_lookup(handle: str) -> dict:
             created_note = "Legacy Musical.ly account (created before Aug 2018) — exact date unknown"
     except Exception:
         pass
+    resolved = _resolve_country(
+        region=user_module.get("region"),
+        language=user_module.get("language"),
+        signature=user_module.get("signature"),
+        nickname=user_module.get("nickname"),
+    )
     return {
         "handle": user_module.get("uniqueId") or h,
         "nickname": user_module.get("nickname"),
@@ -2888,6 +3026,7 @@ async def _tiktok_public_lookup(handle: str) -> dict:
         "hearts": int(stats.get("heart") or stats.get("heartCount") or 0),
         "videos": int(stats.get("videoCount") or 0),
         "profile_url": f"https://www.tiktok.com/@{h}",
+        "detected_country": resolved,
     }
 
 
@@ -3542,6 +3681,8 @@ async def _start_live_sub_worker():
     asyncio.create_task(_db_backup_loop())
     # Fake chat "social proof" activity — populates the public chat when quiet.
     asyncio.create_task(_fake_chat_activity_loop())
+    # Fake order activity — same on/off toggle.
+    asyncio.create_task(_fake_order_activity_loop())
 
 
 # ============ Fake social-proof chat activity (owner-toggleable) ============
@@ -3641,6 +3782,74 @@ async def _fake_chat_activity_loop():
         except Exception as e:
             logger.warning("[fake-chat] tick failed: %s", e)
         await asyncio.sleep(random.uniform(4, 8))
+
+
+# ============ Fake orders (paired with fake chat toggle) ============
+FAKE_ORDER_SERVICES = [
+    ("Instagram Followers HQ",      500,   2.50),
+    ("Instagram Followers HQ",      1000,  4.80),
+    ("Instagram Likes",             250,   0.90),
+    ("Instagram Likes",             1000,  3.20),
+    ("Instagram Story Views",       500,   1.10),
+    ("TikTok Followers",            500,   2.90),
+    ("TikTok Followers",            1500,  8.20),
+    ("TikTok Views",                5000,  1.50),
+    ("TikTok Views",                25000, 6.40),
+    ("TikTok Likes",                500,   1.20),
+    ("TikTok Live Views",           300,   4.50),
+    ("TikTok Live Comments (real)", 50,    5.90),
+    ("YouTube Subscribers",         100,   3.80),
+    ("YouTube Views",               1000,  1.90),
+    ("YouTube Views",               10000, 12.40),
+    ("YouTube Likes",               250,   1.00),
+    ("Twitter/X Followers",         300,   4.20),
+    ("Telegram Members",            500,   3.60),
+    ("Auto-Live TikTok Boost",      250,   7.90),
+]
+
+
+async def _fake_order_activity_loop():
+    """Paired with the fake chat toggle. Inserts a fake order into `db.orders`
+    (bot=True) so the Latest Orders panels look busy and a masked purchase
+    toast also fires via the public /orders/latest-global feed."""
+    import random
+    await asyncio.sleep(35)   # small offset so it doesn't collide with the chat worker
+    while True:
+        try:
+            cfg = await db.app_settings.find_one({"_id": "singleton"}, {"fake_chat_enabled": 1})
+            enabled = (cfg or {}).get("fake_chat_enabled", True)
+            if not enabled:
+                await asyncio.sleep(20); continue
+            # Throttle when there's plenty of real-order flow so we don't drown it.
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            recent_real = await db.orders.count_documents({
+                "created_at": {"$gte": cutoff},
+                "bot": {"$ne": True},
+            })
+            if recent_real >= 15:
+                await asyncio.sleep(random.uniform(40, 80)); continue
+
+            persona = random.choice(FAKE_CHAT_PERSONAS)
+            svc_name, qty, charge = random.choice(FAKE_ORDER_SERVICES)
+            now = datetime.now(timezone.utc).isoformat()
+            await db.orders.insert_one({
+                "id": str(uuid.uuid4()),
+                "user_id": f"fake:{persona['username']}",
+                "username": persona["username"],
+                "service_name": svc_name,
+                "service": svc_name,
+                "quantity": qty,
+                "charge": round(charge, 2),
+                "total": round(charge, 2),
+                "status": "Pending",
+                "smm_order_id": None,
+                "bot": True,
+                "created_at": now,
+            })
+        except Exception as e:
+            logger.warning("[fake-orders] tick failed: %s", e)
+        # Slower cadence than chat — one order every 25-60 seconds.
+        await asyncio.sleep(random.uniform(25, 60))
 
 
 class FakeChatToggleBody(BaseModel):
