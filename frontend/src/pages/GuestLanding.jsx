@@ -5,7 +5,6 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { useLang, LanguagePicker } from "@/context/LanguageContext";
 import GoalNotifier from "@/components/GoalNotifier";
-import TikTokLookupBox from "@/components/TikTokLookupBox";
 
 // Fake "social proof" toasts on first visit — 2 randomised purchase alerts,
 // spaced 6-10s apart so they feel organic.
@@ -79,6 +78,17 @@ export default function GuestLanding() {
           <div className="flex items-center gap-2">
             <LanguagePicker />
             <a
+              href="/tiktok-finder"
+              target="_blank"
+              rel="noreferrer"
+              data-testid="guest-tiktok-finder-btn"
+              title="Look up any TikTok account — by @username or user ID"
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wider text-white bg-black/60 hover:bg-black/80 border border-emerald-500/40 transition"
+            >
+              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="currentColor" aria-hidden><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5.8 20.1a6.34 6.34 0 0 0 10.86-4.43V8.71a8.16 8.16 0 0 0 4.77 1.52V6.78a4.85 4.85 0 0 1-1.84-.09z"/></svg>
+              TikTok Finder
+            </a>
+            <a
               href="https://discord.gg/namelessstore"
               target="_blank"
               rel="noreferrer"
@@ -112,7 +122,6 @@ export default function GuestLanding() {
         <GuestOrdersFeed />
         <div className="space-y-4">
           <GuestWelcome onSignIn={() => setAuthOpen("login")} onSignUp={() => setAuthOpen("signup")} />
-          <TikTokLookupBox />
         </div>
         <GuestPublicChat />
       </main>

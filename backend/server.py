@@ -3008,7 +3008,7 @@ async def _tiktok_public_lookup(handle: str) -> dict:
         signature=user_module.get("signature"),
         nickname=user_module.get("nickname"),
     )
-    return {
+    result = {
         "handle": user_module.get("uniqueId") or h,
         "nickname": user_module.get("nickname"),
         "avatar": user_module.get("avatarLarger") or user_module.get("avatarMedium") or user_module.get("avatarThumb"),
@@ -3028,6 +3028,17 @@ async def _tiktok_public_lookup(handle: str) -> dict:
         "profile_url": f"https://www.tiktok.com/@{h}",
         "detected_country": resolved,
     }
+    # Cache the successful lookup so reverse-by-user-id lookups can serve it.
+    try:
+        if result["user_id"]:
+            await db.tiktok_lookup_cache.update_one(
+                {"user_id": result["user_id"]},
+                {"$set": {**result, "cached_at": datetime.now(timezone.utc).isoformat()}},
+                upsert=True,
+            )
+    except Exception:
+        pass
+    return result
 
 
 _TT_LOOKUP_BUCKET: dict = {}
@@ -3046,6 +3057,60 @@ async def tiktok_lookup(username: str, request: Request):
     hits.append(now)
     _TT_LOOKUP_BUCKET[ip] = hits
     return await _tiktok_public_lookup(username)
+
+
+@api_router.get("/tools/tiktok-lookup-by-id")
+async def tiktok_lookup_by_id(user_id: str, request: Request):
+    """Find the @handle of a TikTok account by its numeric user_id.
+
+    Strategy:
+      1. Check our own cache — every successful handle lookup writes its
+         profile snapshot indexed by user_id.
+      2. If cached but stale (>24h old), re-resolve the handle live so the
+         stats/avatar/verified flag stay current.
+      3. If not cached, we return a helpful 404 explaining the limitation —
+         TikTok doesn't expose a public user_id → handle endpoint without
+         paid signing, so the cache is populated when *anyone* first looks
+         up that handle.
+    """
+    uid = (user_id or "").strip().replace("@", "")
+    if not uid.isdigit() or len(uid) < 6:
+        raise HTTPException(status_code=400, detail="Enter a valid TikTok numeric user ID (e.g. 6656114453... )")
+    # Rate limit
+    ip = ((request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+          or (request.client.host if request.client else "")) or "unknown"
+    now = datetime.now(timezone.utc).timestamp()
+    hits = [t for t in _TT_LOOKUP_BUCKET.get(ip, []) if t > now - 60]
+    if len(hits) >= 30:
+        raise HTTPException(status_code=429, detail="Too many lookups — try again in a minute")
+    hits.append(now)
+    _TT_LOOKUP_BUCKET[ip] = hits
+
+    cached = await db.tiktok_lookup_cache.find_one({"user_id": uid}, {"_id": 0})
+    if not cached:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No account found for user_id {uid}. "
+                "Reverse lookup only works for handles that have been looked up before — "
+                "TikTok doesn't expose a public user_id→username endpoint. "
+                "Try the username tab instead."
+            ),
+        )
+    # Refresh live if we have the handle and cache is stale
+    handle = cached.get("handle")
+    try:
+        cached_at = cached.get("cached_at")
+        stale = True
+        if cached_at:
+            dt = datetime.fromisoformat(str(cached_at).replace("Z", "+00:00"))
+            stale = (datetime.now(timezone.utc) - dt).total_seconds() > 24 * 3600
+        if handle and stale:
+            return await _tiktok_public_lookup(handle)
+    except Exception:
+        pass
+    cached.pop("cached_at", None)
+    return cached
 
 
 async def _tt_probe_html(handle: str, headers: dict) -> Optional[bool]:
@@ -3127,6 +3192,11 @@ class LiveSubCreate(BaseModel):
     # Users kept complaining that "live_only" silently stopped after streams ended and never resumed,
     # so the default is now the dumb-simple strict timer. UI still exposes both.
     mode: str = Field(default="always", pattern="^(always|live_only)$")
+    # For custom-comments services (TikTok / Kick custom comments etc.).
+    # When the selected service has `needs_custom_text=true`, the user pastes one
+    # comment per line. quantity_per_burst MUST equal the number of non-empty
+    # lines — the frontend derives this automatically and the backend enforces it.
+    comments: Optional[str] = Field(default=None, max_length=20000)
 
 
 @client_router.post("/live-sub/create")
@@ -3143,9 +3213,25 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
     if not svc:
         raise HTTPException(status_code=404, detail="Service not available")
     cat = ((svc.get("category") or "") + " " + (svc.get("name") or "")).lower()
-    if "tiktok" not in cat or "live" not in cat:
-        raise HTTPException(status_code=400, detail="Auto-recurring is only available for TikTok Live services.")
+    # Auto-recurring is available for any live-stream service (TikTok Live, Kick Live, etc.).
+    is_live_service = ("tiktok" in cat or "kick" in cat) and "live" in cat
+    if not is_live_service:
+        raise HTTPException(status_code=400, detail="Auto-recurring is only available for TikTok / Kick Live services.")
     smin, smax = int(svc.get("min", 1) or 1), int(svc.get("max", 1_000_000) or 1_000_000)
+    # Custom-comments services: quantity is derived from the number of non-empty lines.
+    needs_custom = bool(svc.get("needs_custom_text"))
+    comments_raw = (body.comments or "").strip() or None
+    if needs_custom:
+        if not comments_raw:
+            raise HTTPException(status_code=400, detail="This service requires custom comments — one per line.")
+        lines = [ln.strip() for ln in comments_raw.split("\n") if ln.strip()]
+        if not lines:
+            raise HTTPException(status_code=400, detail="Enter at least one non-empty comment line.")
+        # Force quantity to match the number of comment lines. Frontend already
+        # derives quantity_per_burst from the line count, but we normalise here
+        # so an out-of-sync client can't cheat the check.
+        body.quantity_per_burst = len(lines)
+        comments_raw = "\n".join(lines)
     if body.quantity_per_burst < smin or body.quantity_per_burst > smax:
         raise HTTPException(status_code=400, detail=f"Quantity must be between {smin} and {smax}")
     rate = float(svc.get("custom_rate", 0))
@@ -3181,6 +3267,8 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
         "ever_live": False,
         "last_live_state": None,
         "created_at": now.isoformat(),
+        "comments": comments_raw,
+        "needs_custom_text": needs_custom,
     }
     await db.live_subscriptions.insert_one(doc.copy())
 
@@ -3232,6 +3320,7 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
                 body.service_id,
                 f"https://www.tiktok.com/@{handle}/live",
                 body.quantity_per_burst,
+                comments=comments_raw,
                 provider_id=svc.get("provider_id"),
             )
             smm_order_id = resp.get("order")
@@ -3252,6 +3341,7 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
                 "created_at": now.isoformat(),
                 "provider_id": svc.get("provider_id"),
                 "subscription_id": doc["id"],
+                "comments": comments_raw,
             })
             await db.transactions.insert_one({
                 "id": str(uuid.uuid4()), "user_id": user.id, "username": user.username,
@@ -3501,7 +3591,7 @@ async def _fire_one_burst(sub: dict, link: str, tag: str = "burst") -> bool:
         logger.info("[livesub] sub %s paused — user balance too low ($%.4f < $%.4f)", sub["id"], balance, charge)
         return False
     try:
-        resp = await place_smm_order(sub["service_id"], link, int(sub["quantity_per_burst"]), provider_id=sub.get("provider_id"))
+        resp = await place_smm_order(sub["service_id"], link, int(sub["quantity_per_burst"]), comments=sub.get("comments"), provider_id=sub.get("provider_id"))
     except Exception as e:
         logger.warning("[livesub] provider order failed for sub=%s (%s): %s", sub["id"], tag, e)
         return False
@@ -3532,6 +3622,7 @@ async def _fire_one_burst(sub: dict, link: str, tag: str = "burst") -> bool:
         "created_at": burst_iso,
         "provider_id": sub.get("provider_id"),
         "burst_tag": tag,
+        "comments": sub.get("comments"),
     })
     await db.live_subscriptions.update_one(
         {"id": sub["id"]},
@@ -9098,6 +9189,284 @@ async def bulk_update(payload: dict, x_admin_token: Optional[str] = Header(None)
 
 
 app.include_router(api_router)
+
+# ============================================================================
+# ============ SMM-PANEL STYLE PUBLIC API (JustAnotherPanel compatible) ======
+# ============================================================================
+# Users can generate a personal API key from the dashboard and drive orders
+# from their own site / bot / script. Same balance / validation rules as the
+# dashboard. Two endpoints:
+#
+#   POST /api/v2   (form-urlencoded OR JSON, JAP style)
+#   GET  /api/v2   (query params — for quick tests)
+#
+# Actions supported (mirrors JAP): balance, services, add, status, multi_status,
+# refill, cancel. Every request needs `key` + `action`.
+# ============================================================================
+from fastapi import Form
+
+async def _api_v2_user_from_key(api_key: str) -> dict:
+    """Look up the user document from an API key. Raises 401 on unknown."""
+    if not api_key or len(api_key) < 16:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    u = await db.users.find_one({"api_key": api_key}, {"_id": 0})
+    if not u:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    if u.get("banned"):
+        raise HTTPException(status_code=403, detail="Account suspended")
+    return u
+
+
+def _gen_api_key() -> str:
+    return secrets.token_hex(24)  # 48-char hex
+
+
+@client_router.get("/api-key")
+async def client_api_key_get(user: CurrentUser = Depends(current_user_dep)):
+    """Return the caller's API key. Lazily generates one on first request."""
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "api_key": 1})
+    key = (u or {}).get("api_key")
+    if not key:
+        key = _gen_api_key()
+        await db.users.update_one({"id": user.id}, {"$set": {"api_key": key, "api_key_created_at": datetime.now(timezone.utc).isoformat()}})
+    return {"api_key": key, "endpoint": "/api/v2"}
+
+
+@client_router.post("/api-key/regenerate")
+async def client_api_key_regenerate(user: CurrentUser = Depends(current_user_dep)):
+    """Rotate the API key. Any script using the old key stops working immediately."""
+    key = _gen_api_key()
+    await db.users.update_one(
+        {"id": user.id},
+        {"$set": {"api_key": key, "api_key_created_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"api_key": key, "endpoint": "/api/v2"}
+
+
+async def _api_v2_dispatch(params: dict) -> dict:
+    """Core dispatcher. `params` already parsed from either form or JSON body."""
+    key = (params.get("key") or "").strip()
+    action = (params.get("action") or "").strip().lower()
+    if not action:
+        raise HTTPException(status_code=400, detail={"error": "action is required"})
+    u = await _api_v2_user_from_key(key)
+
+    # ---- balance --------------------------------------------------------
+    if action == "balance":
+        bal = await _get_user_balance(u["id"])
+        return {"balance": f"{bal:.4f}", "currency": "USD"}
+
+    # ---- services -------------------------------------------------------
+    if action == "services":
+        cur = db.curated_services.find({"enabled": True}, {"_id": 0})
+        out = []
+        async for s in cur:
+            rate = float(s.get("custom_rate", 0) or 0)
+            out.append({
+                "service": int(s.get("service_id")),
+                "name": s.get("custom_name") or s.get("name") or "",
+                "type": "Default",
+                "category": s.get("category") or "",
+                "rate": f"{rate:.4f}",
+                "min": str(int(s.get("min", 1) or 1)),
+                "max": str(int(s.get("max", 100000) or 100000)),
+                "refill": bool(s.get("refill", False)),
+                "cancel": bool(s.get("cancel", False)),
+                "dripfeed": bool(s.get("dripfeed", False)),
+                "needs_custom_text": bool(s.get("needs_custom_text", False)),
+            })
+        return out
+
+    # ---- add ------------------------------------------------------------
+    if action == "add":
+        try:
+            service_id = int(params.get("service"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail={"error": "service is required (integer)"})
+        link = (params.get("link") or "").strip()
+        if not link or len(link) < 4:
+            raise HTTPException(status_code=400, detail={"error": "link is required"})
+        # comments-only services: quantity derived from comment lines
+        svc = await db.curated_services.find_one({"service_id": service_id, "enabled": True}, {"_id": 0})
+        if not svc:
+            raise HTTPException(status_code=404, detail={"error": "service not available"})
+        needs_custom = bool(svc.get("needs_custom_text"))
+        comments = (params.get("comments") or "").strip() or None
+        try:
+            quantity = int(params.get("quantity") or 0)
+        except (TypeError, ValueError):
+            quantity = 0
+        if needs_custom:
+            if not comments:
+                raise HTTPException(status_code=400, detail={"error": "comments required — one per line"})
+            lines = [ln.strip() for ln in comments.split("\n") if ln.strip()]
+            if not lines:
+                raise HTTPException(status_code=400, detail={"error": "at least one non-empty comment line required"})
+            comments = "\n".join(lines)
+            quantity = len(lines)  # line count IS the quantity
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail={"error": "quantity must be > 0"})
+
+        is_manual = bool(svc.get("manual"))
+        if is_manual:
+            charge = round(float(svc.get("price_flat") or 0), 2)
+            if charge <= 0:
+                raise HTTPException(status_code=400, detail={"error": "service price not set"})
+        else:
+            rate = float(svc.get("custom_rate", 0) or 0)
+            if rate <= 0:
+                raise HTTPException(status_code=400, detail={"error": "service price not set"})
+            smin, smax = int(svc.get("min", 1) or 1), int(svc.get("max", 100000) or 100000)
+            if quantity < smin or quantity > smax:
+                raise HTTPException(status_code=400, detail={"error": f"quantity must be between {smin} and {smax}"})
+            charge = round((rate * quantity) / 1000.0, 4)
+
+        bal = await _get_user_balance(u["id"])
+        if bal < charge:
+            raise HTTPException(status_code=402, detail={"error": f"not enough balance — need ${charge:.4f}, have ${bal:.4f}"})
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        order_uuid = str(uuid.uuid4())
+
+        if is_manual:
+            await db.transactions.insert_one({
+                "id": str(uuid.uuid4()), "user_id": u["id"], "username": u.get("username"),
+                "amount": -charge, "method": "balance", "status": "approved",
+                "type": "order", "service_id": service_id,
+                "created_at": now_iso, "approved_at": now_iso,
+            })
+            await db.orders.insert_one({
+                "id": order_uuid, "smm_order_id": None,
+                "service_id": service_id, "service_name": svc.get("custom_name") or svc.get("name") or "",
+                "link": link, "quantity": quantity, "charge": charge,
+                "customer_email": "", "user_id": u["id"], "username": u.get("username"),
+                "payment_method": "balance", "source": "api",
+                "status": "awaiting_manual_fulfillment", "manual": True,
+                "created_at": now_iso, "comments": comments, "provider_id": None,
+            })
+            return {"order": order_uuid, "manual": True, "charge": f"{charge:.4f}"}
+
+        try:
+            smm_resp = await place_smm_order(service_id, link, quantity, comments=comments, provider_id=svc.get("provider_id"))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail={"error": f"provider error: {e}"})
+        smm_order_id = smm_resp.get("order")
+        if not smm_order_id:
+            raise HTTPException(status_code=502, detail={"error": f"provider error: {smm_resp.get('error') or smm_resp}"})
+
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()), "user_id": u["id"], "username": u.get("username"),
+            "amount": -charge, "method": "balance", "status": "approved",
+            "type": "order", "service_id": service_id,
+            "created_at": now_iso, "approved_at": now_iso,
+        })
+        await db.orders.insert_one({
+            "id": order_uuid, "smm_order_id": smm_order_id,
+            "service_id": service_id, "service_name": svc.get("custom_name") or svc.get("name") or "",
+            "link": link, "quantity": quantity, "charge": charge,
+            "customer_email": "", "user_id": u["id"], "username": u.get("username"),
+            "payment_method": "balance", "source": "api",
+            "status": "Pending",
+            "created_at": now_iso, "comments": comments,
+            "provider_id": svc.get("provider_id"),
+        })
+        return {"order": smm_order_id, "charge": f"{charge:.4f}"}
+
+    # ---- status / multi_status -----------------------------------------
+    if action in ("status", "multi_status"):
+        ids_raw = params.get("orders") or params.get("order")
+        if not ids_raw:
+            raise HTTPException(status_code=400, detail={"error": "order(s) is required"})
+        ids = [x.strip() for x in str(ids_raw).replace("|", ",").split(",") if x.strip()]
+        results = {}
+        for oid in ids:
+            # Look up by internal uuid OR by smm_order_id
+            row = await db.orders.find_one(
+                {"$or": [{"id": oid}, {"smm_order_id": oid}, {"smm_order_id": int(oid) if oid.isdigit() else oid}], "user_id": u["id"]},
+                {"_id": 0, "id": 1, "smm_order_id": 1, "status": 1, "charge": 1, "quantity": 1, "provider_id": 1, "service_id": 1},
+            )
+            if not row:
+                results[oid] = {"error": "not found"}
+                continue
+            # If we have a real provider order id, query the provider for a fresh status.
+            fresh_status = row.get("status") or "Pending"
+            remains = None
+            if row.get("smm_order_id"):
+                try:
+                    r = await smm_request({"action": "status", "order": row["smm_order_id"]}, provider_id=row.get("provider_id"))
+                    if isinstance(r, dict):
+                        if r.get("status"):
+                            fresh_status = r.get("status")
+                        if r.get("remains") is not None:
+                            remains = r.get("remains")
+                except Exception:
+                    pass
+            results[oid] = {
+                "charge": f"{float(row.get('charge') or 0):.4f}",
+                "start_count": None,
+                "status": fresh_status,
+                "remains": remains,
+                "currency": "USD",
+                "order": row.get("smm_order_id") or row.get("id"),
+            }
+        if action == "status" and len(ids) == 1:
+            return results[ids[0]]
+        return results
+
+    # ---- cancel / refill -----------------------------------------------
+    if action in ("cancel", "refill"):
+        ids_raw = params.get("orders") or params.get("order")
+        if not ids_raw:
+            raise HTTPException(status_code=400, detail={"error": "order(s) is required"})
+        ids = [x.strip() for x in str(ids_raw).replace("|", ",").split(",") if x.strip()]
+        out = {}
+        for oid in ids:
+            row = await db.orders.find_one(
+                {"$or": [{"id": oid}, {"smm_order_id": oid}], "user_id": u["id"]},
+                {"_id": 0, "smm_order_id": 1, "provider_id": 1},
+            )
+            if not row or not row.get("smm_order_id"):
+                out[oid] = {"error": "not found"}
+                continue
+            try:
+                r = await smm_request({"action": action, "order": row["smm_order_id"]}, provider_id=row.get("provider_id"))
+                out[oid] = r
+            except Exception as e:
+                out[oid] = {"error": str(e)[:120]}
+        if len(ids) == 1:
+            return out[ids[0]]
+        return out
+
+    raise HTTPException(status_code=400, detail={"error": f"unknown action '{action}'"})
+
+
+@app.post("/api/v2")
+async def api_v2_post(request: Request):
+    """JAP-style endpoint. Accepts form-urlencoded OR JSON body."""
+    ctype = (request.headers.get("content-type") or "").lower()
+    params: dict = {}
+    if "application/json" in ctype:
+        try:
+            params = await request.json() or {}
+        except Exception:
+            params = {}
+    else:
+        form = await request.form()
+        params = {k: (v if isinstance(v, str) else str(v)) for k, v in form.items()}
+    # Fallback: also accept query params
+    for k, v in request.query_params.items():
+        params.setdefault(k, v)
+    return await _api_v2_dispatch(params)
+
+
+@app.get("/api/v2")
+async def api_v2_get(request: Request):
+    """Convenience: GET /api/v2?key=...&action=balance for quick tests."""
+    params = {k: v for k, v in request.query_params.items()}
+    return await _api_v2_dispatch(params)
+
+
+
 
 # Auth/chat/client/ai routers were imported at the top
 app.include_router(auth_router)

@@ -1,6 +1,34 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 49 · Custom-comments UX + Auto-Live comments + Client API + TikTok Finder page)
+
+**Custom-comments quantity is now auto-derived from line count**
+- On the Buy page, when the selected service has `needs_custom_text=true`:
+  - The Quantity input is hidden. The number of non-empty lines in the comments textarea IS the quantity.
+  - A live "QUANTITY = N lines" badge appears above the textarea. Total price recomputes automatically (`rate × lines / 1000`).
+- Backend `POST /api/client/live-sub/create`, `POST /api/checkout`, `POST /api/client/order-with-balance`, `POST /api/client/orders/multi`, and `POST /api/v2 action=add` all enforce the same rule: for `needs_custom_text` services, `quantity = count of non-empty comment lines`. Any mismatch from the client is normalised server-side.
+
+**Auto-Live custom comments (TikTok + Kick Live)**
+- `LiveSubCreate` now accepts a `comments: Optional[str]` field. Comments are stored on the `live_subscriptions` document and re-used on every burst (`_fire_one_burst` passes them to `place_smm_order`).
+- Frontend Auto-Live setup panel reads the same textarea used by single-order flow. When the service needs custom text, a "📝 Custom comments mode" note shows on the setup panel with the line count.
+- The Auto-Live gate now also allows Kick Live services (`("tiktok" in cat or "kick" in cat) and "live" in cat`).
+
+**JAP-compatible client API — `/api/v2`**
+- Dashboard sidebar → "API" tab. Users get a personal API key (48-char hex) they can copy, reveal, or regenerate.
+- Fully compatible with JustAnotherPanel / SMMcost API clients. Actions: `balance`, `services`, `add`, `status`, `multi_status`, `cancel`, `refill`.
+- Same balance / validation / needs_custom_text rules as the dashboard order flow. Orders placed via API are tagged `source="api"`.
+- Endpoints: `GET/POST /api/v2` (form-urlencoded or JSON), `GET /api/client/api-key`, `POST /api/client/api-key/regenerate`.
+
+**TikTok Finder — dedicated `/tiktok-finder` page**
+- Lives at its own route (opens in a new tab from the marketing landing header).
+- Two lookup modes:
+  - **@username** → live scrape of the public `/@handle` page (existing behaviour, unchanged).
+  - **User ID** → cache-based reverse lookup. Every successful handle lookup writes to `tiktok_lookup_cache`; the reverse endpoint (`GET /api/tools/tiktok-lookup-by-id`) serves from that cache and re-scrapes if stale (>24h). Returns a friendly 404 when the id was never cached (TikTok doesn't expose a public user_id→username endpoint without paid signing).
+- Nav entries: `nav-tiktok-finder` in desktop nav bar + `header-tiktok-finder-btn` pill for mobile/tablet.
+- New sec_uid + copy-to-clipboard for user_id and sec_uid. Rate limit still 30/min per IP.
+
+
 ## Recent Updates (Feb 2026 — Iteration 48 · Fake orders + own-code country resolver)
 
 **Fake orders paired with the fake-chat toggle**

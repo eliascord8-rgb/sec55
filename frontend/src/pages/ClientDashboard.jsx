@@ -453,6 +453,7 @@ export default function ClientDashboard() {
   // in the mobile drawer.
   const secondaryTabs = [
     { id: "invoices", label: t("nav_invoices"), testId: "nav-invoices", badge: unpaidInvoices },
+    { id: "api", label: "API", testId: "nav-api" },
     { id: "help", label: t("nav_help"), testId: "nav-help" },
     { id: "messages", label: t("nav_messages"), testId: "nav-messages", badge: unreadDms },
     { id: "tickets", label: t("nav_tickets"), testId: "nav-tickets", badge: unreadTickets },
@@ -986,6 +987,7 @@ export default function ClientDashboard() {
                 <InvoicesView authedApi={authedApi} reloadBalance={loadBalance} />
               )}
               {view === "help" && <HelpCenterView onOpenAI={openAI} />}
+              {view === "api" && <ApiKeyView authedApi={authedApi} />}
               {view === "settings" && <SettingsView authedApi={authedApi} user={user} />}
               {view === "security" && <SecurityView authedApi={authedApi} user={user} />}
               {view === "redeem" && (
@@ -3102,6 +3104,16 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
   // Repeat-order flow
   const [repeating, setRepeating] = useState(false);
 
+  // Auto-sync qty with the number of non-empty comment lines whenever the
+  // selected service needs custom text. Users don't manually enter a quantity
+  // for custom-comment services — the line count IS the quantity.
+  useEffect(() => {
+    if (selected && selected.needs_custom_text) {
+      const lines = comments.split("\n").filter((l) => l.trim()).length;
+      setQty(lines);
+    }
+  }, [comments, selected]);
+
   const loadBulkLists = async () => {
     try {
       const r = await authedApi().get("/client/bulk-lists");
@@ -3163,7 +3175,12 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
   const subscribe = async () => {
     if (!selected) return;
     if (!subUsername.trim()) { toast.error("Enter the TikTok @username"); return; }
-    if (qty < (selected.min || 1)) { toast.error(`Minimum quantity is ${selected.min}`); return; }
+    if (selected.needs_custom_text) {
+      const nLines = comments.split("\n").filter((l) => l.trim()).length;
+      if (nLines < 1) { toast.error("Enter at least one comment line — line count is the quantity"); return; }
+    } else if (qty < (selected.min || 1)) {
+      toast.error(`Minimum quantity is ${selected.min}`); return;
+    }
     setSubSubmitting(true);
     try {
       const r = await authedApi().post("/client/live-sub/create", {
@@ -3173,6 +3190,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
         duration_days: subDays,
         repeat_every_minutes: subRepeatMins,
         mode: subFireMode,
+        comments: selected.needs_custom_text ? comments.trim() : undefined,
       });
       const firstNote = r.data.first_order_id ? ` — first order #${r.data.first_order_id} placed now.` : "";
       toast.success(`✅ Auto-live activated for @${r.data.subscription.tiktok_username} (${subDays} days, every ${subRepeatMins} min)${firstNote}`);
@@ -3255,7 +3273,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
   const bulkTargetList = parseBulkTargets();
   const bulkTotal = selected && qty ? (Number(selected.rate) * Number(qty) * bulkTargetList.length) / 1000 : 0;
   const canBulkBuy = selected && qty >= (selected.min || 1) && qty <= (selected.max || 1e9) && bulkTargetList.length >= 1 && bulkTotal <= balance && commentsOk;
-  const isTiktokService = selected && /tiktok/i.test((selected.category || "") + " " + (selected.name || ""));
+  const isTiktokService = selected && /tiktok|kick/i.test((selected.category || "") + " " + (selected.name || ""));
 
   const placeBulk = async () => {
     if (!selected) return;
@@ -3651,7 +3669,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
             </button>
           </div>
 
-          <div className="grid sm:grid-cols-2 gap-3">
+          <div className={`grid ${needsComments ? "grid-cols-1" : "sm:grid-cols-2"} gap-3`}>
             <div>
               <Label className="text-[11px] uppercase tracking-wider text-white/60">Target link</Label>
               <Input
@@ -3662,40 +3680,48 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                 className="bg-[#1a1525] border-white/10 mt-1"
               />
             </div>
-            <div>
-              <Label className="text-[11px] uppercase tracking-wider text-white/60">
-                Quantity ({selected.min}–{selected.max})
-              </Label>
-              <Input
-                data-testid="buy-qty"
-                type="number"
-                value={qty || ""}
-                onChange={(e) => setQty(e.target.value)}
-                min={selected.min}
-                max={selected.max}
-                className="bg-[#1a1525] border-white/10 mt-1"
-              />
-            </div>
+            {!needsComments && (
+              <div>
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">
+                  Quantity ({selected.min}–{selected.max})
+                </Label>
+                <Input
+                  data-testid="buy-qty"
+                  type="number"
+                  value={qty || ""}
+                  onChange={(e) => setQty(e.target.value)}
+                  min={selected.min}
+                  max={selected.max}
+                  className="bg-[#1a1525] border-white/10 mt-1"
+                />
+              </div>
+            )}
           </div>
 
           {needsComments && (
             <div data-testid="buy-comments-block" className="bg-amber-500/10 border border-amber-500/40 rounded-sm p-4 space-y-2">
-              <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-amber-300 font-bold">
-                Custom comments required
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="text-xs uppercase tracking-wider text-amber-300 font-bold">
+                  Custom comments — one per line
+                </div>
+                <div className="text-[11px] uppercase tracking-widest text-amber-200/80 font-black" data-testid="buy-comments-qty-derived">
+                  Quantity = <span className="text-white text-sm">{qty || 0}</span> line{qty !== 1 ? "s" : ""}
+                </div>
               </div>
               <Label className="text-[11px] text-white/70">
-                Enter your comments — one per line. We'll post {qty || 0} comment{qty !== 1 ? "s" : ""}, picking from this list.
+                Each non-empty line counts as one comment. No separate quantity field — the number of lines IS the quantity we&apos;ll post.
               </Label>
               <textarea
                 data-testid="buy-comments"
                 value={comments}
                 onChange={(e) => setComments(e.target.value.slice(0, 5000))}
-                rows={5}
-                placeholder={"great post!\nlove this 🔥\nawesome content"}
+                rows={6}
+                placeholder={"great post!\nlove this 🔥\nawesome content\nkeep going king\n@friend check this out"}
                 className="w-full bg-[#1a1525] border border-white/10 rounded-sm px-3 py-2 text-sm font-mono text-white outline-none focus:border-[#FF007F]"
               />
-              <div className="text-[10px] text-white/40">
-                {comments.split("\n").filter((l) => l.trim()).length} non-empty line(s) · {comments.length}/5000 chars
+              <div className="text-[10px] text-white/40 flex items-center justify-between flex-wrap gap-1">
+                <span>{comments.split("\n").filter((l) => l.trim()).length} non-empty line(s) · {comments.length}/5000 chars</span>
+                <span>Min {selected.min} · Max {selected.max}</span>
               </div>
             </div>
           )}
@@ -3898,6 +3924,11 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
               <div className="text-[11px] text-fuchsia-200/70 bg-black/30 rounded-md px-3 py-2">
                 Charged <span className="text-fuchsia-300 font-bold font-mono">${(Number(selected?.rate || 0) * Number(qty || 0) / 1000).toFixed(4)}</span> per burst · Expected max bursts: <span className="text-fuchsia-300 font-bold font-mono">{Math.max(1, Math.floor((subDays * 24 * 60) / subRepeatMins))}</span>{subFireMode === "live_only" ? " if live 24/7." : "."} Balance is debited each burst.
               </div>
+              {selected?.needs_custom_text && (
+                <div className="text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2" data-testid="buy-sub-comments-note">
+                  📝 <b>Custom comments mode.</b> Every burst will post the <span className="font-mono text-amber-100">{qty || 0}</span> comment line{qty !== 1 ? "s" : ""} you entered above. Add or remove lines to change the quantity per burst.
+                </div>
+              )}
               <button
                 onClick={subscribe}
                 disabled={subSubmitting || !subUsername.trim() || !qty}
@@ -4880,3 +4911,165 @@ function WithdrawView({ authedApi, balance, withdrawable, reloadBalance }) {
     </div>
   );
 }
+
+// ============================================================================
+// API Access View — SMM-panel style (JAP-compatible)
+// Users get a personal API key + curl examples so they can drive orders from
+// their own site / bot / script. Same balance and validation rules as the
+// dashboard order flow.
+// ============================================================================
+function ApiKeyView({ authedApi }) {
+  const [apiKey, setApiKey] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [rotating, setRotating] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+
+  const endpoint = `${(process.env.REACT_APP_BACKEND_URL || "").replace(/\/$/, "")}/api/v2`;
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await authedApi().get("/client/api-key");
+      setApiKey(r.data.api_key || "");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load API key");
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const regenerate = async () => {
+    if (!window.confirm("Regenerate your API key? Any script using the old key will stop working immediately.")) return;
+    setRotating(true);
+    try {
+      const r = await authedApi().post("/client/api-key/regenerate");
+      setApiKey(r.data.api_key || "");
+      setRevealed(true);
+      toast.success("New API key generated");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to regenerate");
+    } finally { setRotating(false); }
+  };
+
+  const copy = (val, label) => {
+    if (!val) return;
+    try { navigator.clipboard.writeText(String(val)); toast.success(`${label} copied`); } catch { /* noop */ }
+  };
+
+  const masked = apiKey ? `${apiKey.slice(0, 6)}${"•".repeat(20)}${apiKey.slice(-4)}` : "";
+  const shown = revealed ? apiKey : masked;
+
+  const curlBalance = `curl -X POST "${endpoint}" \\\n  -d "key=${revealed ? apiKey : "YOUR_API_KEY"}" \\\n  -d "action=balance"`;
+  const curlServices = `curl -X POST "${endpoint}" \\\n  -d "key=${revealed ? apiKey : "YOUR_API_KEY"}" \\\n  -d "action=services"`;
+  const curlAdd = `curl -X POST "${endpoint}" \\\n  -d "key=${revealed ? apiKey : "YOUR_API_KEY"}" \\\n  -d "action=add" \\\n  -d "service=1234" \\\n  -d "link=https://tiktok.com/@user" \\\n  -d "quantity=1000"`;
+  const curlAddComments = `curl -X POST "${endpoint}" \\\n  -d "key=${revealed ? apiKey : "YOUR_API_KEY"}" \\\n  -d "action=add" \\\n  -d "service=5678" \\\n  -d "link=https://tiktok.com/@user/live" \\\n  --data-urlencode "comments=great post!\nlove this\nkeep going"`;
+  const curlStatus = `curl -X POST "${endpoint}" \\\n  -d "key=${revealed ? apiKey : "YOUR_API_KEY"}" \\\n  -d "action=status" \\\n  -d "order=12345"`;
+
+  return (
+    <div className="space-y-6" data-testid="api-view">
+      <div>
+        <h2 className="font-display font-black text-3xl md:text-4xl leading-tight">API Access</h2>
+        <p className="text-sm text-white/60 mt-1">
+          Drive orders from your own site or bot using our SMM-panel API — <span className="text-emerald-300 font-bold">100% compatible</span> with JustAnotherPanel / SMMcost / any standard panel API client.
+        </p>
+      </div>
+
+      {/* API Key card */}
+      <div className="rounded-2xl border border-emerald-500/25 bg-gradient-to-br from-emerald-500/10 via-[#0e2f18]/70 to-[#0a1a0a]/70 p-5 md:p-6 space-y-4 backdrop-blur">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-emerald-300 font-black mb-0.5">Your API Key</div>
+            <div className="text-xs text-white/60">Treat this like a password. Anyone with it can place orders against your balance.</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setRevealed((v) => !v)}
+              data-testid="api-toggle-reveal"
+              className="px-3 py-2 rounded-md bg-black/40 border border-emerald-500/25 hover:border-emerald-400 text-emerald-200 text-[11px] font-black uppercase tracking-widest"
+            >
+              {revealed ? "Hide" : "Reveal"}
+            </button>
+            <button
+              onClick={() => copy(apiKey, "API key")}
+              disabled={!apiKey}
+              data-testid="api-copy-key"
+              className="px-3 py-2 rounded-md bg-emerald-400 hover:bg-emerald-300 text-black text-[11px] font-black uppercase tracking-widest disabled:opacity-40"
+            >
+              Copy
+            </button>
+            <button
+              onClick={regenerate}
+              disabled={rotating}
+              data-testid="api-regenerate"
+              className="px-3 py-2 rounded-md bg-red-500/20 border border-red-500/40 hover:bg-red-500/30 text-red-200 text-[11px] font-black uppercase tracking-widest inline-flex items-center gap-1.5 disabled:opacity-40"
+            >
+              {rotating ? "Rotating…" : "Regenerate"}
+            </button>
+          </div>
+        </div>
+        <div className="font-mono text-sm bg-black/50 border border-emerald-500/20 rounded-md px-3 py-3 break-all" data-testid="api-key-value">
+          {loading ? "Loading…" : (shown || "—")}
+        </div>
+
+        <div className="grid sm:grid-cols-2 gap-3 pt-2">
+          <div className="rounded-md bg-black/30 border border-white/5 p-3">
+            <div className="text-[10px] uppercase tracking-widest text-white/40 mb-1">Endpoint</div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="font-mono text-xs text-emerald-200 truncate" data-testid="api-endpoint">{endpoint}</div>
+              <button onClick={() => copy(endpoint, "Endpoint")} className="text-[10px] uppercase tracking-widest text-white/50 hover:text-white">copy</button>
+            </div>
+          </div>
+          <div className="rounded-md bg-black/30 border border-white/5 p-3">
+            <div className="text-[10px] uppercase tracking-widest text-white/40 mb-1">Method</div>
+            <div className="font-mono text-xs text-emerald-200">POST (form-urlencoded or JSON)</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Actions reference */}
+      <div className="rounded-2xl border border-white/10 bg-black/30 p-5 md:p-6 space-y-4">
+        <h3 className="font-display font-black text-xl">Actions</h3>
+        <ActionRow name="balance" args="key, action=balance" desc="Returns the account balance." curl={curlBalance} onCopy={(v) => copy(v, "curl")} />
+        <ActionRow name="services" args="key, action=services" desc="Returns all enabled services with rate, min, max." curl={curlServices} onCopy={(v) => copy(v, "curl")} />
+        <ActionRow name="add" args="key, action=add, service, link, quantity" desc="Place a new order. Debits balance. Returns { order }." curl={curlAdd} onCopy={(v) => copy(v, "curl")} />
+        <ActionRow
+          name="add (custom comments)"
+          args="key, action=add, service, link, comments"
+          desc={<>For services with <code className="text-amber-300">needs_custom_text=true</code>, pass <b>comments</b> (one per line) — quantity is auto-derived from the line count.</>}
+          curl={curlAddComments}
+          onCopy={(v) => copy(v, "curl")}
+        />
+        <ActionRow name="status" args="key, action=status, order" desc="Returns { status, charge, remains, currency }." curl={curlStatus} onCopy={(v) => copy(v, "curl")} />
+        <ActionRow name="multi_status" args="key, action=multi_status, orders" desc={<>Batch status. <code>orders</code> is a comma-separated list of order IDs.</>} curl={null} onCopy={(v) => copy(v, "curl")} />
+        <ActionRow name="cancel / refill" args="key, action=cancel|refill, order" desc="Passthrough to the upstream provider — availability depends on the service." curl={null} onCopy={(v) => copy(v, "curl")} />
+      </div>
+
+      <div className="text-[11px] text-white/40 text-center">
+        Response format matches the JustAnotherPanel (JAP) API spec. Same client libraries work out of the box — just swap the endpoint and key.
+      </div>
+    </div>
+  );
+}
+
+function ActionRow({ name, args, desc, curl, onCopy }) {
+  return (
+    <div className="rounded-md bg-[#0d0a14] border border-white/5 p-3 space-y-2" data-testid={`api-action-${name.replace(/[^a-z0-9]/gi, "-")}`}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="font-mono text-sm text-emerald-300 font-black">{name}</span>
+        <span className="text-[10px] uppercase tracking-widest text-white/40">→ {args}</span>
+      </div>
+      <div className="text-xs text-white/70">{desc}</div>
+      {curl && (
+        <div className="relative">
+          <pre className="bg-black/60 border border-white/5 rounded-md p-3 text-[11px] text-emerald-200 font-mono overflow-x-auto whitespace-pre">{curl}</pre>
+          <button
+            onClick={() => onCopy(curl)}
+            className="absolute top-2 right-2 text-[9px] uppercase tracking-widest bg-black/70 border border-emerald-500/30 hover:border-emerald-400 text-emerald-200 px-2 py-1 rounded font-black"
+          >
+            Copy
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
