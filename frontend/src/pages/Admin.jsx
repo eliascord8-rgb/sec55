@@ -3294,6 +3294,87 @@ function DiscordBotControl({ token }) {
             </button>
           </div>
         </div>
+
+        <DiscordOAuthConfigForm token={token} />
+      </div>
+    </div>
+  );
+}
+
+function DiscordOAuthConfigForm({ token }) {
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [redirect, setRedirect] = useState("");
+  const [saved, setSaved] = useState({ id: false, secret: false });
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await adminApi(token).get("/admin/discord/oauth-config");
+        setSaved({ id: !!r.data.client_id_set, secret: !!r.data.client_secret_set });
+        if (r.data.redirect_uri) setRedirect(r.data.redirect_uri);
+      } catch { /* ignore */ }
+    })();
+  }, [token]);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const payload = {};
+      if (clientId.trim()) payload.oauth_client_id = clientId.trim();
+      if (clientSecret.trim()) payload.oauth_client_secret = clientSecret.trim();
+      if (redirect.trim()) payload.oauth_redirect_uri = redirect.trim();
+      if (Object.keys(payload).length === 0) { toast.error("Nothing to save"); setBusy(false); return; }
+      await adminApi(token).post("/admin/discord/oauth-config", payload);
+      toast.success("Discord OAuth saved");
+      setClientId(""); setClientSecret("");
+      const r = await adminApi(token).get("/admin/discord/oauth-config");
+      setSaved({ id: !!r.data.client_id_set, secret: !!r.data.client_secret_set });
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Save failed");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="pt-4 border-t border-white/5" data-testid="discord-oauth-config">
+      <div className="flex items-center gap-2 mb-2">
+        <h3 className="font-display font-bold text-sm uppercase tracking-wider">Discord OAuth (Login with Discord)</h3>
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/50">Optional</span>
+      </div>
+      <p className="text-[11px] text-white/50 mb-3">Lets users sign in with Discord. Get these from Discord Developer Portal → OAuth2.</p>
+
+      <div className="grid gap-2">
+        <label className="text-[10px] uppercase tracking-wider text-white/50">
+          Client ID {saved.id && <span className="text-emerald-300 normal-case">· saved</span>}
+        </label>
+        <input value={clientId} onChange={(e) => setClientId(e.target.value)}
+               placeholder={saved.id ? "•••••••••••••••• (change)" : "1500249645354450984"}
+               data-testid="discord-oauth-client-id"
+               className="bg-black/40 border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-emerald-400" />
+
+        <label className="text-[10px] uppercase tracking-wider text-white/50 mt-2">
+          Client Secret {saved.secret && <span className="text-emerald-300 normal-case">· saved</span>}
+        </label>
+        <input type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)}
+               placeholder={saved.secret ? "•••••••••••••••• (change)" : "paste new Client Secret"}
+               data-testid="discord-oauth-client-secret"
+               className="bg-black/40 border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-emerald-400" />
+
+        <label className="text-[10px] uppercase tracking-wider text-white/50 mt-2">Redirect URI</label>
+        <input value={redirect} onChange={(e) => setRedirect(e.target.value)}
+               placeholder="https://better-social.pro/api/discord/oauth/callback"
+               data-testid="discord-oauth-redirect"
+               className="bg-black/40 border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-emerald-400" />
+        <p className="text-[10px] text-white/40 -mt-1">Must exactly match a Redirect URI in Discord Portal → OAuth2 → Redirects.</p>
+
+        <div>
+          <button onClick={save} disabled={busy}
+                  data-testid="discord-oauth-save"
+                  className="mt-2 px-4 py-1.5 bg-[#5865F2] hover:bg-[#4752c4] text-white rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-50">
+            {busy ? "Saving…" : "Save Discord OAuth"}
+          </button>
+        </div>
       </div>
     </div>
   );
