@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Search, CheckCircle2, Globe, Calendar, Users, Heart, Video, ExternalLink, Loader2, Lock, Copy, Music2, Hash, AtSign, ArrowLeft } from "lucide-react";
+import { Search, CheckCircle2, Globe, Calendar, Users, Heart, Video, ExternalLink, Loader2, Lock, Copy, Music2, Hash, AtSign, ArrowLeft, MessageCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -74,6 +74,16 @@ export default function TikTokFinder() {
             </span>
           </div>
           <div className="flex-1" />
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent("bs-open-community-chat"))}
+            data-testid="tt-finder-open-livechat"
+            title="Open live community chat"
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black text-[11px] font-black uppercase tracking-widest shadow-lg shadow-emerald-500/40 transition"
+          >
+            <MessageCircle className="w-4 h-4" strokeWidth={2.5} />
+            Live chat
+          </button>
           <span className="hidden sm:inline text-[10px] uppercase tracking-widest text-emerald-300/70 font-bold">Powered by Better Social</span>
         </div>
       </header>
