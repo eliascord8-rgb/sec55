@@ -3488,6 +3488,7 @@ function DiscordPurchaseChannelPanel({ token }) {
     try {
       await adminApi(token).post("/admin/discord-purchase-config", {
         purchase_channel_id: cfg.purchase_channel_id,
+        purchase_guild_id: cfg.purchase_guild_id,
         purchase_notify_enabled: cfg.purchase_notify_enabled,
       });
       toast.success("Purchase channel saved");
@@ -3532,7 +3533,20 @@ function DiscordPurchaseChannelPanel({ token }) {
       </div>
 
       <div className="grid md:grid-cols-3 gap-4 mb-4">
-        <div className="md:col-span-2">
+        <div>
+          <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">Server (Guild) ID</label>
+          <input
+            data-testid="discord-purchase-guild-id"
+            value={cfg.purchase_guild_id || ""}
+            onChange={(e) => setCfg({ ...cfg, purchase_guild_id: e.target.value.trim() })}
+            placeholder="e.g. 1477630408404373604"
+            className="w-full bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm font-mono"
+          />
+          <p className="text-[10px] text-white/40 mt-1">
+            Right-click your server icon → <span className="text-white/70">Copy Server ID</span>. Without this the bot can't find the channel across multiple guilds.
+          </p>
+        </div>
+        <div>
           <label className="block text-xs uppercase tracking-wider text-white/50 font-bold mb-1">Channel ID</label>
           <input
             data-testid="discord-purchase-channel-id"
@@ -3542,7 +3556,7 @@ function DiscordPurchaseChannelPanel({ token }) {
             className="w-full bg-[#0d0a14] border border-white/10 rounded px-3 py-2 text-sm font-mono"
           />
           <p className="text-[10px] text-white/40 mt-1">
-            Right-click a Discord channel → <span className="text-white/70">Copy Channel ID</span> (Developer Mode must be on).
+            Right-click a channel → <span className="text-white/70">Copy Channel ID</span> (Developer Mode must be on).
             Default: <code>{cfg.default_channel_id}</code>
           </p>
         </div>

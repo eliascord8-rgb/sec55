@@ -136,14 +136,11 @@ class DiscordBotManager:
                 except Exception as e:
                     logger.warning("[discord] mod delete failed: %s", e)
                 return
-            # --- simple mod commands (admins only, prefix $) ---
-            if message.content.startswith("$") and message.guild:
-                await mgr._handle_mod_command(message)
-                return
-            # --- legacy ! prefix still works as an alias ---
-            if message.content.startswith("!") and message.guild:
-                # Rewrite the leading "!" to "$" and dispatch through the same handler.
-                message.content = "$" + message.content[1:]
+            # --- moderation commands (admins only, prefix % — also $ and ! as aliases) ---
+            first = (message.content or "")[:1]
+            if first in ("%", "$", "!") and message.guild:
+                # Normalise every prefix to % for the handler so aliasing is transparent.
+                message.content = "%" + message.content[1:]
                 await mgr._handle_mod_command(message)
                 return
 
@@ -194,51 +191,51 @@ class DiscordBotManager:
         if self.status != "running" or not self.client or not self.client.user:
             raise RuntimeError("Bot is not running — start it first")
 
-    # ---------- $-prefix moderation commands ----------
+    # ---------- %-prefix moderation commands ----------
     MOD_HELP_TEXT = (
-        "🛡️ **Moderation commands** (staff only, prefix `$`)\n"
+        "🛡️ **Moderation commands** (staff only, prefix `%`)\n"
         "```\n"
-        "$help                     — show this list\n"
-        "$ping                     — bot latency check\n"
-        "$purge <n>                — delete last <n> messages (1-100)\n"
-        "$kick @user [reason]      — kick a member\n"
-        "$ban @user [reason]       — permanent ban\n"
-        "$softban @user [reason]   — ban then unban (deletes their messages)\n"
-        "$unban <user_id>          — reverse a ban\n"
-        "$mute @user <mins> [reason] — timeout a member (max 40320 mins = 28d)\n"
-        "$unmute @user             — clear the timeout\n"
-        "$warn @user <reason>      — log a warning to the mod-log\n"
-        "$slowmode <seconds>       — set channel slowmode (0 = off, max 21600)\n"
-        "$lock                     — lock the current channel (@everyone can't send)\n"
-        "$unlock                   — reverse $lock\n"
-        "$nick @user <new nick>    — rename a member (empty = reset)\n"
-        "$role @user <role name>   — toggle a role on/off\n"
-        "$say <text>               — bot repeats your message and deletes yours\n"
-        "$userinfo @user           — show account age / joined / roles\n"
-        "$serverinfo               — show server stats\n"
-        "$avatar @user             — show a user's avatar\n"
-        "$modlog                   — show last 10 mod actions in this server\n"
-        "```"
+        "%help                     — show this list\n"
+        "%ping                     — bot latency check\n"
+        "%purge <n>                — delete last <n> messages (1-100)\n"
+        "%kick @user [reason]      — kick a member\n"
+        "%ban @user [reason]       — permanent ban\n"
+        "%softban @user [reason]   — ban then unban (deletes their messages)\n"
+        "%unban <user_id>          — reverse a ban\n"
+        "%mute @user <mins> [reason] — timeout a member (max 40320 mins = 28d)\n"
+        "%unmute @user             — clear the timeout\n"
+        "%warn @user <reason>      — log a warning to the mod-log\n"
+        "%slowmode <seconds>       — set channel slowmode (0 = off, max 21600)\n"
+        "%lock                     — lock the current channel (@everyone can't send)\n"
+        "%unlock                   — reverse %lock\n"
+        "%nick @user <new nick>    — rename a member (empty = reset)\n"
+        "%role @user <role name>   — toggle a role on/off\n"
+        "%say <text>               — bot repeats your message and deletes yours\n"
+        "%userinfo @user           — show account age / joined / roles\n"
+        "%serverinfo               — show server stats\n"
+        "%avatar @user             — show a user's avatar\n"
+        "%modlog                   — show last 10 mod actions in this server\n"
+        "```\n"
+        "Legacy `$` and `!` prefixes still work as aliases."
     )
 
     async def _handle_mod_command(self, message: discord.Message):
-        """Central dispatcher for every $-prefix moderation command.
+        """Central dispatcher for every %-prefix moderation command.
         Every path replies with a clear success/error line so staff always know
         what happened. Silent failures are forbidden here."""
         content = (message.content or "").strip()
         parts = content.split()
         if not parts:
             return
-        cmd = parts[0].lower().lstrip("$!")
+        cmd = parts[0].lower().lstrip("%$!")
         args = parts[1:]
         perms = message.author.guild_permissions
         is_mod = perms.administrator or perms.manage_messages or perms.kick_members or perms.ban_members
-        # $help and $ping are public — everyone can use them.
         public_cmds = {"help", "ping", "userinfo", "serverinfo", "avatar", "commands"}
         if cmd not in public_cmds and not is_mod:
             try:
                 await message.channel.send(
-                    f"❌ {message.author.mention} you don't have permission for `${cmd}`.",
+                    f"❌ {message.author.mention} you don't have permission for `%{cmd}`.",
                     delete_after=6,
                 )
             except Exception:
@@ -251,9 +248,63 @@ class DiscordBotManager:
             except Exception as e:
                 logger.warning("[discord] reply failed: %s", e)
 
+        async def reply_embed(**kw):
+            try:
+                emb = discord.Embed(**kw)
+                emb.color = discord.Color.from_rgb(52, 211, 153)
+                await message.channel.send(embed=emb)
+            except Exception as e:
+                logger.warning("[discord] embed reply failed: %s", e)
+
         try:
             if cmd in ("help", "commands"):
-                await reply(self.MOD_HELP_TEXT)
+                emb = discord.Embed(
+                    title="🛡️ Better Social — Bot Commands",
+                    description="Moderation & utility commands. Prefix: `%` (aliases: `$`, `!`).",
+                    color=discord.Color.from_rgb(52, 211, 153),
+                )
+                emb.add_field(
+                    name="🧹 Moderation",
+                    value=(
+                        "`%purge <n>` · delete last N messages (1-100)\n"
+                        "`%kick @user [reason]` · kick a member\n"
+                        "`%ban @user [reason]` · permanent ban\n"
+                        "`%softban @user [reason]` · ban then unban (clears msgs)\n"
+                        "`%unban <user_id>` · reverse a ban\n"
+                        "`%mute @user <mins>` · timeout up to 28 days\n"
+                        "`%unmute @user` · clear timeout\n"
+                        "`%warn @user <reason>` · logged warning"
+                    ),
+                    inline=False,
+                )
+                emb.add_field(
+                    name="🔒 Channel",
+                    value=(
+                        "`%slowmode <seconds>` · 0-21600 (6h)\n"
+                        "`%lock` / `%unlock` · toggle send for @everyone\n"
+                        "`%nick @user <nick>` · rename member\n"
+                        "`%role @user <role>` · toggle a role\n"
+                        "`%say <text>` · bot echoes and deletes your msg"
+                    ),
+                    inline=False,
+                )
+                emb.add_field(
+                    name="ℹ️ Info & Utility",
+                    value=(
+                        "`%help` · this menu\n"
+                        "`%ping` · latency check\n"
+                        "`%userinfo @user` · account details\n"
+                        "`%serverinfo` · guild stats\n"
+                        "`%avatar @user` · avatar URL\n"
+                        "`%modlog` · last 10 mod actions"
+                    ),
+                    inline=False,
+                )
+                emb.set_footer(text="Only members with Manage Messages, Kick or Ban perms can run mod commands.")
+                try:
+                    await message.channel.send(embed=emb)
+                except Exception:
+                    await reply(self.MOD_HELP_TEXT)
 
             elif cmd == "ping":
                 ms = round(self.client.latency * 1000) if self.client else 0
@@ -261,7 +312,7 @@ class DiscordBotManager:
 
             elif cmd == "purge":
                 if not args or not args[0].isdigit():
-                    await reply("Usage: `$purge <1-100>`", delete_after=8); return
+                    await reply("Usage: `%purge <1-100>`", delete_after=8); return
                 n = max(1, min(int(args[0]), 100))
                 deleted = await message.channel.purge(limit=n + 1)
                 await reply(f"🧹 Purged **{len(deleted) - 1}** messages (requested by {message.author.mention}).", delete_after=6)
@@ -269,7 +320,7 @@ class DiscordBotManager:
 
             elif cmd == "kick":
                 if not message.mentions:
-                    await reply("Usage: `$kick @user [reason]`", delete_after=8); return
+                    await reply("Usage: `%kick @user [reason]`", delete_after=8); return
                 target = message.mentions[0]
                 reason = " ".join(a for a in args if not a.startswith("<@")) or f"by {message.author}"
                 await message.guild.kick(target, reason=reason)
@@ -278,7 +329,7 @@ class DiscordBotManager:
 
             elif cmd == "ban":
                 if not message.mentions:
-                    await reply("Usage: `$ban @user [reason]`", delete_after=8); return
+                    await reply("Usage: `%ban @user [reason]`", delete_after=8); return
                 target = message.mentions[0]
                 reason = " ".join(a for a in args if not a.startswith("<@")) or f"by {message.author}"
                 await message.guild.ban(target, reason=reason, delete_message_days=0)
@@ -287,7 +338,7 @@ class DiscordBotManager:
 
             elif cmd == "softban":
                 if not message.mentions:
-                    await reply("Usage: `$softban @user [reason]`", delete_after=8); return
+                    await reply("Usage: `%softban @user [reason]`", delete_after=8); return
                 target = message.mentions[0]
                 reason = " ".join(a for a in args if not a.startswith("<@")) or f"by {message.author}"
                 await message.guild.ban(target, reason=reason, delete_message_days=1)
@@ -297,7 +348,7 @@ class DiscordBotManager:
 
             elif cmd == "unban":
                 if not args:
-                    await reply("Usage: `$unban <user_id>`", delete_after=8); return
+                    await reply("Usage: `%unban <user_id>`", delete_after=8); return
                 uid = int(args[0])
                 user = await self.client.fetch_user(uid)
                 await message.guild.unban(user, reason=f"unban by {message.author}")
@@ -306,7 +357,7 @@ class DiscordBotManager:
 
             elif cmd == "mute":
                 if not message.mentions or len(args) < 2:
-                    await reply("Usage: `$mute @user <minutes> [reason]`", delete_after=8); return
+                    await reply("Usage: `%mute @user <minutes> [reason]`", delete_after=8); return
                 target = message.mentions[0]
                 mins_str = next((a for a in args if a.isdigit()), None)
                 if not mins_str:
@@ -321,7 +372,7 @@ class DiscordBotManager:
 
             elif cmd == "unmute":
                 if not message.mentions:
-                    await reply("Usage: `$unmute @user`", delete_after=8); return
+                    await reply("Usage: `%unmute @user`", delete_after=8); return
                 target = message.mentions[0]
                 await target.timeout(None, reason=f"unmute by {message.author}")
                 await reply(f"🔊 Timeout cleared for {target.mention}.")
@@ -329,7 +380,7 @@ class DiscordBotManager:
 
             elif cmd == "warn":
                 if not message.mentions or len(args) < 2:
-                    await reply("Usage: `$warn @user <reason>`", delete_after=8); return
+                    await reply("Usage: `%warn @user <reason>`", delete_after=8); return
                 target = message.mentions[0]
                 reason = " ".join(a for a in args if not a.startswith("<@")) or "(no reason)"
                 await self.db.discord_warnings.insert_one({
@@ -347,7 +398,7 @@ class DiscordBotManager:
 
             elif cmd == "slowmode":
                 if not args or not args[0].isdigit():
-                    await reply("Usage: `$slowmode <seconds 0-21600>`", delete_after=8); return
+                    await reply("Usage: `%slowmode <seconds 0-21600>`", delete_after=8); return
                 secs = max(0, min(int(args[0]), 21600))
                 await message.channel.edit(slowmode_delay=secs, reason=f"slowmode by {message.author}")
                 await reply(f"🐢 Slowmode set to **{secs}s** in {message.channel.mention}.")
@@ -358,7 +409,7 @@ class DiscordBotManager:
                     message.guild.default_role, send_messages=False,
                     reason=f"lock by {message.author}",
                 )
-                await reply(f"🔒 Locked {message.channel.mention}. Use `$unlock` to reopen.")
+                await reply(f"🔒 Locked {message.channel.mention}. Use `%unlock` to reopen.")
                 await self._mod_log("lock", message)
 
             elif cmd == "unlock":
@@ -371,7 +422,7 @@ class DiscordBotManager:
 
             elif cmd == "nick":
                 if not message.mentions:
-                    await reply("Usage: `$nick @user <new nick — empty resets>`", delete_after=8); return
+                    await reply("Usage: `%nick @user <new nick — empty resets>`", delete_after=8); return
                 target = message.mentions[0]
                 new_nick = " ".join(a for a in args if not a.startswith("<@")).strip() or None
                 await target.edit(nick=new_nick, reason=f"nick by {message.author}")
@@ -380,7 +431,7 @@ class DiscordBotManager:
 
             elif cmd == "role":
                 if not message.mentions or len(args) < 2:
-                    await reply("Usage: `$role @user <role name>`", delete_after=8); return
+                    await reply("Usage: `%role @user <role name>`", delete_after=8); return
                 target = message.mentions[0]
                 role_name = " ".join(a for a in args if not a.startswith("<@")).strip()
                 role = discord.utils.get(message.guild.roles, name=role_name)
@@ -400,7 +451,7 @@ class DiscordBotManager:
             elif cmd == "say":
                 text = " ".join(args).strip()
                 if not text:
-                    await reply("Usage: `$say <text>`", delete_after=8); return
+                    await reply("Usage: `%say <text>`", delete_after=8); return
                 try:
                     await message.delete()
                 except Exception:
@@ -444,7 +495,7 @@ class DiscordBotManager:
                     await reply("📋 **Last 10 mod actions**\n" + "\n".join(lines))
 
             else:
-                await reply(f"❓ Unknown command `${cmd}`. Type `$help` for the list.", delete_after=8)
+                await reply(f"❓ Unknown command `%{cmd}`. Type `%help` for the list.", delete_after=8)
 
         except discord.Forbidden:
             await reply("❌ I don't have permission to do that. Check my role & channel perms.", delete_after=10)
@@ -452,7 +503,7 @@ class DiscordBotManager:
             await reply(f"⚠️ Discord API error: `{e}`", delete_after=10)
         except Exception as e:
             logger.warning("[discord] $%s failed: %s", cmd, e)
-            await reply(f"⚠️ `${cmd}` failed: `{e}`", delete_after=10)
+            await reply(f"⚠️ `%{cmd}` failed: `{e}`", delete_after=10)
 
     # ---------- actions ----------
     async def set_activity(self, text: str):
@@ -473,17 +524,37 @@ class DiscordBotManager:
         await self._store_dm(user, text, direction="out")
         return {"ok": True, "to": str(user)}
 
-    async def send_channel_message(self, channel_id: str, text: str) -> dict:
-        """Post a message to a specific Discord channel by ID. Silent no-op if
-        the bot is not currently running so callers don't have to guard it."""
+    async def send_channel_message(self, channel_id: str, text: str, guild_id: Optional[str] = None) -> dict:
+        """Post a message to a specific Discord channel. Silent no-op if the bot
+        isn't running. If a `guild_id` is provided, we look up the channel via
+        the guild first so DMs / cross-guild channels don't false-hit."""
         if self.status != "running" or not self.client:
             return {"ok": False, "reason": "bot not running"}
         try:
-            ch = self.client.get_channel(int(channel_id))
-            if ch is None:
-                ch = await self.client.fetch_channel(int(channel_id))
+            ch = None
+            if guild_id:
+                g = self.client.get_guild(int(guild_id))
+                if g is None:
+                    return {"ok": False, "reason": f"bot is not in guild {guild_id}"}
+                ch = g.get_channel(int(channel_id))
+                if ch is None:
+                    return {"ok": False, "reason": f"channel {channel_id} not found in guild {g.name} — check the channel exists and the bot has 'View Channel' permission"}
+            else:
+                ch = self.client.get_channel(int(channel_id))
+                if ch is None:
+                    try:
+                        ch = await self.client.fetch_channel(int(channel_id))
+                    except discord.NotFound:
+                        return {"ok": False, "reason": f"channel {channel_id} not found — set the Server (Guild) ID in Admin so I can look it up correctly"}
+                    except discord.Forbidden:
+                        return {"ok": False, "reason": f"bot has no access to channel {channel_id} — give the bot 'View Channel' + 'Send Messages' permission on it"}
+            # Only send if it's a text-capable channel
+            if not hasattr(ch, "send"):
+                return {"ok": False, "reason": f"channel {channel_id} is not a text channel (type={type(ch).__name__})"}
             await ch.send(text)
             return {"ok": True, "channel": str(channel_id)}
+        except discord.Forbidden as e:
+            return {"ok": False, "reason": f"forbidden: {e} — give the bot Send Messages permission on that channel"}
         except Exception as e:
             logger.warning("[discord] send_channel_message failed: %s", e)
             return {"ok": False, "reason": str(e)}

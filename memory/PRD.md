@@ -1,6 +1,26 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 45 · Discord `%` prefix + guild fix + rich help embed)
+
+**Discord bot**
+- **Moderation prefix switched to `%`** — legacy `$` and `!` still work as aliases. All `%help`, `%kick`, `%ban`, `%mute`, `%warn`, `%slowmode`, `%lock`, `%nick`, `%role`, `%say`, `%userinfo`, `%serverinfo`, `%avatar`, `%modlog`, `%purge`, `%softban`, `%unban`, `%unmute`, `%ping` re-labelled consistently.
+- **`%help` now posts a rich Discord embed** (green, three fields: Moderation / Channel / Info & Utility) with a footer noting who can run mod commands. Falls back to code block if embed post fails.
+- **Fixed the "Not Found" purchase channel bug** — `send_channel_message` now accepts an optional `guild_id`, looks up the guild first, and returns a **precise reason**: `"channel {id} not found in guild {name} — check the channel exists and the bot has 'View Channel' permission"` or `"bot has no access to channel {id} — give the bot Send Messages permission on it"`. The `discord_notify_log` records the real cause every time.
+
+**Admin UI (`/admin → Discord → Purchase notifications`)**
+- New **Server (Guild) ID** input placed left of Channel ID. Copy from Discord: right-click your server icon → *Copy Server ID*.
+- Save posts both `purchase_guild_id` + `purchase_channel_id` in one call. Verified round-trip: guild `1477630408404373604` + channel `1477630409742221499` saved and read back cleanly.
+
+**How to make purchase notifications appear in your Discord server**
+1. Paste the **Server ID** of `NamelessStore.de` (`1477630408404373604`) into the new field.
+2. Keep the Channel ID as `1477630409742221499`.
+3. Save.
+4. Go to Admin → Discord Bot → **Start** (bot is currently stopped).
+5. In Discord, give the `Better Social` app the permissions **View Channel** + **Send Messages** on the target channel.
+6. Click *Send test message* — the message will appear, or the log will tell you exactly what's missing.
+
+
 ## Recent Updates (Feb 2026 — Iteration 44 · Live-chat queue + Department transfer + UI cleanup)
 
 **Backend (`auth_and_chat.py`)**

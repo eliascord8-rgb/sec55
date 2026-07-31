@@ -7727,6 +7727,7 @@ async def admin_set_discord_oauth(payload: DiscordOAuthCfg, x_admin_token: Optio
 
 class DiscordPurchaseCfg(BaseModel):
     purchase_channel_id: Optional[str] = None
+    purchase_guild_id: Optional[str] = None
     purchase_notify_enabled: Optional[bool] = None
 
 
@@ -7736,6 +7737,7 @@ async def get_discord_purchase_config(x_admin_token: Optional[str] = Header(None
     cfg = await db.discord_config.find_one({}, {"_id": 0}) or {}
     return {
         "purchase_channel_id": cfg.get("purchase_channel_id") or DISCORD_PURCHASE_CHANNEL_DEFAULT,
+        "purchase_guild_id": cfg.get("purchase_guild_id") or "",
         "purchase_notify_enabled": cfg.get("purchase_notify_enabled", True),
         "default_channel_id": DISCORD_PURCHASE_CHANNEL_DEFAULT,
     }
@@ -7781,6 +7783,7 @@ async def _notify_discord_purchase(order_doc: dict) -> None:
             log_entry.update({"status": "skipped", "reason": "purchase_notify_enabled=False"})
             await db.discord_notify_log.insert_one(log_entry); return
         channel_id = str(cfg.get("purchase_channel_id") or DISCORD_PURCHASE_CHANNEL_DEFAULT).strip()
+        guild_id = str(cfg.get("purchase_guild_id") or "").strip() or None
         if not channel_id:
             log_entry.update({"status": "skipped", "reason": "no channel configured"})
             await db.discord_notify_log.insert_one(log_entry); return
@@ -7802,11 +7805,12 @@ async def _notify_discord_purchase(order_doc: dict) -> None:
             line += f" — {charge_str}"
 
         async def _send_and_log():
-            r = await bot_manager.send_channel_message(channel_id, line)
+            r = await bot_manager.send_channel_message(channel_id, line, guild_id=guild_id)
             log_entry.update({
                 "status": "sent" if r.get("ok") else "failed",
                 "reason": r.get("reason") or "",
                 "channel_id": channel_id,
+                "guild_id": guild_id,
                 "message": line,
             })
             try:
