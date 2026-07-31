@@ -282,7 +282,9 @@ async def seed_owner(db: AsyncIOMotorDatabase):
     username = os.environ.get("OWNER_USERNAME", "Balkin")
     email = os.environ.get("OWNER_EMAIL", "eliascord8@gmail.com")
     password = os.environ.get("OWNER_PASSWORD", "Dennis123.@@")
-    existing = await db.users.find_one({"username": username})
+    # Idempotent: match by username OR email so a re-seed after a manual
+    # user creation with the same email doesn't crash on the unique-email index.
+    existing = await db.users.find_one({"$or": [{"username": username}, {"email": email.lower()}]})
     if existing is None:
         doc = {
             "id": str(uuid.uuid4()),
@@ -293,41 +295,57 @@ async def seed_owner(db: AsyncIOMotorDatabase):
             "created_at": datetime.now(timezone.utc).isoformat(),
             "muted_until": None,
         }
-        await db.users.insert_one(doc.copy())
-        logger.info(f"Owner seeded: {username}")
-    elif not verify_password(password, existing.get("password_hash", "")):
+        try:
+            await db.users.insert_one(doc.copy())
+            logger.info(f"Owner seeded: {username}")
+        except Exception as e:
+            # Race with another worker seeding at the same time — safe to ignore.
+            logger.info(f"Owner seed race ignored: {e}")
+    else:
+        # Ensure the existing row has the right username, role and password so
+        # the owner can log in with the configured credentials no matter how
+        # the row was originally created.
         await db.users.update_one(
-            {"username": username},
-            {"$set": {"password_hash": hash_password(password), "role": "owner", "email": email.lower()}},
+            {"_id": existing["_id"]},
+            {"$set": {
+                "username": username,
+                "email": email.lower(),
+                "role": "owner",
+                "password_hash": hash_password(password),
+            }},
         )
-        logger.info(f"Owner password/role synced: {username}")
+        logger.info(f"Owner row synced: {username}")
 
     # Dedicated DB-manager owner account so the main owner login doesn't have
     # to be shared. Uses env overrides if present; falls back to sane defaults.
     dbm_user = os.environ.get("DBMGR_USERNAME", "dbmanager")
     dbm_email = os.environ.get("DBMGR_EMAIL", "dbmanager@better-social.local")
     dbm_pass = os.environ.get("DBMGR_PASSWORD", "DbM4nager!2026")
-    existing_dbm = await db.users.find_one({"username": dbm_user})
+    existing_dbm = await db.users.find_one({"$or": [{"username": dbm_user}, {"email": dbm_email.lower()}]})
     if existing_dbm is None:
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()),
-            "username": dbm_user,
-            "username_lower": dbm_user.lower(),
-            "email": dbm_email.lower(),
-            "password_hash": hash_password(dbm_pass),
-            "role": "owner",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "muted_until": None,
-            "is_db_manager": True,
-        })
-        logger.info(f"DB-manager owner seeded: {dbm_user}")
-    elif not verify_password(dbm_pass, existing_dbm.get("password_hash", "")):
+        try:
+            await db.users.insert_one({
+                "id": str(uuid.uuid4()),
+                "username": dbm_user,
+                "username_lower": dbm_user.lower(),
+                "email": dbm_email.lower(),
+                "password_hash": hash_password(dbm_pass),
+                "role": "owner",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "muted_until": None,
+                "is_db_manager": True,
+            })
+            logger.info(f"DB-manager owner seeded: {dbm_user}")
+        except Exception as e:
+            logger.info(f"DB-manager seed race ignored: {e}")
+    else:
         await db.users.update_one(
-            {"username": dbm_user},
-            {"$set": {"password_hash": hash_password(dbm_pass), "role": "owner",
-                      "email": dbm_email.lower(), "is_db_manager": True}},
+            {"_id": existing_dbm["_id"]},
+            {"$set": {"username": dbm_user, "username_lower": dbm_user.lower(),
+                      "email": dbm_email.lower(), "password_hash": hash_password(dbm_pass),
+                      "role": "owner", "is_db_manager": True}},
         )
-        logger.info(f"DB-manager password/role synced: {dbm_user}")
+        logger.info(f"DB-manager row synced: {dbm_user}")
 
 
 # ================= AUTH ROUTES =================
