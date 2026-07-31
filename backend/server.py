@@ -4212,6 +4212,51 @@ class PartialCreditReq(BaseModel):
     amount: Optional[float] = None  # defaults to the estimated paid USD
 
 
+@api_router.post("/admin/deposits/{tx_id}/verify")
+async def admin_verify_nowpayments_deposit(tx_id: str, x_admin_token: Optional[str] = Header(None)):
+    """Manual safety net: fetch the latest status from NOWPayments for a
+    pending crypto transaction and credit the user if the payment is
+    'finished'/'confirmed'. Use this when the IPN webhook didn't arrive
+    (blocked, rate-limited, or user closed the tab).
+
+    Returns a detailed status object so the owner sees exactly what happened
+    without having to read logs."""
+    check_admin(x_admin_token)
+    tx = await db.transactions.find_one({"id": tx_id})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if tx.get("status") == "approved":
+        return {"ok": True, "already_credited": True, "balance_delta": 0}
+    invoice_id = tx.get("nowpayments_invoice_id")
+    payment_id = tx.get("nowpayments_payment_id")
+    if not invoice_id and not payment_id:
+        raise HTTPException(status_code=400, detail="No NOWPayments invoice/payment ID stored on this transaction")
+    try:
+        payment = await _fetch_nowpayments_invoice_status(invoice_id or payment_id)
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"NOWPayments API error: {e}")
+    if not payment:
+        return {"ok": False, "status": "no_payment_yet", "message": "No payment record on NOWPayments yet. Buyer hasn't sent crypto."}
+    pstatus = (payment.get("payment_status") or payment.get("status") or "").lower()
+    if pstatus in NOWPAY_SUCCESS_STATUSES:
+        # Save the payment_id if we didn't have it before
+        if payment.get("payment_id") and not tx.get("nowpayments_payment_id"):
+            await db.transactions.update_one({"id": tx_id}, {"$set": {"nowpayments_payment_id": payment["payment_id"]}})
+            tx["nowpayments_payment_id"] = payment["payment_id"]
+        result = await _credit_nowpayments_deposit(tx, payment)
+        return {"ok": True, "credited": True, "status": pstatus, **(result or {})}
+    if pstatus == "partially_paid":
+        r = await _handle_nowpayments_underpaid(tx, payment)
+        return {"ok": True, "partial": True, "status": pstatus, **(r or {})}
+    return {
+        "ok": True, "credited": False, "status": pstatus,
+        "message": f"Payment status is '{pstatus}' — not yet finished. Try again in a few minutes.",
+        "raw": {k: payment.get(k) for k in ("payment_status", "actually_paid", "price_amount", "pay_currency", "pay_amount")},
+    }
+
+
 @api_router.post("/admin/deposits/{tx_id}/credit-partial")
 async def admin_credit_partial_deposit(tx_id: str, body: PartialCreditReq, x_admin_token: Optional[str] = Header(None)):
     """Credit an underpaid crypto deposit for the amount actually received

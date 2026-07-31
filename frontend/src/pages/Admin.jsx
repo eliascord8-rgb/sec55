@@ -5748,6 +5748,22 @@ function FundsAdminPanel({ token }) {
     }
   };
 
+  const verifyCrypto = async (tx) => {
+    try {
+      const r = await adminApi(token).post(`/admin/deposits/${tx.id}/verify`, {});
+      if (r.data.credited) {
+        toast.success(`✅ Credited $${tx.amount} to @${tx.username}`);
+      } else if (r.data.partial) {
+        toast.success(`Partially credited — see admin alerts`);
+      } else {
+        toast(`Status: ${r.data.status || "waiting"} — ${r.data.message || "not paid yet"}`, { duration: 6000 });
+      }
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Verify failed");
+    }
+  };
+
   return (
     <div className="space-y-6">
       <form onSubmit={savePaypal} className="bg-[#1a1525] border border-white/5 rounded-sm p-5 space-y-3">
@@ -5889,6 +5905,16 @@ function FundsAdminPanel({ token }) {
                   <td className="px-6 py-2 text-right">
                     {t.status === "pending" && (
                       <div className="inline-flex gap-2">
+                        {(t.method === "nowpayments" || t.method === "crypto") && (
+                          <button
+                            onClick={() => verifyCrypto(t)}
+                            data-testid={`verify-crypto-${t.id}`}
+                            title="Ask NOWPayments for the latest status and auto-credit if paid"
+                            className="text-[10px] uppercase tracking-wider px-2 py-1 bg-amber-500/15 border border-amber-500/40 text-amber-300 rounded-sm hover:bg-amber-500/25"
+                          >
+                            Verify & credit
+                          </button>
+                        )}
                         <button
                           onClick={() => decide(t, "approve")}
                           data-testid={`approve-tx-${t.id}`}

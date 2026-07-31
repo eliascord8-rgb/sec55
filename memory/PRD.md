@@ -1,6 +1,19 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 46 · Discord community button + NOWPayments Verify-and-credit safety net)
+
+**Discord community links**
+- Guest landing header now has an indigo Discord button (`data-testid=guest-discord-btn`) linking to `https://discord.gg/namelessstore`, hidden on mobile to save room.
+- Help Center gets a full-width Discord card under the shortcuts (`data-testid=help-discord-join`) — Live giveaways / sneak-peeks / direct chat with the team.
+
+**NOWPayments — manual Verify & credit**
+- Root cause of "user paid but balance didn't fund": if the IPN webhook doesn't reach us (blocked, rate-limited, tab closed, ngrok/proxy hiccup, or NOWPayments `Timeout`), the transaction sits at `pending` forever unless we poll. Polling the `/payment/` endpoint requires a **NOWPayments account JWT**, which we get by exchanging the email+password saved in Admin → NOWPayments Config. If those two fields are empty, auto-verify is OFF and pending payments never self-heal.
+- **New endpoint** `POST /api/admin/deposits/{tx_id}/verify` — the safety net. Fetches the latest status from NOWPayments for a specific pending crypto tx and credits the user's balance if the payment is `finished`/`confirmed`. Returns a detailed status object so the reason is obvious (`no_payment_yet`, `partially_paid`, `waiting`, actual payload snapshot).
+- Admin → Transactions → pending rows now show a **"Verify & credit"** button next to Approve/Reject (only on `nowpayments`/`crypto` methods, `data-testid=verify-crypto-<txid>`). Toasts either *"✅ Credited $X to @user"* or the exact upstream status.
+- The existing config banner already warns *"⚠️ Auto-verify OFF — add account email+password"* — this is the single fix that makes auto-crediting work again without any manual clicks.
+
+
 ## Recent Updates (Feb 2026 — Iteration 45 · Discord `%` prefix + guild fix + rich help embed)
 
 **Discord bot**

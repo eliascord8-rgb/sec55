@@ -77,6 +77,17 @@ export default function GuestLanding() {
           <div className="flex-1" />
           <div className="flex items-center gap-2">
             <LanguagePicker />
+            <a
+              href="https://discord.gg/namelessstore"
+              target="_blank"
+              rel="noreferrer"
+              data-testid="guest-discord-btn"
+              title="Join our Discord — discord.gg/namelessstore"
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wider text-white bg-[#5865F2] hover:bg-[#4752C4] transition"
+            >
+              <svg viewBox="0 0 71 55" className="w-4 h-4" fill="currentColor" aria-hidden><path d="M60.1 4.9A58.5 58.5 0 0 0 45.4.4l-.7 1.2c5.3.9 10.2 2.8 14.5 5.5-4.5-2.2-9.5-3.8-14.9-4.4-1.8-.2-3.5-.4-5.3-.4h-.1c-2 0-4.1.2-6 .4-4.4.5-8.6 1.6-12.6 3.2-2.2.9-4.3 1.9-6.3 3.2 4.3-2.6 9.2-4.6 14.5-5.5L28 .4a58.4 58.4 0 0 0-14.6 4.5A70.1 70.1 0 0 0 .5 43.1a54.9 54.9 0 0 0 15.6 7.9c1.3-1.7 2.4-3.5 3.4-5.4a34.6 34.6 0 0 1-5.4-2.6l1.3-1c9.4 4.4 19.6 4.4 28.9 0l1.3 1c-1.7 1-3.5 1.9-5.4 2.6 1 1.9 2.1 3.7 3.4 5.4 5.5-1.7 10.8-4.3 15.6-7.9-.5-14.1-3.9-27.7-9-38.2ZM24.5 35.6c-3.4 0-6.1-3.1-6.1-6.9s2.7-6.9 6.1-6.9 6.2 3.1 6.1 6.9c0 3.8-2.7 6.9-6.1 6.9Zm22.6 0c-3.4 0-6.1-3.1-6.1-6.9s2.7-6.9 6.1-6.9 6.2 3.1 6.1 6.9c0 3.8-2.7 6.9-6.1 6.9Z"/></svg>
+              Discord
+            </a>
             <button
               onClick={() => setAuthOpen("login")}
               data-testid="guest-signin-btn"
