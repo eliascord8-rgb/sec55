@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { useLang, LanguagePicker } from "@/context/LanguageContext";
 import GoalNotifier from "@/components/GoalNotifier";
+import TikTokLookupBox from "@/components/TikTokLookupBox";
 
 // Fake "social proof" toasts on first visit — 2 randomised purchase alerts,
 // spaced 6-10s apart so they feel organic.
@@ -109,7 +110,10 @@ export default function GuestLanding() {
       {/* Main preview */}
       <main className="flex-1 w-full max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[280px_1fr_320px] gap-4 p-4 md:p-6">
         <GuestOrdersFeed />
-        <GuestWelcome onSignIn={() => setAuthOpen("login")} onSignUp={() => setAuthOpen("signup")} />
+        <div className="space-y-4">
+          <GuestWelcome onSignIn={() => setAuthOpen("login")} onSignUp={() => setAuthOpen("signup")} />
+          <TikTokLookupBox />
+        </div>
         <GuestPublicChat />
       </main>
 

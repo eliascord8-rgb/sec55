@@ -2388,6 +2388,36 @@ ADDONS_CATALOG_DEFAULTS = [
         ],
         "flag": "auto_live_enabled",
     },
+    {
+        "id": "auto_live_week",
+        "name": "Auto-Live · 1-Week Pass",
+        "tagline": "One-tap 7-day Auto-Live boost — no strings",
+        "description": "Unlocks Auto-Live for 7 days from purchase. Pick any target, we'll fire bursts each time they go live. Auto-expires after 7 days — no recurring charge.",
+        "price": 80.0,
+        "features": [
+            "Auto-Live active for 7 full days",
+            "Same automatic bursts every 10 min while live",
+            "No renewal — expires cleanly after 7 days",
+            "Balance-charged, one-time $80",
+        ],
+        "flag": "auto_live_expires_at",
+        "grants_days": 7,
+    },
+    {
+        "id": "username_blacklist",
+        "name": "Username Blacklist (2 slots)",
+        "tagline": "Block up to 2 TikTok usernames from ever being targeted",
+        "description": "Prevents anyone (including you) from placing Auto-Live or bulk orders against the listed usernames. Perfect for protecting your own accounts or competitor handles you never want touched. 2 slots included per purchase — buy again to add more.",
+        "price": 100.0,
+        "features": [
+            "Blocks Auto-Live provisioning on the listed handles",
+            "Blocks manual bulk orders on those handles",
+            "2 slots per purchase (buy again for more)",
+            "Edit / remove entries any time",
+        ],
+        "flag": "blacklist_slots",
+        "grants_slots": 2,
+    },
 ]
 
 
@@ -2434,9 +2464,12 @@ async def addons_purchase(body: AddonPurchase, user: CurrentUser = Depends(curre
     addon = next((a for a in catalog if a["id"] == body.addon_id), None)
     if not addon:
         raise HTTPException(status_code=404, detail="Addon not found")
-    u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1, "addons": 1})
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1, "auto_live_expires_at": 1, "addons": 1, "blacklist_slots": 1})
     owned = ((u or {}).get("addons") or [])
-    if addon["id"] in owned or ((u or {}).get("auto_live_enabled") and addon["id"] == "auto_live"):
+    # `auto_live_week` and `username_blacklist` are stackable / repeatable — always allow re-purchase.
+    if addon["id"] in owned and addon["id"] not in ("auto_live_week", "username_blacklist"):
+        raise HTTPException(status_code=400, detail="You already own this addon.")
+    if (u or {}).get("auto_live_enabled") and addon["id"] == "auto_live" and not (u or {}).get("auto_live_expires_at"):
         raise HTTPException(status_code=400, detail="You already own this addon.")
     price = float(addon["price"])
     balance = await _get_user_balance(user.id)
@@ -2453,8 +2486,34 @@ async def addons_purchase(body: AddonPurchase, user: CurrentUser = Depends(curre
         "created_at": now, "approved_at": now,
     })
     update = {"$addToSet": {"addons": addon["id"]}}
+    set_fields = {}
+    inc_fields = {}
     if addon["id"] == "auto_live":
-        update.setdefault("$set", {})["auto_live_enabled"] = True
+        set_fields["auto_live_enabled"] = True
+    if addon["id"] == "auto_live_week":
+        # Grant 7 days of Auto-Live — extend if user already has an unexpired pass.
+        from datetime import timedelta as _td
+        current = (u or {}).get("auto_live_expires_at")
+        base = datetime.now(timezone.utc)
+        if current:
+            try:
+                cur_dt = datetime.fromisoformat(current)
+                if cur_dt.tzinfo is None:
+                    cur_dt = cur_dt.replace(tzinfo=timezone.utc)
+                if cur_dt > base:
+                    base = cur_dt
+            except (ValueError, TypeError):
+                pass
+        set_fields["auto_live_expires_at"] = (base + _td(days=int(addon.get("grants_days", 7)))).isoformat()
+        set_fields["auto_live_enabled"] = True
+        # The week pass is repeatable — never mark it as owned so the user can buy again to extend.
+        update = {"$set": set_fields}
+    elif addon["id"] == "username_blacklist":
+        inc_fields["blacklist_slots"] = int(addon.get("grants_slots", 2))
+        # Also repeatable — buying stacks another 2 slots.
+        update = {"$inc": inc_fields}
+    if set_fields and addon["id"] != "auto_live_week":
+        update["$set"] = set_fields
     await db.users.update_one({"id": user.id}, update)
     new_balance = await _get_user_balance(user.id)
     return {"ok": True, "balance": new_balance, "addon": addon["id"]}
@@ -2462,11 +2521,108 @@ async def addons_purchase(body: AddonPurchase, user: CurrentUser = Depends(curre
 
 @client_router.get("/addons/mine")
 async def addons_mine(user: CurrentUser = Depends(current_user_dep)):
-    u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1, "addons": 1})
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1, "auto_live_expires_at": 1, "addons": 1, "blacklist_slots": 1})
     owned = set((u or {}).get("addons") or [])
     if (u or {}).get("auto_live_enabled"):
         owned.add("auto_live")
-    return {"owned": sorted(owned)}
+    return {
+        "owned": sorted(owned),
+        "auto_live_expires_at": (u or {}).get("auto_live_expires_at"),
+        "blacklist_slots": int((u or {}).get("blacklist_slots") or 0),
+    }
+
+
+# ============ Username Blacklist addon ============
+class BlacklistEntryBody(BaseModel):
+    tiktok_username: str
+    reason: Optional[str] = None
+
+
+@client_router.get("/addons/blacklist")
+async def blacklist_list(user: CurrentUser = Depends(current_user_dep)):
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "blacklist_slots": 1})
+    entries = await db.username_blacklist.find({"user_id": user.id}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    slots = int((u or {}).get("blacklist_slots") or 0)
+    return {"entries": entries, "slots_total": slots, "slots_used": len(entries), "slots_free": max(0, slots - len(entries))}
+
+
+@client_router.post("/addons/blacklist")
+async def blacklist_add(body: BlacklistEntryBody, user: CurrentUser = Depends(current_user_dep)):
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "blacklist_slots": 1})
+    slots = int((u or {}).get("blacklist_slots") or 0)
+    used = await db.username_blacklist.count_documents({"user_id": user.id})
+    if used >= slots:
+        raise HTTPException(status_code=402, detail=f"No free blacklist slots — you have {slots}. Buy the Username Blacklist addon for +2 slots.")
+    handle = (body.tiktok_username or "").strip().lstrip("@")
+    if not handle:
+        raise HTTPException(status_code=400, detail="Handle is required")
+    if await db.username_blacklist.find_one({"user_id": user.id, "tiktok_username": handle.lower()}):
+        raise HTTPException(status_code=409, detail="This handle is already on your blacklist")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user.id,
+        "username": user.username,
+        "tiktok_username": handle.lower(),
+        "reason": (body.reason or "").strip()[:200] or None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.username_blacklist.insert_one(doc)
+    return {"ok": True, "entry": {k: v for k, v in doc.items() if k != "_id"}}
+
+
+@client_router.delete("/addons/blacklist/{entry_id}")
+async def blacklist_remove(entry_id: str, user: CurrentUser = Depends(current_user_dep)):
+    r = await db.username_blacklist.delete_one({"id": entry_id, "user_id": user.id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return {"ok": True}
+
+
+async def _is_handle_blacklisted(user_id: str, handle: str) -> bool:
+    """Return True if the given TikTok handle is on ANY user's blacklist
+    (owner-scoped: we still block the requester if the handle is on their own list)."""
+    h = (handle or "").strip().lstrip("@").lower()
+    if not h:
+        return False
+    return bool(await db.username_blacklist.find_one({"tiktok_username": h}))
+
+
+# ============ IP-based language auto-detect (Balkan-first) ============
+# Maps country codes to the locale we serve. Balkans lean to Serbian by default;
+# each specific country lands on its own language if we support it.
+COUNTRY_TO_LANG = {
+    "RS": "sr", "ME": "sr", "MK": "sr",           # Serbia, Montenegro, N. Macedonia → Serbian
+    "BA": "bs",                                     # Bosnia → Bosnian
+    "HR": "sr", "SI": "sr",                         # Croatia, Slovenia → Serbian (closest we have)
+    "BG": "sr",                                     # Bulgaria → Serbian (closest Cyrillic-friendly)
+    "AL": "sr", "XK": "sr",                         # Albania, Kosovo → Serbian
+    "DE": "de", "AT": "de", "CH": "de", "LI": "de",
+    "ES": "es",
+    "PT": "pt", "BR": "pt",
+}
+
+
+@api_router.get("/geo/detect-language")
+async def geo_detect_language(request: Request):
+    """Return the visitor's country code (best-effort from IP headers) and the
+    language we recommend. Client uses this on first load to auto-switch."""
+    xff = request.headers.get("x-forwarded-for") or ""
+    ip = (xff.split(",")[0].strip() if xff else (request.client.host if request.client else "")) or ""
+    country = (request.headers.get("cf-ipcountry")
+               or request.headers.get("x-vercel-ip-country")
+               or request.headers.get("x-country")
+               or "").upper().strip()
+    # Fallback: hit a free geo-IP endpoint (ip-api.com allows 45 req/min anonymously).
+    if not country and ip and not ip.startswith(("127.", "10.", "192.168.")):
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as c:
+                r = await c.get(f"http://ip-api.com/json/{ip}?fields=countryCode")
+                if r.status_code == 200:
+                    country = (r.json() or {}).get("countryCode") or ""
+        except Exception:
+            pass
+    lang = COUNTRY_TO_LANG.get(country) or None
+    return {"ip": ip, "country": country or None, "recommended_lang": lang}
 
 
 # ============ Admin — edit addon prices ============
@@ -2650,6 +2806,107 @@ async def _tt_probe_apilive(handle: str, headers: dict) -> Optional[bool]:
         return int(st) == 2
     except (TypeError, ValueError):
         return None
+
+
+
+# ============ Free public TikTok lookup (no auth) ============
+async def _tiktok_public_lookup(handle: str) -> dict:
+    """Scrape the public /@handle page for profile data — no API key required.
+    Returns country, creation date, follower/likes/videos count, verified, bio, avatar."""
+    import time as _t
+    h = (handle or "").strip().lstrip("@").lower()
+    if not h or not re.match(r"^[a-z0-9._]+$", h):
+        raise HTTPException(status_code=400, detail="Invalid TikTok username")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    url = f"https://www.tiktok.com/@{h}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+            r = await c.get(url, headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach TikTok: {e}")
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"@{h} not found on TikTok")
+    if r.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"TikTok returned {r.status_code}")
+    html = r.text
+    m = re.search(r'<script[^>]*id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>', html, re.DOTALL)
+    user_module, stats = {}, {}
+    if m:
+        try:
+            data = jsonlib.loads(m.group(1))
+        except Exception:
+            raise HTTPException(status_code=500, detail="TikTok payload could not be parsed")
+        scope = ((data.get("__DEFAULT_SCOPE__") or {}).get("webapp.user-detail") or {})
+        info = scope.get("userInfo") or {}
+        user_module = info.get("user") or {}
+        stats = info.get("stats") or {}
+    else:
+        m2 = re.search(r'<script[^>]*id="SIGI_STATE"[^>]*>(.*?)</script>', html, re.DOTALL)
+        if not m2:
+            raise HTTPException(status_code=404, detail=f"@{h} — profile hidden or blocked by TikTok")
+        try:
+            data = jsonlib.loads(m2.group(1))
+        except Exception:
+            raise HTTPException(status_code=500, detail="TikTok payload could not be parsed")
+        user_module = (data.get("UserModule") or {}).get("users", {}).get(h) or {}
+        stats = (data.get("UserModule") or {}).get("stats", {}).get(h) or {}
+    if not user_module.get("uniqueId") and not user_module.get("id"):
+        raise HTTPException(status_code=404, detail=f"@{h} not found")
+    created_iso = None
+    created_note = None
+    try:
+        uid = int(user_module.get("id") or 0)
+        # TikTok snowflake IDs are ~19-digit numbers. Anything smaller (<= 10 digits)
+        # is a legacy musical.ly migration ID and can't be decoded.
+        if uid > 10_000_000_000:
+            ts = (uid >> 32) + 1356998400
+            if 1356998400 <= ts <= _t.time() + 86400:
+                created_iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        elif uid > 0:
+            created_note = "Legacy Musical.ly account (created before Aug 2018) — exact date unknown"
+    except Exception:
+        pass
+    return {
+        "handle": user_module.get("uniqueId") or h,
+        "nickname": user_module.get("nickname"),
+        "avatar": user_module.get("avatarLarger") or user_module.get("avatarMedium") or user_module.get("avatarThumb"),
+        "verified": bool(user_module.get("verified")),
+        "private": bool(user_module.get("privateAccount")),
+        "signature": user_module.get("signature"),
+        "region": user_module.get("region"),
+        "language": user_module.get("language"),
+        "user_id": str(user_module.get("id") or ""),
+        "sec_uid": user_module.get("secUid"),
+        "created_at": created_iso,
+        "created_note": created_note,
+        "followers": int(stats.get("followerCount") or 0),
+        "following": int(stats.get("followingCount") or 0),
+        "hearts": int(stats.get("heart") or stats.get("heartCount") or 0),
+        "videos": int(stats.get("videoCount") or 0),
+        "profile_url": f"https://www.tiktok.com/@{h}",
+    }
+
+
+_TT_LOOKUP_BUCKET: dict = {}
+
+
+@api_router.get("/tools/tiktok-lookup")
+async def tiktok_lookup(username: str, request: Request):
+    """Free public TikTok profile lookup — no login required.
+    Rate-limited to 30 requests/minute per IP."""
+    ip = ((request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+          or (request.client.host if request.client else "")) or "unknown"
+    now = datetime.now(timezone.utc).timestamp()
+    hits = [t for t in _TT_LOOKUP_BUCKET.get(ip, []) if t > now - 60]
+    if len(hits) >= 30:
+        raise HTTPException(status_code=429, detail="Too many lookups — try again in a minute")
+    hits.append(now)
+    _TT_LOOKUP_BUCKET[ip] = hits
+    return await _tiktok_public_lookup(username)
 
 
 async def _tt_probe_html(handle: str, headers: dict) -> Optional[bool]:

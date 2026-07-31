@@ -1,6 +1,21 @@
 # Better Social — PRD
 
 
+## Recent Updates (Feb 2026 — Iteration 47 · Two new addons + TikTok public lookup + Balkan geo language detect)
+
+**New addons in the store (Admin can price-override each)**
+- **Auto-Live · 1-Week Pass** (`auto_live_week`, **$80**) — one-tap 7-day Auto-Live boost. Stackable: buying again extends `auto_live_expires_at` from whichever is later.
+- **Username Blacklist** (`username_blacklist`, **$100**) — 2 slots per purchase; stackable. Blocks Auto-Live provisioning + bulk orders on the blacklisted TikTok handles. New endpoints: `GET/POST /api/client/addons/blacklist`, `DELETE /api/client/addons/blacklist/{id}`. `_is_handle_blacklisted()` helper for enforcement.
+
+**Free public TikTok Lookup** (no login required)
+- Backend: `GET /api/tools/tiktok-lookup?username=<handle>` — scrapes the public `/@handle` page for `nickname`, `avatar`, `verified`, `private`, `signature`, `region`, `language`, `user_id`, `sec_uid`, `followers`, `hearts`, `videos`, `following`, `profile_url`, `created_at` (Snowflake decode for post-2018 accounts, legacy note otherwise). 30 lookups/minute per IP.
+- Frontend: `/app/frontend/src/components/TikTokLookupBox.jsx` — mounted on the Guest Landing under the welcome hero. `data-testid="tiktok-lookup-{box,input,btn,result,error}"`. Verified live against `@charlidamelio` (159.3M / 12.3B / 3.2K / 1.4K).
+
+**Balkan geo-IP → language auto-detect**
+- `GET /api/geo/detect-language` — reads `x-forwarded-for` → resolves country via CF/Vercel headers if present, else `ip-api.com`. Returns `{ip, country, recommended_lang}`.
+- `COUNTRY_TO_LANG` map: RS/ME/MK/HR/SI/BG/AL/XK → `sr`, BA → `bs`, DE/AT/CH/LI → `de`, ES → `es`, PT/BR → `pt`. Frontend can call this once on first mount and switch language if it hasn't been set manually.
+
+
 ## Recent Updates (Feb 2026 — Iteration 46 · Discord community button + NOWPayments Verify-and-credit safety net)
 
 **Discord community links**
