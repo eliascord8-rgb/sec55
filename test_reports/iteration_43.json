@@ -1,0 +1,87 @@
+{
+  "summary": "Iteration 43 tested the requested add-ons, discount lifecycle/quote, blacklist enforcement, numeric Auto-Live target guidance, API-key rotation, Discord guild ownership CRUD, moderator role persistence, client UI, and Admin Discounts/Users UI against the public URL. Requested backend feature flows passed; overall backend suite passed 8/12 because owner-only discount APIs accept moderators and the three required auth-hardening checks still fail. All requested UI flows passed after adding the specified nav-discord test ID.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET/POST/DELETE /api/admin/discount-keys",
+        "issue": "Owner-only discount-key APIs use check_admin() and are accessible to moderator/staff sessions. A promoted testbugfix1 moderator token received 200 from GET /admin/discount-keys instead of 403.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Successful login returns the JWT only in JSON and sets no Secure HttpOnly access cookie; Set-Cookie is absent for both documented accounts.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "No brute-force lockout: six fresh-captcha wrong-password attempts returned [401, 401, 401, 401, 401, 401], with no 429 after the fifth failure.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "CORS preflight /api/auth/me",
+        "issue": "Credentialed CORS allows an untrusted origin with Access-Control-Allow-Origin: * instead of explicit trusted origins.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "POST /api/client/addons/purchase",
+        "issue": "EUR add-ons are displayed as €180/€200 but purchase logic treats the numeric price as USD wallet units; blacklist_package returned 'needs $180.00'. Currency is relabeled, not converted.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/client/funds/nowpayments-verify/{tx_id}",
+        "issue": "Dashboard bootstrap repeatedly receives 502 for existing pending deposits because NOWPayments account email/password is not configured; backend reconciler logs show the same retries roughly every 90 seconds."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Dashboard bootstrap / pending deposit auto-verification",
+        "issue": "Every login auto-posts verification for a pending NOWPayments transaction and silently gets 502; the client swallows the failure and retries on later ticks instead of gating auto-verify on configuration or surfacing status.",
+        "affected_selectors": ["[data-testid='top-nav']"]
+      },
+      {
+        "flow": "Display-currency exchange rate",
+        "issue": "CurrencyContext fetch to https://api.frankfurter.dev/latest?base=USD&symbols=EUR returns 404, so users silently receive the hardcoded fallback rate.",
+        "affected_selectors": ["[data-testid='mobile-balance-toggle']", "[data-testid='topbar-balance']"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration_43_addons_discount_discord.py",
+    "/app/test_reports/pytest/iter43_results.xml"
+  ],
+  "action_items": [
+    "Protect all discount-key admin routes with check_owner(), not check_admin().",
+    "Issue Secure HttpOnly auth cookies, add persistent five-failure login lockout, and restrict credentialed CORS to explicit frontend origins.",
+    "Define one wallet settlement currency and convert EUR add-on prices before balance comparison/debit; ensure API messages use the actual currency.",
+    "Make discount max-use redemption atomic so concurrent redemptions cannot exceed max_uses.",
+    "Disable/suspend NOWPayments polling when account lookup credentials are unavailable, and replace or correct the failing Frankfurter exchange-rate URL.",
+    "Retest the four failing pytest cases plus EUR purchase debit semantics after fixes."
+  ],
+  "critical_code_review_comments": [
+    "admin_discount_keys_list/create/delete call check_admin(x_admin_token) without an owner check or permission, so any STAFF_SESSIONS token passes.",
+    "client_discount_redeem checks uses then increments in separate operations; concurrent requests can exceed max_uses. Use an atomic conditional update and only activate the user after it succeeds.",
+    "addons_purchase ignores addon.currency and compares/debits price directly against the USD transaction-derived wallet; frontend currency labeling alone does not implement EUR pricing.",
+    "auth_and_chat.login returns a plain dict without setting a response cookie, verify_login_credentials has no failure tracker, and server.py defaults credentialed CORS to '*'.",
+    "server.py (9,800 lines), Admin.jsx (7,725 lines), and ClientDashboard.jsx (5,175 lines) exceed the 700-line maintainability limit. Focused frontend lint still reports 42 ClientDashboard and 60 Admin errors/warnings; split feature modules and address swallowed API errors."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration_43_addons_discount_discord.py",
+    "/app/frontend/src/pages/ClientDashboard.jsx",
+    "/app/test_reports/iteration_43.json"
+  ],
+  "success_rate": {
+    "backend": "67% overall (8/12); requested functional flows passed, owner authorization and auth security failed",
+    "frontend": "100% of requested UI flows passed; two unrelated dashboard background integrations returned errors"
+  },
+  "seed_data_creation": "Created and cleaned temporary backend/UI discount keys, qaprotected1 Instagram blacklist entry, and a unique Discord guild config. testbugfix1 role was restored to user and prior discount fields were restored. API key rotation intentionally persisted. No SMM/provider order was placed.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run only test_iteration_43_addons_discount_discord.py. Current JUnit is 8 pass / 4 fail: moderator access to owner-only discounts, missing HttpOnly cookie, wildcard CORS, and no five-failure lockout. Client UI passed Add-ons, nav-discord, Discord controls, Security/twofa-card, and invalid Discount toast. Admin secret URL passed Discounts generate/delete and Users moderator-option checks. The nav-discord test ID was added in scope. Investigate EUR wallet conversion separately because the current API explicitly quotes $180 for a catalog item labeled EUR.",
+  "rca_of_the_issue": "Authorization fails because discount routes call the broad check_admin helper rather than check_owner. Auth hardening is absent in implementation/config: login returns JSON-only bearer auth, credential verification has no attempt counter, and CORS uses the wildcard environment default. EUR pricing is only presentation metadata; purchase arithmetic never reads currency. Dashboard integration errors come from unconditional pending-deposit verification without NOWPayments lookup credentials and an exchange-rate URL currently returning 404."
+}

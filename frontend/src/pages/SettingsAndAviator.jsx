@@ -186,7 +186,7 @@ export function SettingsView({ authedApi, user }) {
         <p className="text-white/50 text-sm mt-2">Manage your account and preferences.</p>
       </div>
       <div className="flex gap-2 flex-wrap">
-        {[["account", "Account", KeyRound], ["preferences", "Preferences", Coins], ["appearance", "Appearance", Palette]].map(([id, label, Icon]) => (
+        {[["account", "Account", KeyRound], ["preferences", "Preferences", Coins], ["appearance", "Appearance", Palette], ["discount", "Discount", Zap]].map(([id, label, Icon]) => (
           <button key={id} onClick={() => setTab(id)} data-testid={`settings-tab-${id}`}
             className={`px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider inline-flex items-center gap-2 transition ${tab === id ? "bg-emerald-500 text-black" : "bg-[#0d0a14] text-white/70 hover:text-white border border-white/10"}`}>
             <Icon className="w-3.5 h-3.5" /> {label}
@@ -196,6 +196,61 @@ export function SettingsView({ authedApi, user }) {
       {tab === "account" && <AccountSettings authedApi={authedApi} user={user} />}
       {tab === "preferences" && <PreferencesSettings />}
       {tab === "appearance" && <AppearanceSettings authedApi={authedApi} />}
+      {tab === "discount" && <DiscountSettings authedApi={authedApi} />}
+    </div>
+  );
+}
+
+
+function DiscountSettings({ authedApi }) {
+  const [current, setCurrent] = useState({ code: null, percent: 0 });
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await authedApi().get("/client/discount");
+      setCurrent(r.data);
+    } catch { /* ignore */ }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const redeem = async () => {
+    if (!code.trim()) { toast.error("Enter your discount key"); return; }
+    setBusy(true);
+    try {
+      const r = await authedApi().post("/client/discount/redeem", { code: code.trim() });
+      toast.success(`🎉 Discount active — ${r.data.percent}% off all services!`);
+      setCode("");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Invalid key"); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="bg-[#0d0a14] border border-emerald-500/25 rounded-md p-5" data-testid="settings-discount">
+      <div className="flex items-center gap-2 mb-3">
+        <Zap className="w-4 h-4 text-emerald-400" />
+        <div className="font-display font-bold text-sm">Discount key</div>
+      </div>
+      <p className="text-xs text-white/50 mb-4">
+        Got a discount key? Enter it here and every service on the site gets cheaper for you automatically. Add-ons stay at full price.
+      </p>
+      {current.percent > 0 && (
+        <div className="mb-4 p-3 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-sm" data-testid="active-discount-banner">
+          <span className="text-emerald-300 font-black">{current.percent}% OFF</span>
+          <span className="text-white/70"> is active on all services (key: <span className="font-mono">{current.code}</span>)</span>
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="e.g. DISC-AB12CD34"
+          data-testid="discount-key-input"
+          className="flex-1 bg-black/40 border border-white/15 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-emerald-400 font-mono" />
+        <button onClick={redeem} disabled={busy} data-testid="discount-redeem-btn"
+          className="px-5 py-2 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black uppercase tracking-wider transition disabled:opacity-40">
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Apply"}
+        </button>
+      </div>
     </div>
   );
 }

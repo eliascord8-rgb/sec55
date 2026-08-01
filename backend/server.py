@@ -1471,7 +1471,7 @@ async def admin_update_user(
             raise HTTPException(status_code=400, detail="Email already used by another user")
         update["email"] = payload.email.lower()
     if payload.role is not None:
-        if payload.role not in {"user", "admin", "owner"}:
+        if payload.role not in {"user", "admin", "moderator", "owner"}:
             raise HTTPException(status_code=400, detail="Invalid role")
         update["role"] = payload.role
     if payload.muted_until is not None:
@@ -1857,6 +1857,92 @@ class BuyWithBalanceRequest(BaseModel):
     comments: Optional[str] = None  # Required for custom-text services
 
 
+# ============ Discount keys (percent-off on services — NEVER addons) ============
+class DiscountKeyCreate(BaseModel):
+    percent: float = Field(..., gt=0, le=100)
+    code: Optional[str] = None
+    max_uses: Optional[int] = Field(default=None, ge=1)
+
+
+@api_router.get("/admin/discount-keys")
+async def admin_discount_keys_list(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    keys = await db.discount_keys.find({}, {"_id": 0}).sort("created_at", -1).to_list(300)
+    return {"keys": keys}
+
+
+@api_router.post("/admin/discount-keys")
+async def admin_discount_keys_create(body: DiscountKeyCreate, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    code = (body.code or "").strip().upper() or ("DISC-" + uuid.uuid4().hex[:8].upper())
+    if await db.discount_keys.find_one({"code": code}):
+        raise HTTPException(status_code=409, detail="Code already exists")
+    doc = {
+        "code": code, "percent": round(float(body.percent), 2),
+        "max_uses": body.max_uses, "uses": 0, "active": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.discount_keys.insert_one(doc.copy())
+    return {"ok": True, "key": doc}
+
+
+@api_router.delete("/admin/discount-keys/{code}")
+async def admin_discount_keys_delete(code: str, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token)
+    c = code.strip().upper()
+    r = await db.discount_keys.delete_one({"code": c})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Key not found")
+    await db.users.update_many({"discount_code": c}, {"$unset": {"discount_code": "", "discount_pct": ""}})
+    return {"ok": True}
+
+
+class DiscountRedeemBody(BaseModel):
+    code: str = Field(..., min_length=3, max_length=40)
+
+
+@client_router.post("/discount/redeem")
+async def client_discount_redeem(body: DiscountRedeemBody, user: CurrentUser = Depends(current_user_dep)):
+    code = body.code.strip().upper()
+    key = await db.discount_keys.find_one({"code": code, "active": True}, {"_id": 0})
+    if not key:
+        raise HTTPException(status_code=404, detail="Invalid discount key")
+    if key.get("max_uses") and int(key.get("uses") or 0) >= int(key["max_uses"]):
+        raise HTTPException(status_code=400, detail="This discount key has reached its usage limit")
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "discount_code": 1})
+    if (u or {}).get("discount_code") != code:
+        await db.discount_keys.update_one({"code": code}, {"$inc": {"uses": 1}})
+    await db.users.update_one({"id": user.id}, {"$set": {"discount_code": code, "discount_pct": float(key["percent"])}})
+    return {"ok": True, "percent": float(key["percent"]), "code": code}
+
+
+@client_router.get("/discount")
+async def client_discount_get(user: CurrentUser = Depends(current_user_dep)):
+    u = await db.users.find_one({"id": user.id}, {"_id": 0, "discount_code": 1, "discount_pct": 1})
+    pct = float((u or {}).get("discount_pct") or 0)
+    code = (u or {}).get("discount_code")
+    if code and pct > 0:
+        key = await db.discount_keys.find_one({"code": code, "active": True})
+        if not key:
+            await db.users.update_one({"id": user.id}, {"$unset": {"discount_code": "", "discount_pct": ""}})
+            return {"code": None, "percent": 0}
+    return {"code": code, "percent": pct}
+
+
+async def _apply_user_discount(user_id: str, charge: float) -> tuple:
+    """Return (discounted_charge, pct). Applies the user's active discount key.
+    Services only — addon purchases must never call this."""
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "discount_pct": 1, "discount_code": 1})
+    pct = float((u or {}).get("discount_pct") or 0)
+    if pct <= 0:
+        return charge, 0.0
+    key = await db.discount_keys.find_one({"code": (u or {}).get("discount_code"), "active": True})
+    if not key:
+        await db.users.update_one({"id": user_id}, {"$unset": {"discount_code": "", "discount_pct": ""}})
+        return charge, 0.0
+    return round(charge * (1 - pct / 100.0), 4), pct
+
+
 @client_router.post("/order-with-balance")
 async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = Depends(current_user_dep), request: Request = None):
     """Place an order paying with the user's account balance."""
@@ -1882,6 +1968,8 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
     comments = (body.comments or "").strip() or None
     if needs_custom and not comments:
         raise HTTPException(status_code=400, detail="This service requires custom comments — please enter them.")
+    await _enforce_username_blacklist(user.id, body.link)
+    charge, _disc_pct = await _apply_user_discount(user.id, charge)
     balance = await _get_user_balance(user.id)
     if balance < charge:
         raise HTTPException(status_code=402, detail=f"Not enough balance — needs ${charge:.2f}, you have ${balance:.2f}")
@@ -2028,6 +2116,7 @@ async def place_multi_order(body: MultiOrderRequest, user: CurrentUser = Depends
     db: AsyncIOMotorDatabase = request.app.state.db
     place_smm_order = request.app.state.place_smm_order
     link = body.link.strip()
+    await _enforce_username_blacklist(user.id, link)
 
     # 1) Resolve all services + charges up-front
     priced = []  # list of (item, svc_doc, charge, is_manual, comments)
@@ -2053,6 +2142,7 @@ async def place_multi_order(body: MultiOrderRequest, user: CurrentUser = Depends
         comments = (item.comments or "").strip() or None
         if needs_custom and not comments:
             raise HTTPException(status_code=400, detail=f"Service #{item.service_id} needs custom comments")
+        charge, _dp = await _apply_user_discount(user.id, charge)
         priced.append((item, svc, charge, is_manual, comments))
 
     total_charge = round(sum(p[2] for p in priced), 4)
@@ -2420,18 +2510,38 @@ ADDONS_CATALOG_DEFAULTS = [
     },
     {
         "id": "id_finder",
-        "name": "TikTok ID → Username Finder",
-        "tagline": "Reverse-lookup any numeric TikTok user ID — unlimited checks",
+        "name": "Find User By ID — Unlimited",
+        "tagline": "Reverse-lookup any numeric TikTok user ID — unlimited finds, forever",
         "description": "Unlocks the User-ID reverse lookup on the TikTok Finder page. Paste any numeric TikTok user ID and get the @handle plus full profile stats (country, creation date, followers, likes, verification). One-time payment — unlimited checks forever.",
-        "price": 170.0,
+        "price": 200.0,
         "currency": "EUR",
         "features": [
-            "Unlimited user_id → @username checks",
-            "Full profile snapshot with every lookup",
+            "Unlimited Finds — no caps, no cooldowns, ever",
+            "If the user blocks you — still findable",
+            "If they change their username — we find the new handle",
+            "Full profile snapshot with every lookup (country, followers, likes, verified)",
             "Works on the public TikTok Finder page",
-            "One-time €170 — permanent access",
+            "One-time €200 — permanent access",
         ],
         "flag": "id_finder",
+    },
+    {
+        "id": "blacklist_package",
+        "name": "BlackList Username Package",
+        "tagline": "Protect a username on Kick · TikTok · Instagram · Snapchat · Telegram",
+        "description": "Pick a platform and lock a username. Once blacklisted, no other user can place orders targeting that username. Short links like vm.tiktok are rejected on order forms, so live-stream orders must go through plain usernames — nothing can bypass your protection. 1 slot per purchase — buy again to stack more.",
+        "price": 180.0,
+        "currency": "EUR",
+        "features": [
+            "Choose platform: Kick · TikTok · Instagram · Snapchat · Telegram",
+            "Blocks everyone else from ordering on the protected username",
+            "vm.tiktok / short-link orders are rejected — only plain usernames for live streams",
+            "Protection applies to Auto-Live, bulk and normal orders",
+            "1 slot per purchase — stack as many as you need",
+        ],
+        "flag": "blacklist_slots",
+        "grants_slots": 1,
+        "platforms": ["tiktok", "kick", "instagram", "snapchat", "telegram"],
     },
 ]
 
@@ -2482,7 +2592,7 @@ async def addons_purchase(body: AddonPurchase, user: CurrentUser = Depends(curre
     u = await db.users.find_one({"id": user.id}, {"_id": 0, "auto_live_enabled": 1, "auto_live_expires_at": 1, "addons": 1, "blacklist_slots": 1})
     owned = ((u or {}).get("addons") or [])
     # `auto_live_week` and `username_blacklist` are stackable / repeatable — always allow re-purchase.
-    if addon["id"] in owned and addon["id"] not in ("auto_live_week", "username_blacklist"):
+    if addon["id"] in owned and addon["id"] not in ("auto_live_week", "username_blacklist", "blacklist_package"):
         raise HTTPException(status_code=400, detail="You already own this addon.")
     if (u or {}).get("auto_live_enabled") and addon["id"] == "auto_live" and not (u or {}).get("auto_live_expires_at"):
         raise HTTPException(status_code=400, detail="You already own this addon.")
@@ -2523,7 +2633,7 @@ async def addons_purchase(body: AddonPurchase, user: CurrentUser = Depends(curre
         set_fields["auto_live_enabled"] = True
         # The week pass is repeatable — never mark it as owned so the user can buy again to extend.
         update = {"$set": set_fields}
-    elif addon["id"] == "username_blacklist":
+    elif addon["id"] in ("username_blacklist", "blacklist_package"):
         inc_fields["blacklist_slots"] = int(addon.get("grants_slots", 2))
         # Also repeatable — buying stacks another 2 slots.
         update = {"$inc": inc_fields}
@@ -2548,8 +2658,12 @@ async def addons_mine(user: CurrentUser = Depends(current_user_dep)):
 
 
 # ============ Username Blacklist addon ============
+BLACKLIST_PLATFORMS = {"tiktok", "kick", "instagram", "snapchat", "telegram"}
+
+
 class BlacklistEntryBody(BaseModel):
     tiktok_username: str
+    platform: Optional[str] = "tiktok"
     reason: Optional[str] = None
 
 
@@ -2571,13 +2685,17 @@ async def blacklist_add(body: BlacklistEntryBody, user: CurrentUser = Depends(cu
     handle = (body.tiktok_username or "").strip().lstrip("@")
     if not handle:
         raise HTTPException(status_code=400, detail="Handle is required")
-    if await db.username_blacklist.find_one({"user_id": user.id, "tiktok_username": handle.lower()}):
+    platform = (body.platform or "tiktok").strip().lower()
+    if platform not in BLACKLIST_PLATFORMS:
+        raise HTTPException(status_code=400, detail=f"Platform must be one of: {', '.join(sorted(BLACKLIST_PLATFORMS))}")
+    if await db.username_blacklist.find_one({"user_id": user.id, "tiktok_username": handle.lower(), "platform": platform}):
         raise HTTPException(status_code=409, detail="This handle is already on your blacklist")
     doc = {
         "id": str(uuid.uuid4()),
         "user_id": user.id,
         "username": user.username,
         "tiktok_username": handle.lower(),
+        "platform": platform,
         "reason": (body.reason or "").strip()[:200] or None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -2600,6 +2718,33 @@ async def _is_handle_blacklisted(user_id: str, handle: str) -> bool:
     if not h:
         return False
     return bool(await db.username_blacklist.find_one({"tiktok_username": h}))
+
+
+def _extract_handles_from_link(link: str) -> list:
+    """Pull candidate usernames out of an order link or plain handle."""
+    s = (link or "").strip().lower()
+    out = set()
+    for m in re.finditer(r"@([a-z0-9._-]{2,60})", s):
+        out.add(m.group(1))
+    m = re.search(r"(?:kick\.com|instagram\.com|snapchat\.com/add|t\.me|tiktok\.com)/@?([a-z0-9._-]{2,60})", s)
+    if m:
+        out.add(m.group(1))
+    if re.fullmatch(r"@?[a-z0-9._-]{2,60}", s):
+        out.add(s.lstrip("@"))
+    return [h for h in out if h not in ("live", "add", "www")]
+
+
+async def _enforce_username_blacklist(user_id: str, link: str) -> None:
+    """Reject orders that target a username protected by another user's
+    BlackList Package. Short links (vm.tiktok / vt.tiktok) are always rejected
+    because they can hide a protected username."""
+    s = (link or "").strip().lower()
+    if "vm.tiktok.com" in s or "vt.tiktok.com" in s:
+        raise HTTPException(status_code=400, detail="Short links (vm.tiktok) are not allowed — enter the plain @username or the full profile link instead.")
+    for h in _extract_handles_from_link(link):
+        entry = await db.username_blacklist.find_one({"tiktok_username": h})
+        if entry and entry.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail=f"@{h} is protected by a BlackList Username Package — orders on this username are blocked.")
 
 
 # ============ IP-based language auto-detect (Balkan-first) ============
@@ -3092,7 +3237,7 @@ async def tiktok_lookup_by_id(user_id: str, request: Request, user: CurrentUser 
     if user.role not in ("owner", "moderator"):
         u = await db.users.find_one({"id": user.id}, {"_id": 0, "addons": 1})
         if "id_finder" not in ((u or {}).get("addons") or []):
-            raise HTTPException(status_code=402, detail="Reverse lookup is a premium addon — unlock 'TikTok ID → Username Finder' (€170, unlimited checks) in the Add-ons store.")
+            raise HTTPException(status_code=402, detail="Reverse lookup is a premium addon — unlock 'Find User By ID — Unlimited' (€200, unlimited finds) in the Add-ons store.")
     uid = (user_id or "").strip().replace("@", "")
     if not uid.isdigit() or len(uid) < 6:
         raise HTTPException(status_code=400, detail="Enter a valid TikTok numeric user ID (e.g. 6656114453... )")
@@ -3258,16 +3403,31 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
     if rate <= 0:
         raise HTTPException(status_code=400, detail="Service price not set")
     charge_per_burst = round((rate * body.quantity_per_burst) / 1000.0, 4)
+    charge_per_burst, _dp = await _apply_user_discount(user.id, charge_per_burst)
     balance = await _get_user_balance(user.id)
     if balance < charge_per_burst:
         raise HTTPException(status_code=402, detail=f"Need at least ${charge_per_burst:.2f} in balance to start.")
     now = datetime.now(timezone.utc)
     handle = body.tiktok_username.strip().lstrip("@")
+    tiktok_user_id = None
+    if handle.isdigit() and len(handle) >= 6:
+        # User entered a numeric TikTok user ID — resolve it to the current handle.
+        cached = await db.tiktok_lookup_cache.find_one({"user_id": handle}, {"_id": 0, "handle": 1})
+        if not cached or not cached.get("handle"):
+            raise HTTPException(status_code=404, detail="Couldn't resolve this user ID to a username yet — run it once through the TikTok Finder (username tab for that account), then order again.")
+        tiktok_user_id = handle
+        handle = cached["handle"].lstrip("@")
+    else:
+        c = await db.tiktok_lookup_cache.find_one({"handle": handle.lower()}, {"_id": 0, "user_id": 1})
+        if c and c.get("user_id"):
+            tiktok_user_id = str(c["user_id"])
+    await _enforce_username_blacklist(user.id, handle)
     doc = {
         "id": str(uuid.uuid4()),
         "user_id": user.id,
         "username": user.username,
         "tiktok_username": handle,
+        "tiktok_user_id": tiktok_user_id,
         "service_id": body.service_id,
         "service_name": svc.get("custom_name") or svc.get("name") or "",
         "provider_id": svc.get("provider_id"),
@@ -3495,7 +3655,7 @@ async def admin_toggle_auto_live(uid: str, body: AutoLiveToggleReq, x_admin_toke
 @client_router.post("/live-sub/{sid}/cancel")
 async def live_sub_cancel(sid: str, user: CurrentUser = Depends(current_user_dep)):
     r = await db.live_subscriptions.update_one(
-        {"id": sid, "user_id": user.id, "status": {"$in": ["active", "waiting_for_live", "paused"]}},
+        {"id": sid, "user_id": user.id, "status": {"$in": ["active", "waiting_for_live", "paused", "on_hold"]}},
         {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat()}},
     )
     if r.matched_count == 0:
@@ -3517,7 +3677,7 @@ async def _live_sub_worker_loop():
             )
             # Then: due for a burst — include both active and waiting_for_live
             due = await db.live_subscriptions.find(
-                {"status": {"$in": ["active", "waiting_for_live"]}, "next_check_at": {"$lte": now.isoformat()}},
+                {"status": {"$in": ["active", "waiting_for_live", "on_hold", "paused"]}, "next_check_at": {"$lte": now.isoformat()}},
                 {"_id": 0},
             ).limit(100).to_list(100)
             for sub in due:
@@ -3606,9 +3766,10 @@ async def _fire_one_burst(sub: dict, link: str, tag: str = "burst") -> bool:
     balance = await _get_user_balance(sub["user_id"])
     if balance < charge:
         await db.live_subscriptions.update_one(
-            {"id": sub["id"]}, {"$set": {"status": "paused", "paused_reason": "insufficient_balance", "paused_at": datetime.now(timezone.utc).isoformat()}}
+            {"id": sub["id"]}, {"$set": {"status": "on_hold", "hold_reason": "insufficient_balance", "held_at": datetime.now(timezone.utc).isoformat()}}
         )
-        logger.info("[livesub] sub %s paused — user balance too low ($%.4f < $%.4f)", sub["id"], balance, charge)
+        await _log_live_check(sub, False, note="ON HOLD — balance too low, will auto-resume once topped up", will_fire=False)
+        logger.info("[livesub] sub %s ON HOLD — user balance too low ($%.4f < $%.4f)", sub["id"], balance, charge)
         return False
     try:
         resp = await place_smm_order(sub["service_id"], link, int(sub["quantity_per_burst"]), comments=sub.get("comments"), provider_id=sub.get("provider_id"))
@@ -3673,6 +3834,39 @@ async def _process_live_sub_burst(sub: dict):
         {"id": sub["id"]},
         {"$set": {"last_check_at": now.isoformat(), "next_check_at": default_next}},
     )
+
+    # Username-change tracking — if we know the numeric user id and the lookup
+    # cache holds a newer handle, follow the rename automatically.
+    if sub.get("tiktok_user_id"):
+        try:
+            c = await db.tiktok_lookup_cache.find_one({"user_id": str(sub["tiktok_user_id"])}, {"_id": 0, "handle": 1})
+            new_h = ((c or {}).get("handle") or "").lstrip("@")
+            if new_h and new_h.lower() != (sub.get("tiktok_username") or "").lower():
+                old_h = sub.get("tiktok_username")
+                await db.live_subscriptions.update_one(
+                    {"id": sub["id"]},
+                    {"$set": {"tiktok_username": new_h, "previous_username": old_h,
+                              "username_changed_at": now.isoformat()}},
+                )
+                sub["tiktok_username"] = new_h
+                await _log_live_check(sub, False, note=f"username changed: @{old_h} → @{new_h} — auto-following new handle", will_fire=False)
+                logger.info("[livesub] sub %s followed rename @%s → @%s", sub["id"], old_h, new_h)
+        except Exception:
+            pass
+
+    # ON HOLD auto-resume — the moment the user's balance covers a burst again.
+    if sub.get("status") in ("on_hold", "paused"):
+        bal = await _get_user_balance(sub["user_id"])
+        if bal >= float(sub.get("charge_per_burst") or 0):
+            await db.live_subscriptions.update_one(
+                {"id": sub["id"]},
+                {"$set": {"status": "active"}, "$unset": {"hold_reason": "", "paused_reason": "", "held_at": "", "paused_at": ""}},
+            )
+            sub["status"] = "active"
+            await _log_live_check(sub, False, note="balance topped up — order auto-resumed from ON HOLD", will_fire=False)
+            logger.info("[livesub] sub %s auto-resumed from ON HOLD", sub["id"])
+        else:
+            return
 
     mode = (sub.get("mode") or "always").lower()
     link = f"https://www.tiktok.com/@{sub['tiktok_username']}/live"
@@ -8328,6 +8522,65 @@ async def client_discord_link(body: DiscordCallbackBody, user: CurrentUser = Dep
 @api_router.post("/client/discord/unlink")
 async def client_discord_unlink(user: CurrentUser = Depends(current_user_dep)):
     await db.users.update_one({"id": user.id}, {"$unset": {"discord_id": "", "discord_username": ""}})
+    return {"ok": True}
+
+
+# ============ Client Discord bot management (invite / welcomer / features) ============
+@api_router.get("/discord/invite-url")
+async def discord_invite_url():
+    cfg = await db.discord_config.find_one({}, {"_id": 0, "oauth_client_id": 1, "application_id": 1}) or {}
+    app_id = (cfg.get("application_id") or cfg.get("oauth_client_id") or "").strip()
+    if not app_id:
+        raise HTTPException(status_code=503, detail="Bot invite not configured yet — the site admin must save the Discord OAuth Client ID first.")
+    perms = 1374926835718  # manage nicknames/channels/messages, kick, ban, timeout — for moderation features
+    return {"url": f"https://discord.com/oauth2/authorize?client_id={app_id}&scope=bot%20applications.commands&permissions={perms}"}
+
+
+DISCORD_GUILD_FEATURES = {"welcomer", "anti_raid", "moderation", "blacklist", "anti_nuke"}
+
+
+class ClientGuildConfig(BaseModel):
+    guild_id: str = Field(..., min_length=5, max_length=32)
+    welcome_channel_id: Optional[str] = None
+    welcome_text: Optional[str] = Field(default=None, max_length=1000)
+    welcomer_enabled: bool = True
+    bot_nickname: Optional[str] = Field(default=None, max_length=32)
+    features: Optional[dict] = None
+
+
+@client_router.get("/discord/guilds")
+async def client_discord_guilds(user: CurrentUser = Depends(current_user_dep)):
+    rows = await db.client_discord_guilds.find({"user_id": user.id}, {"_id": 0}).to_list(20)
+    return {"guilds": rows}
+
+
+@client_router.post("/discord/guilds")
+async def client_discord_guild_save(body: ClientGuildConfig, user: CurrentUser = Depends(current_user_dep)):
+    gid = body.guild_id.strip()
+    if not gid.isdigit():
+        raise HTTPException(status_code=400, detail="Server (Guild) ID must be numeric — right-click your server icon → Copy Server ID")
+    existing = await db.client_discord_guilds.find_one({"guild_id": gid}, {"_id": 0, "user_id": 1})
+    if existing and existing["user_id"] != user.id:
+        raise HTTPException(status_code=403, detail="This server is already managed by another Better Social account.")
+    feats = {k: bool(v) for k, v in (body.features or {}).items() if k in DISCORD_GUILD_FEATURES}
+    doc = {
+        "guild_id": gid, "user_id": user.id, "username": user.username,
+        "welcome_channel_id": (body.welcome_channel_id or "").strip() or None,
+        "welcome_text": (body.welcome_text or "").strip() or None,
+        "welcomer_enabled": bool(body.welcomer_enabled),
+        "bot_nickname": (body.bot_nickname or "").strip() or None,
+        "features": feats,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.client_discord_guilds.update_one({"guild_id": gid}, {"$set": doc}, upsert=True)
+    return {"ok": True, "guild": doc}
+
+
+@client_router.delete("/discord/guilds/{gid}")
+async def client_discord_guild_delete(gid: str, user: CurrentUser = Depends(current_user_dep)):
+    r = await db.client_discord_guilds.delete_one({"guild_id": gid, "user_id": user.id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
 
 

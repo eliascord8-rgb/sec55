@@ -356,6 +356,15 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
             )}
             {role === "owner" && (
             <TabsTrigger
+              value="discounts"
+              data-testid="tab-discounts"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Discounts
+            </TabsTrigger>
+            )}
+            {role === "owner" && (
+            <TabsTrigger
               value="users"
               data-testid="tab-users"
               className="data-[state=active]:bg-[#FF007F] rounded-sm"
@@ -512,6 +521,9 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
           </TabsContent>
           <TabsContent value="coupons">
             <CouponsPanel token={token} />
+          </TabsContent>
+          <TabsContent value="discounts">
+            <DiscountKeysPanel token={token} />
           </TabsContent>
           <TabsContent value="users">
             <UsersPanel token={token} />
@@ -1040,6 +1052,117 @@ function BulkGiftPanel({ token }) {
     </div>
   );
 }
+
+function DiscountKeysPanel({ token }) {
+  const [keys, setKeys] = useState([]);
+  const [percent, setPercent] = useState(10);
+  const [code, setCode] = useState("");
+  const [maxUses, setMaxUses] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/discount-keys");
+      setKeys(r.data.keys || []);
+    } catch { /* ignore */ }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const generate = async () => {
+    const p = Number(percent);
+    if (!p || p < 1 || p > 100) { toast.error("Percent must be 1–100"); return; }
+    setBusy(true);
+    try {
+      const r = await adminApi(token).post("/admin/discount-keys", {
+        percent: p,
+        code: code.trim() || undefined,
+        max_uses: maxUses ? Number(maxUses) : undefined,
+      });
+      toast.success(`Key ${r.data.key.code} created — ${p}% off all services`);
+      setCode(""); setMaxUses("");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+    finally { setBusy(false); }
+  };
+
+  const remove = async (c) => {
+    if (!window.confirm(`Delete key ${c}? Users with it active lose their discount immediately.`)) return;
+    try {
+      await adminApi(token).delete(`/admin/discount-keys/${c}`);
+      toast.success("Key deleted");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+  };
+
+  return (
+    <div className="space-y-6" data-testid="discount-keys-panel">
+      <div className="bg-[#12121a] border border-white/10 rounded-md p-5">
+        <h3 className="font-display font-bold text-sm mb-1">Generate discount key</h3>
+        <p className="text-xs text-white/50 mb-4">Send a key to any user — once they enter it in Settings → Discount, all <b>services</b> get cheaper for them by the chosen percent. Add-ons are never discounted.</p>
+        <div className="flex flex-wrap gap-2 items-end">
+          <div>
+            <label className="text-[10px] uppercase tracking-widest text-white/50">Percent off (1–100)</label>
+            <input type="number" min={1} max={100} value={percent} onChange={(e) => setPercent(e.target.value)}
+              data-testid="disc-percent-input"
+              className="block w-28 mt-1 bg-black/40 border border-white/15 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-[#FF007F]" />
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-widest text-white/50">Custom code (optional)</label>
+            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="auto-generated if empty"
+              data-testid="disc-code-input"
+              className="block w-48 mt-1 bg-black/40 border border-white/15 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-[#FF007F] font-mono" />
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-widest text-white/50">Max uses (optional)</label>
+            <input type="number" min={1} value={maxUses} onChange={(e) => setMaxUses(e.target.value)} placeholder="∞"
+              data-testid="disc-maxuses-input"
+              className="block w-24 mt-1 bg-black/40 border border-white/15 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-[#FF007F]" />
+          </div>
+          <button onClick={generate} disabled={busy} data-testid="disc-generate-btn"
+            className="px-5 py-2 rounded-md bg-[#FF007F] hover:bg-[#ff2a94] text-white text-xs font-black uppercase tracking-wider transition disabled:opacity-40">
+            {busy ? "…" : "Generate"}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-[#12121a] border border-white/10 rounded-md overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-[10px] uppercase tracking-widest text-white/40">
+              <th className="px-5 py-3">Code</th>
+              <th className="px-5 py-3">% Off</th>
+              <th className="px-5 py-3">Uses</th>
+              <th className="px-5 py-3">Created</th>
+              <th className="px-5 py-3 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {keys.map((k) => (
+              <tr key={k.code} className="border-t border-white/5" data-testid={`disc-key-${k.code}`}>
+                <td className="px-5 py-3 font-mono text-white/90">
+                  {k.code}
+                  <button onClick={() => { navigator.clipboard?.writeText(k.code); toast.success("Copied"); }}
+                    className="ml-2 text-[10px] text-[#00E5FF] hover:underline">copy</button>
+                </td>
+                <td className="px-5 py-3 text-emerald-300 font-bold">{k.percent}%</td>
+                <td className="px-5 py-3 text-white/60">{k.uses || 0}{k.max_uses ? ` / ${k.max_uses}` : ""}</td>
+                <td className="px-5 py-3 text-white/50 text-xs">{k.created_at ? new Date(k.created_at).toLocaleDateString() : "-"}</td>
+                <td className="px-5 py-3 text-right">
+                  <button onClick={() => remove(k.code)} data-testid={`disc-delete-${k.code}`}
+                    className="text-red-300 hover:text-red-200 text-xs font-bold uppercase">Delete</button>
+                </td>
+              </tr>
+            ))}
+            {keys.length === 0 && (
+              <tr><td colSpan={5} className="px-5 py-10 text-center text-white/40 text-xs">No discount keys yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 
 function CouponsPanel({ token }) {
   const [list, setList] = useState([]);
@@ -5260,17 +5383,31 @@ function UsersPanel({ token }) {
                     <td className="px-6 py-3 font-mono text-white/90">{u.username}</td>
                     <td className="px-6 py-3 text-white/60">{u.email}</td>
                     <td className="px-6 py-3">
-                      <span
-                        className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm ${
+                      <select
+                        value={u.role || "user"}
+                        data-testid={`role-select-${u.id}`}
+                        onChange={async (e) => {
+                          const next = e.target.value;
+                          try {
+                            await adminApi(token).put(`/admin/users/${u.id}`, { role: next });
+                            toast.success(`@${u.username} is now ${next}`);
+                            load?.();
+                          } catch (err) { toast.error(err.response?.data?.detail || "Role change failed"); }
+                        }}
+                        className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded-sm border-0 outline-none cursor-pointer ${
                           u.role === "owner"
                             ? "bg-[#FF007F]/20 text-[#FF007F]"
                             : u.role === "admin"
                             ? "bg-[#00E5FF]/20 text-[#00E5FF]"
+                            : u.role === "moderator"
+                            ? "bg-amber-500/20 text-amber-300"
                             : "bg-white/10 text-white/60"
                         }`}
                       >
-                        {u.role}
-                      </span>
+                        {["user", "moderator", "admin", "owner"].map((r) => (
+                          <option key={r} value={r} className="bg-[#12121a] text-white">{r}</option>
+                        ))}
+                      </select>
                     </td>
                     <td className="px-6 py-3 text-right">
                       <button

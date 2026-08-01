@@ -44,12 +44,14 @@ import {
   Home,
   Trophy,
   MessageCircle,
+  Trash2,
 } from "lucide-react";
 import SlotsView from "./SlotsView";
 import MessagesView from "./MessagesView";
 import GamesView from "./GamesView";
 import { InvoicesView, HelpCenterView } from "./InvoicesAndHelp";
-import { AviatorGame, SettingsView } from "./SettingsAndAviator";
+import { AviatorGame, SettingsView, SecurityView } from "./SettingsAndAviator";
+import DiscordManageView from "../components/DiscordManageView";
 import GuestLanding from "./GuestLanding";
 import GoalNotifier from "@/components/GoalNotifier";
 import BrandLoader from "@/components/BrandLoader";
@@ -458,6 +460,7 @@ export default function ClientDashboard() {
     { id: "messages", label: t("nav_messages"), testId: "nav-messages", badge: unreadDms },
     { id: "tickets", label: t("nav_tickets"), testId: "nav-tickets", badge: unreadTickets },
     { id: "funds", label: t("nav_funds"), testId: "nav-funds" },
+    { id: "discord", label: "Manage Discord", testId: "nav-discord" },
     { id: "redeem", label: t("nav_redeem"), testId: "nav-redeem" },
     { id: "withdraw", label: t("nav_withdraw"), testId: "nav-withdraw" },
   ];
@@ -550,7 +553,7 @@ export default function ClientDashboard() {
                         <button
                           key={tab.id}
                           onClick={() => { changeView(tab.id); setMoreOpen(false); }}
-                          data-testid={`more-${tab.testId}`}
+                          data-testid={tab.testId}
                           className={`w-full flex items-center justify-between px-3 py-2 text-sm transition ${view === tab.id ? "bg-emerald-500/15 text-emerald-200" : "text-white hover:bg-emerald-500/10"}`}
                         >
                           <span className="font-medium">{tab.label}</span>
@@ -719,7 +722,7 @@ export default function ClientDashboard() {
                 <a href="/admin" data-testid="nav-support-green" title="Open support panel"
                    className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-amber-400 hover:bg-amber-300 transition shadow-sm shadow-amber-500/40">
                   <Sparkles className="w-3.5 h-3.5" />
-                  Support
+                  Support Panel
                 </a>
               )}
               <button onClick={() => { logout(); nav("/"); }} data-testid="client-logout" className="hidden md:flex w-9 h-9 rounded-md hover:bg-white/10 items-center justify-center text-white/70" title="Logout">
@@ -989,6 +992,7 @@ export default function ClientDashboard() {
               {view === "help" && <HelpCenterView onOpenAI={openAI} />}
               {view === "api" && <ApiKeyView authedApi={authedApi} />}
               {view === "settings" && <SettingsView authedApi={authedApi} user={user} />}
+              {view === "discord" && <DiscordManageView authedApi={authedApi} />}
               {view === "security" && <SecurityView authedApi={authedApi} user={user} />}
               {view === "redeem" && (
                 <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
@@ -2821,7 +2825,7 @@ function AddonsView({ authedApi, balance, reloadBalance, reloadAddons, onGoBuy, 
               <div className="flex items-end justify-between gap-3 pt-4 border-t border-white/10">
                 <div>
                   <div className="text-[10px] uppercase tracking-widest text-white/40">Price</div>
-                  <div className="font-display font-black text-3xl text-emerald-300">${a.price.toFixed(2)}</div>
+                  <div className="font-display font-black text-3xl text-emerald-300">{a.currency === "EUR" ? "€" : "$"}{a.price.toFixed(2)}</div>
                 </div>
                 {a.owned ? (
                   <button
@@ -2847,6 +2851,8 @@ function AddonsView({ authedApi, balance, reloadBalance, reloadAddons, onGoBuy, 
         </div>
       )}
 
+      <BlacklistManager authedApi={authedApi} />
+
       {checkout && (
         <div
           data-testid="addon-checkout-modal"
@@ -2858,7 +2864,7 @@ function AddonsView({ authedApi, balance, reloadBalance, reloadAddons, onGoBuy, 
             <h3 className="font-display font-black text-2xl mb-1">{checkout.name}</h3>
             <p className="text-sm text-white/60 mb-4">{checkout.tagline}</p>
             <div className="bg-black/30 rounded-md p-4 space-y-2 mb-4 text-sm">
-              <div className="flex justify-between"><span className="text-white/60">Price</span><span className="text-white font-bold">${checkout.price.toFixed(2)}</span></div>
+              <div className="flex justify-between"><span className="text-white/60">Price</span><span className="text-white font-bold">{checkout.currency === "EUR" ? "€" : "$"}{checkout.price.toFixed(2)}</span></div>
               <div className="flex justify-between"><span className="text-white/60">Payment</span><span className="text-emerald-300 font-bold">Account balance</span></div>
               <div className="flex justify-between border-t border-white/10 pt-2"><span className="text-white/60">Balance after</span><span className={`font-bold ${balance - checkout.price >= 0 ? "text-emerald-300" : "text-red-300"}`}>${(balance - checkout.price).toFixed(2)}</span></div>
             </div>
@@ -2887,6 +2893,83 @@ function AddonsView({ authedApi, balance, reloadBalance, reloadAddons, onGoBuy, 
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+function BlacklistManager({ authedApi }) {
+  const [data, setData] = useState({ entries: [], slots_total: 0, slots_free: 0 });
+  const [handle, setHandle] = useState("");
+  const [platform, setPlatform] = useState("tiktok");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await authedApi().get("/client/addons/blacklist");
+      setData(r.data);
+    } catch { /* ignore */ }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const add = async () => {
+    if (!handle.trim()) { toast.error("Enter the username to protect"); return; }
+    setBusy(true);
+    try {
+      await authedApi().post("/client/addons/blacklist", { tiktok_username: handle.trim(), platform });
+      toast.success(`@${handle.trim().replace(/^@/, "")} is now protected on ${platform}`);
+      setHandle("");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+    finally { setBusy(false); }
+  };
+
+  const remove = async (id) => {
+    try {
+      await authedApi().delete(`/client/addons/blacklist/${id}`);
+      toast.success("Entry removed");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+  };
+
+  if (!data.slots_total) return null;
+  return (
+    <div className="bg-[#0d0a14] border border-red-500/30 rounded-lg p-6" data-testid="blacklist-manager">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <div className="font-display font-black text-xl">🛡 Your BlackList — protected usernames</div>
+        <div className="text-xs text-white/60">Slots: <span className="text-emerald-300 font-bold">{data.slots_free}</span> free / {data.slots_total} total</div>
+      </div>
+      <p className="text-xs text-white/50 mb-4">Nobody else can order on these usernames. Short links (vm.tiktok) are always rejected on order forms, so links can&apos;t bypass your protection.</p>
+      <div className="flex flex-wrap gap-2 mb-4">
+        <select value={platform} onChange={(e) => setPlatform(e.target.value)} data-testid="blacklist-platform-select"
+          className="bg-black/40 border border-white/15 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-red-400">
+          {["tiktok", "kick", "instagram", "snapchat", "telegram"].map((p) => (
+            <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+          ))}
+        </select>
+        <input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder="@username to protect"
+          data-testid="blacklist-username-input"
+          className="flex-1 min-w-[180px] bg-black/40 border border-white/15 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-red-400" />
+        <button onClick={add} disabled={busy || data.slots_free <= 0} data-testid="blacklist-add-btn"
+          className="px-4 py-2 rounded-md bg-red-500 hover:bg-red-400 text-white text-xs font-black uppercase tracking-wider transition disabled:opacity-40">
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Protect"}
+        </button>
+      </div>
+      {data.slots_free <= 0 && data.entries.length >= data.slots_total && (
+        <div className="text-[11px] text-amber-300 mb-3">No free slots — buy the BlackList Username Package again to stack more.</div>
+      )}
+      <div className="space-y-2">
+        {data.entries.map((e) => (
+          <div key={e.id} className="flex items-center gap-3 p-2.5 rounded-md bg-black/30 border border-white/10" data-testid={`blacklist-entry-${e.id}`}>
+            <span className="text-[10px] uppercase font-black px-2 py-0.5 rounded-sm bg-red-500/20 text-red-300 border border-red-500/30">{e.platform || "tiktok"}</span>
+            <span className="font-mono text-sm text-white">@{e.tiktok_username}</span>
+            <button onClick={() => remove(e.id)} data-testid={`blacklist-remove-${e.id}`} className="ml-auto text-red-300 hover:text-red-200">
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        ))}
+        {data.entries.length === 0 && <div className="text-xs text-white/40">No protected usernames yet.</div>}
+      </div>
     </div>
   );
 }
@@ -2946,11 +3029,13 @@ function LiveSubRow({ sub, onCancel, authedApi }) {
   const hasChecks = checks.length > 0;
   const statusLabel = sub.status === "waiting_for_live"
     ? (hasChecks ? "Streamer offline — waiting" : "Waiting for first check")
-    : sub.status === "paused" ? "Paused"
+    : (sub.status === "paused" || sub.status === "on_hold") ? "⏸ ON HOLD — top up balance to auto-resume"
     : sub.status === "refunded" ? "Refunded"
     : hasChecks && isOnline ? "🔴 LIVE — boosting"
     : "Active";
-  const statusColor = sub.status === "paused" || sub.status === "refunded"
+  const statusColor = (sub.status === "paused" || sub.status === "on_hold")
+    ? "text-amber-300"
+    : sub.status === "refunded"
     ? "text-red-300"
     : hasChecks && !isOnline
     ? "text-red-300"
@@ -3182,23 +3267,37 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
       toast.error(`Minimum quantity is ${selected.min}`); return;
     }
     setSubSubmitting(true);
+    const handles = subUsername.split(/[\n,]+/).map((h) => h.trim().replace(/^@/, "")).filter(Boolean);
     try {
-      const r = await authedApi().post("/client/live-sub/create", {
-        service_id: selected.service,
-        tiktok_username: subUsername.trim().replace(/^@/, ""),
-        quantity_per_burst: Number(qty),
-        duration_days: subDays,
-        repeat_every_minutes: subRepeatMins,
-        mode: subFireMode,
-        comments: selected.needs_custom_text ? comments.trim() : undefined,
-      });
-      const firstNote = r.data.first_order_id ? ` — first order #${r.data.first_order_id} placed now.` : "";
-      toast.success(`✅ Auto-live activated for @${r.data.subscription.tiktok_username} (${subDays} days, every ${subRepeatMins} min)${firstNote}`);
-      setSubUsername("");
-      loadMySubs();
-      reloadBalance();
-    } catch (err) {
-      toast.error(err.response?.data?.detail || "Subscription failed");
+      let okCount = 0;
+      let firstNote = "";
+      let lastHandle = "";
+      for (const h of handles) {
+        try {
+          const r = await authedApi().post("/client/live-sub/create", {
+            service_id: selected.service,
+            tiktok_username: h,
+            quantity_per_burst: Number(qty),
+            duration_days: subDays,
+            repeat_every_minutes: subRepeatMins,
+            mode: subFireMode,
+            comments: selected.needs_custom_text ? comments.trim() : undefined,
+          });
+          okCount++;
+          lastHandle = r.data.subscription.tiktok_username;
+          if (r.data.first_order_id && !firstNote) firstNote = ` — first order #${r.data.first_order_id} placed now.`;
+        } catch (err) {
+          toast.error(`@${h}: ${err.response?.data?.detail || "Subscription failed"}`);
+        }
+      }
+      if (okCount > 0) {
+        toast.success(okCount === 1
+          ? `✅ Auto-live activated for @${lastHandle} (${subDays} days, every ${subRepeatMins} min)${firstNote}`
+          : `✅ Auto-live activated for ${okCount} targets (${subDays} days, every ${subRepeatMins} min)${firstNote}`);
+        setSubUsername("");
+        loadMySubs();
+        reloadBalance();
+      }
     } finally { setSubSubmitting(false); }
   };
 
@@ -3889,7 +3988,7 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                     data-testid="buy-sub-username"
                     value={subUsername}
                     onChange={(e) => setSubUsername(e.target.value)}
-                    placeholder="creatorhandle"
+                    placeholder="username, another_user, or numeric user ID"
                     className="bg-[#1a1525] border-fuchsia-500/30 mt-1"
                   />
                 </div>

@@ -58,9 +58,39 @@ class DiscordBotManager:
 
         @client.event
         async def on_member_join(member: discord.Member):
+            guild = member.guild
+            # Per-guild client welcomer (managed via Better Social dashboard → Manage Discord)
+            gcfg = None
+            try:
+                if mgr.db is not None:
+                    gcfg = await mgr.db.client_discord_guilds.find_one({"guild_id": str(guild.id)}, {"_id": 0})
+            except Exception:
+                gcfg = None
+            if gcfg:
+                # Apply the client's custom bot nickname lazily
+                nick = gcfg.get("bot_nickname")
+                if nick and guild.me and guild.me.display_name != nick:
+                    try:
+                        await guild.me.edit(nick=nick)
+                    except Exception:
+                        pass
+                if gcfg.get("welcomer_enabled") and gcfg.get("welcome_text"):
+                    ch = None
+                    cid = str(gcfg.get("welcome_channel_id") or "")
+                    if cid.isdigit():
+                        ch = guild.get_channel(int(cid))
+                    if ch is None:
+                        ch = guild.system_channel or next((c for c in guild.text_channels if c.permissions_for(guild.me).send_messages), None)
+                    if ch:
+                        try:
+                            txt = gcfg["welcome_text"].replace("{user}", member.mention).replace("{server}", guild.name)
+                            await ch.send(txt)
+                        except Exception as e:
+                            logger.warning("[discord] client welcome send failed: %s", e)
+                return
+            # Global welcomer fallback (admin-configured)
             if not mgr.welcome_enabled or not mgr.welcome_message:
                 return
-            guild = member.guild
             ch = None
             if mgr.welcome_channel:
                 ch = discord.utils.get(guild.text_channels, name=mgr.welcome_channel.lstrip("#").lower())
