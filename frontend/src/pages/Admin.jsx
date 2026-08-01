@@ -1053,6 +1053,60 @@ function BulkGiftPanel({ token }) {
   );
 }
 
+function ReferralConfigCard({ token }) {
+  const [cfg, setCfg] = useState({ enabled: true, reward_usd: 5, friend_bonus_pct: 5 });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    adminApi(token).get("/admin/referral-config").then((r) => setCfg(r.data)).catch(() => {});
+    // eslint-disable-next-line
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/referral-config", {
+        enabled: !!cfg.enabled,
+        reward_usd: Number(cfg.reward_usd) || 0,
+        friend_bonus_pct: Number(cfg.friend_bonus_pct) || 0,
+      });
+      toast.success("Referral program updated");
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="bg-[#12121a] border border-emerald-500/25 rounded-md p-5" data-testid="referral-config-card">
+      <h3 className="font-display font-bold text-sm mb-1">Referral program</h3>
+      <p className="text-xs text-white/50 mb-4">Referrer earns a fixed reward when an invited friend makes their FIRST deposit (paid to balance + withdrawable). The friend gets a % bonus on that deposit.</p>
+      <div className="flex flex-wrap gap-3 items-end">
+        <label className="flex items-center gap-2 pb-2 cursor-pointer">
+          <input type="checkbox" checked={!!cfg.enabled} data-testid="ref-enabled-toggle"
+            onChange={(e) => setCfg({ ...cfg, enabled: e.target.checked })} className="accent-emerald-500 w-4 h-4" />
+          <span className="text-xs text-white/80 font-bold">Enabled</span>
+        </label>
+        <div>
+          <label className="text-[10px] uppercase tracking-widest text-white/50">Referrer reward ($)</label>
+          <input type="number" min={0} step="0.5" value={cfg.reward_usd} data-testid="ref-reward-input"
+            onChange={(e) => setCfg({ ...cfg, reward_usd: e.target.value })}
+            className="block w-28 mt-1 bg-black/40 border border-white/15 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
+        </div>
+        <div>
+          <label className="text-[10px] uppercase tracking-widest text-white/50">Friend bonus (%)</label>
+          <input type="number" min={0} max={100} value={cfg.friend_bonus_pct} data-testid="ref-bonus-input"
+            onChange={(e) => setCfg({ ...cfg, friend_bonus_pct: e.target.value })}
+            className="block w-24 mt-1 bg-black/40 border border-white/15 rounded-md px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />
+        </div>
+        <button onClick={save} disabled={saving} data-testid="ref-save-btn"
+          className="px-5 py-2 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black uppercase tracking-wider transition disabled:opacity-40">
+          {saving ? "…" : "Save"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
 function DiscountKeysPanel({ token }) {
   const [keys, setKeys] = useState([]);
   const [percent, setPercent] = useState(10);
@@ -1096,6 +1150,7 @@ function DiscountKeysPanel({ token }) {
 
   return (
     <div className="space-y-6" data-testid="discount-keys-panel">
+      <ReferralConfigCard token={token} />
       <div className="bg-[#12121a] border border-white/10 rounded-md p-5">
         <h3 className="font-display font-bold text-sm mb-1">Generate discount key</h3>
         <p className="text-xs text-white/50 mb-4">Send a key to any user — once they enter it in Settings → Discount, all <b>services</b> get cheaper for them by the chosen percent. Add-ons are never discounted.</p>

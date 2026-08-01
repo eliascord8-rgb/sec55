@@ -52,6 +52,7 @@ import GamesView from "./GamesView";
 import { InvoicesView, HelpCenterView } from "./InvoicesAndHelp";
 import { AviatorGame, SettingsView, SecurityView } from "./SettingsAndAviator";
 import DiscordManageView from "../components/DiscordManageView";
+import ReferralsView from "../components/ReferralsView";
 import GuestLanding from "./GuestLanding";
 import GoalNotifier from "@/components/GoalNotifier";
 import BrandLoader from "@/components/BrandLoader";
@@ -461,6 +462,7 @@ export default function ClientDashboard() {
     { id: "tickets", label: t("nav_tickets"), testId: "nav-tickets", badge: unreadTickets },
     { id: "funds", label: t("nav_funds"), testId: "nav-funds" },
     { id: "discord", label: "Manage Discord", testId: "nav-discord" },
+    { id: "referrals", label: "Referrals", testId: "nav-referrals" },
     { id: "redeem", label: t("nav_redeem"), testId: "nav-redeem" },
     { id: "withdraw", label: t("nav_withdraw"), testId: "nav-withdraw" },
   ];
@@ -993,6 +995,7 @@ export default function ClientDashboard() {
               {view === "api" && <ApiKeyView authedApi={authedApi} />}
               {view === "settings" && <SettingsView authedApi={authedApi} user={user} />}
               {view === "discord" && <DiscordManageView authedApi={authedApi} />}
+              {view === "referrals" && <ReferralsView authedApi={authedApi} />}
               {view === "security" && <SecurityView authedApi={authedApi} user={user} />}
               {view === "redeem" && (
                 <RedeemView authedApi={authedApi} balance={balance} reloadBalance={loadBalance} />
@@ -3086,6 +3089,37 @@ function LiveSubRow({ sub, onCancel, authedApi }) {
         >
           {expanded ? "Hide" : "History"}
         </button>
+        <button
+          onClick={async () => {
+            try {
+              const r = await authedApi().get(`/debug/tiktok-live/${sub.tiktok_username}`);
+              if (r.data.is_live) toast.success(`🔴 @${sub.tiktok_username} is LIVE right now!`);
+              else toast.info(`@${sub.tiktok_username} is offline right now.`);
+              loadChecks();
+            } catch (e) { toast.error(e.response?.data?.detail || "Live check failed"); }
+          }}
+          data-testid={`live-sub-checklive-${sub.id}`}
+          title="Check right now whether this account is live"
+          className="text-[11px] uppercase tracking-widest text-emerald-300 hover:text-emerald-100 font-bold"
+        >
+          Live check
+        </button>
+        <button
+          onClick={async () => {
+            const next = window.prompt("New TikTok @username (or numeric user ID) for this Auto-Live order:", sub.tiktok_username);
+            if (!next || !next.trim()) return;
+            try {
+              const r = await authedApi().post(`/client/live-sub/${sub.id}/username`, { tiktok_username: next.trim() });
+              toast.success(`Target changed to @${r.data.tiktok_username}`);
+              window.dispatchEvent(new CustomEvent("bs:livesubs-reload"));
+            } catch (e) { toast.error(e.response?.data?.detail || "Change failed"); }
+          }}
+          data-testid={`live-sub-editname-${sub.id}`}
+          title="Change the target username on this running order"
+          className="text-[11px] uppercase tracking-widest text-amber-300 hover:text-amber-100 font-bold"
+        >
+          Edit @
+        </button>
         <button onClick={onCancel} data-testid={`live-sub-cancel-${sub.id}`}
                 className="text-red-300 hover:text-red-200 text-[11px] font-bold uppercase tracking-wider">
           Cancel
@@ -3259,7 +3293,13 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
       setMySubs(r.data.subscriptions || []);
     } catch { /* ignore */ }
   };
-  useEffect(() => { loadMySubs(); }, []);
+  useEffect(() => {
+    loadMySubs();
+    const h = () => loadMySubs();
+    window.addEventListener("bs:livesubs-reload", h);
+    return () => window.removeEventListener("bs:livesubs-reload", h);
+    // eslint-disable-next-line
+  }, []);
 
   const [subFireMode, setSubFireMode] = useState("live_only"); // "live_only" (default per user request) or "always"
 

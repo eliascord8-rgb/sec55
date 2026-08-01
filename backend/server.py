@@ -1797,6 +1797,138 @@ async def get_my_balance(user: CurrentUser = Depends(current_user_dep)):
     return {"balance": balance, "withdrawable": withdrawable}
 
 
+# ============ Referral rewards ============
+async def _referral_config() -> dict:
+    cfg = await db.app_settings.find_one({"_id": "singleton"}, {"_id": 0, "referral_config": 1}) or {}
+    rc = cfg.get("referral_config") or {}
+    return {
+        "enabled": bool(rc.get("enabled", True)),
+        "reward_usd": float(rc.get("reward_usd", 5.0)),
+        "friend_bonus_pct": float(rc.get("friend_bonus_pct", 5.0)),
+    }
+
+
+async def _get_or_create_referral_code(user_id: str, username: str) -> str:
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "referral_code": 1})
+    if u and u.get("referral_code"):
+        return u["referral_code"]
+    base = re.sub(r"[^A-Z0-9]", "", (username or "REF").upper())[:10] or "REF"
+    for _ in range(6):
+        code = f"{base}{uuid.uuid4().hex[:4].upper()}"
+        if not await db.users.find_one({"referral_code": code}, {"_id": 0, "id": 1}):
+            await db.users.update_one({"id": user_id}, {"$set": {"referral_code": code}})
+            return code
+    code = uuid.uuid4().hex[:10].upper()
+    await db.users.update_one({"id": user_id}, {"$set": {"referral_code": code}})
+    return code
+
+
+async def _maybe_referral_rewards(user_id: str) -> None:
+    """Called after any deposit credit. On the friend's FIRST approved deposit:
+    referrer gets a fixed reward (balance + withdrawable), friend gets +N% bonus."""
+    try:
+        cfg = await _referral_config()
+        if not cfg["enabled"]:
+            return
+        u = await db.users.find_one({"id": user_id}, {"_id": 0, "referred_by": 1, "referral_rewarded": 1, "username": 1})
+        if not u or not u.get("referred_by") or u.get("referral_rewarded"):
+            return
+        # Atomic claim so concurrent webhooks can't double-pay.
+        r = await db.users.update_one(
+            {"id": user_id, "referral_rewarded": {"$ne": True}},
+            {"$set": {"referral_rewarded": True, "referral_rewarded_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        if r.modified_count == 0:
+            return
+        first = await db.transactions.find_one(
+            {"user_id": user_id, "type": "deposit", "status": "approved", "amount": {"$gt": 0}},
+            {"_id": 0, "amount": 1, "id": 1},
+            sort=[("approved_at", 1)],
+        )
+        if not first:
+            await db.users.update_one({"id": user_id}, {"$unset": {"referral_rewarded": "", "referral_rewarded_at": ""}})
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        ref = await db.users.find_one({"id": u["referred_by"]}, {"_id": 0, "id": 1, "username": 1})
+        reward = round(cfg["reward_usd"], 2)
+        if ref and reward > 0:
+            await db.transactions.insert_one({
+                "id": str(uuid.uuid4()), "user_id": ref["id"], "username": ref.get("username"),
+                "amount": reward, "method": "referral", "status": "approved",
+                "type": "referral_reward",
+                "note": f"Referral reward — @{u.get('username')} made their first deposit",
+                "referred_user_id": user_id, "created_at": now, "approved_at": now,
+            })
+            # Also withdrawable, per product decision.
+            await db.users.update_one({"id": ref["id"]}, {"$inc": {"withdrawable_balance": reward}})
+        pct = cfg["friend_bonus_pct"]
+        bonus = round(float(first["amount"]) * pct / 100.0, 2) if pct > 0 else 0.0
+        if bonus > 0:
+            await db.transactions.insert_one({
+                "id": str(uuid.uuid4()), "user_id": user_id, "username": u.get("username"),
+                "amount": bonus, "method": "bonus", "status": "approved",
+                "type": "referral_friend_bonus",
+                "note": f"+{pct:g}% referral welcome bonus on your first deposit",
+                "linked_tx": first["id"], "created_at": now, "approved_at": now,
+            })
+        logger.info("[referral] paid referrer=%s $%.2f, friend=%s bonus=$%.2f", u.get("referred_by"), reward, user_id, bonus)
+    except Exception as e:
+        logger.warning("[referral] reward processing failed for user=%s: %s", user_id, e)
+
+
+@client_router.get("/referrals")
+async def client_referrals(user: CurrentUser = Depends(current_user_dep)):
+    cfg = await _referral_config()
+    code = await _get_or_create_referral_code(user.id, user.username)
+    friends = await db.users.find(
+        {"referred_by": user.id},
+        {"_id": 0, "username": 1, "created_at": 1, "referral_rewarded": 1},
+    ).sort("created_at", -1).to_list(200)
+    rows = await db.transactions.find(
+        {"user_id": user.id, "type": "referral_reward"}, {"_id": 0, "amount": 1},
+    ).to_list(1000)
+
+    def _mask(n):
+        n = n or ""
+        return (n[0] + "***" + n[-1]) if len(n) > 2 else "***"
+
+    return {
+        "code": code,
+        "enabled": cfg["enabled"],
+        "reward_usd": cfg["reward_usd"],
+        "friend_bonus_pct": cfg["friend_bonus_pct"],
+        "earned_total": round(sum(float(x["amount"]) for x in rows), 2),
+        "invited": [
+            {"username": _mask(f.get("username")), "joined_at": f.get("created_at"),
+             "deposited": bool(f.get("referral_rewarded"))}
+            for f in friends
+        ],
+    }
+
+
+class ReferralCfgBody(BaseModel):
+    enabled: bool = True
+    reward_usd: float = Field(5.0, ge=0, le=1000)
+    friend_bonus_pct: float = Field(5.0, ge=0, le=100)
+
+
+@api_router.get("/admin/referral-config")
+async def admin_referral_config_get(x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    return await _referral_config()
+
+
+@api_router.post("/admin/referral-config")
+async def admin_referral_config_set(body: ReferralCfgBody, x_admin_token: Optional[str] = Header(None)):
+    check_owner(x_admin_token)
+    await db.app_settings.update_one(
+        {"_id": "singleton"},
+        {"$set": {"referral_config": {"enabled": body.enabled, "reward_usd": round(body.reward_usd, 2), "friend_bonus_pct": round(body.friend_bonus_pct, 2)}}},
+        upsert=True,
+    )
+    return {"ok": True, **(await _referral_config())}
+
+
 class RedeemCouponRequest(BaseModel):
     code: str = Field(..., min_length=4, max_length=40)
 
@@ -1846,6 +1978,7 @@ async def redeem_coupon(body: RedeemCouponRequest, user: CurrentUser = Depends(c
             "approved_at": now,
         })
     await db.coupons.delete_one({"code": code})
+    await _maybe_referral_rewards(user.id)
     new_balance = await _get_user_balance(user.id)
     return {"ok": True, "amount": round(bal, 2), "bonus": bonus, "balance": new_balance, "code": code}
 
@@ -3589,6 +3722,47 @@ async def live_sub_my(user: CurrentUser = Depends(current_user_dep)):
     return {"subscriptions": subs, "auto_live_enabled": bool((u or {}).get("auto_live_enabled"))}
 
 
+class LiveSubUsernameBody(BaseModel):
+    tiktok_username: str = Field(..., min_length=1, max_length=80)
+
+
+@client_router.post("/live-sub/{sid}/username")
+async def live_sub_change_username(sid: str, body: LiveSubUsernameBody, user: CurrentUser = Depends(current_user_dep)):
+    """Change the target username on a running Auto-Live order. Accepts a plain
+    handle or a numeric TikTok user ID (resolved from the lookup cache)."""
+    sub = await db.live_subscriptions.find_one(
+        {"id": sid, "user_id": user.id, "status": {"$in": ["active", "waiting_for_live", "on_hold", "paused"]}},
+        {"_id": 0},
+    )
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found or already ended")
+    handle = body.tiktok_username.strip().lstrip("@")
+    new_user_id = None
+    if handle.isdigit() and len(handle) >= 6:
+        cached = await db.tiktok_lookup_cache.find_one({"user_id": handle}, {"_id": 0, "handle": 1})
+        if not cached or not cached.get("handle"):
+            raise HTTPException(status_code=404, detail="Couldn't resolve this user ID — run it once through the TikTok Finder first.")
+        new_user_id = handle
+        handle = cached["handle"].lstrip("@")
+    else:
+        c = await db.tiktok_lookup_cache.find_one({"handle": handle.lower()}, {"_id": 0, "user_id": 1})
+        if c and c.get("user_id"):
+            new_user_id = str(c["user_id"])
+    await _enforce_username_blacklist(user.id, handle)
+    old = sub["tiktok_username"]
+    if handle.lower() == (old or "").lower():
+        return {"ok": True, "tiktok_username": handle, "unchanged": True}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.live_subscriptions.update_one(
+        {"id": sid},
+        {"$set": {"tiktok_username": handle, "tiktok_user_id": new_user_id,
+                  "previous_username": old, "username_changed_at": now_iso}},
+    )
+    await _log_live_check({**sub, "tiktok_username": handle}, False,
+                          note=f"username changed manually: @{old} → @{handle}", will_fire=False)
+    return {"ok": True, "tiktok_username": handle, "previous_username": old}
+
+
 @client_router.get("/live-sub/{sid}/checks")
 async def live_sub_checks(sid: str, user: CurrentUser = Depends(current_user_dep)):
     """User can audit every live-status check on their own subscription."""
@@ -4509,6 +4683,7 @@ async def paypal_ipn(request: Request):
         except Exception:
             pass
         logger.info("[paypal-ipn] CREDITED user=%s $%s (+$%s bonus) txn=%s", user_id, gross, bonus, txn_id)
+        await _maybe_referral_rewards(user_id)
         return {"ok": True}
     except Exception as e:
         logger.exception("[paypal-ipn] handler failed: %s", e)
@@ -7272,6 +7447,7 @@ async def _credit_nowpayments_deposit(tx: dict, payload: dict) -> dict:
             "linked_tx": tx_id,
         })
     logger.info(f"[nowpay] CREDITED tx={tx_id} user={tx.get('username')} amount=${amount} bonus=${bonus}")
+    await _maybe_referral_rewards(tx["user_id"])
     # Notify the user by email (best-effort — never blocks the credit)
     try:
         from notification_service import notify_deposit_credited
@@ -7733,6 +7909,8 @@ async def selly_webhook(request: Request):
             {"id": tx_id, "status": "pending"},
             {"$set": {"status": "approved", "approved_at": datetime.now(timezone.utc).isoformat(), "selly_event": event}},
         )
+        if tx:
+            await _maybe_referral_rewards(tx["user_id"])
         return {"ok": True, "credited": bool(tx)}
 
     if kind == "order":
@@ -7917,6 +8095,8 @@ async def admin_approve_tx(tx_id: str, body: TxDecision, x_admin_token: Optional
     )
     if not res:
         raise HTTPException(status_code=404, detail="Not a pending transaction")
+    if res.get("type") == "deposit" and float(res.get("amount") or 0) > 0:
+        await _maybe_referral_rewards(res["user_id"])
     return {"ok": True, "transaction": res}
 
 

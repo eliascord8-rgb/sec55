@@ -30,6 +30,14 @@ function App() {
     if (splashDone) sessionStorage.setItem("bs_splash_done", "1");
   }, [splashDone]);
 
+  // Capture referral code from share links (?ref=CODE) — used at signup.
+  useEffect(() => {
+    try {
+      const ref = new URLSearchParams(window.location.search).get("ref");
+      if (ref) localStorage.setItem("bs_ref", ref.trim().toUpperCase());
+    } catch { /* ignore */ }
+  }, []);
+
   return (
     <div className="min-h-screen bg-[#050505] text-white">
       {!splashDone && <Splash onDone={() => setSplashDone(true)} />}

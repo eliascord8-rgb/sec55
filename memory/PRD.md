@@ -29,6 +29,10 @@ Better Social is an SMM/live-automation platform (TikTok/Kick focus) with wallet
 8. **Fixed CurrencyContext** exchange-rate fetch (frankfurter.dev 404 → open.er-api.com).
 9. Verified working in preview (user's VPS "Not found" errors are stale-build issues): NOWPayments create, manual verify, API key regenerate, Discord OAuth save, notify config save, TikTok lookups.
 
+## Shipped 2026-06 (follow-up)
+- **Referral Rewards**: users get share link `/?ref=CODE` (code auto-generated, stored `users.referral_code`); signup attributes `referred_by`; on friend's FIRST approved deposit referrer earns fixed reward (default $5 — balance transaction `referral_reward` + `$inc withdrawable_balance`), friend gets +5% bonus (`referral_friend_bonus`). Idempotent via atomic `referral_rewarded` flag. Hooks in: coupon redeem, NOWPayments credit, PayPal IPN, selly webhook, admin tx approve. Endpoints: GET /api/client/referrals (masked invitees, earned total), GET/POST /api/admin/referral-config (owner-only, reward_usd/friend_bonus_pct/enabled). UI: Referrals view in dashboard (nav-referrals), ReferralConfigCard at top of Admin → Discounts tab. ?ref captured in App.js → localStorage bs_ref → sent at register.
+- **Auto-Live extras**: "Live check" button per sub (GET /api/debug/tiktok-live/{handle}, toasts live/offline); "Edit @" button changes target username on a running sub (POST /api/client/live-sub/{sid}/username — accepts handle or numeric user ID, blacklist-checked, logs the change).
+
 ## Key endpoints (new this session)
 - GET/POST/DELETE `/api/admin/discount-keys[/{code}]` (owner-only)
 - POST `/api/client/discount/redeem`, GET `/api/client/discount`

@@ -59,6 +59,8 @@ class RegisterRequest(BaseModel):
     password: str = Field(..., min_length=8, max_length=128)
     captcha_id: Optional[str] = None
     captcha_answer: Optional[str] = None
+    # Referral code from a share link (?ref=CODE)
+    ref: Optional[str] = None
     # legacy field kept so old clients don't error
     captcha_token: Optional[str] = None
 
@@ -386,6 +388,12 @@ async def register(req: RegisterRequest, request: Request):
         "created_at": datetime.now(timezone.utc).isoformat(),
         "muted_until": None,
     }
+    # Referral attribution — resolve ?ref=CODE to the inviting user.
+    ref_code = (req.ref or "").strip().upper()
+    if ref_code:
+        referrer = await db.users.find_one({"referral_code": ref_code}, {"_id": 0, "id": 1})
+        if referrer and referrer["id"] != user_id:
+            doc["referred_by"] = referrer["id"]
     await db.users.insert_one(doc.copy())
 
     # Best-effort welcome email (don't fail registration if SMTP misconfigured)

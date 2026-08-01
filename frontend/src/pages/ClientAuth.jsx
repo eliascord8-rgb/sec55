@@ -274,6 +274,7 @@ function RegisterForm({ onSuccess }) {
         password: pw,
         captcha_id: captcha.captcha_id,
         captcha_answer: captcha.captcha_answer,
+        ref: localStorage.getItem("bs_ref") || undefined,
       });
       onSuccess(r.data.token, r.data.user);
       toast.success(`Welcome, ${r.data.user.username}`);
