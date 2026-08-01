@@ -30,7 +30,7 @@ export function CurrencyProvider({ children }) {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("https://api.frankfurter.dev/latest?base=USD&symbols=EUR");
+        const r = await fetch("https://open.er-api.com/v6/latest/USD");
         if (!r.ok) return;
         const j = await r.json();
         const v = j?.rates?.EUR;

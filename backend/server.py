@@ -1866,14 +1866,14 @@ class DiscountKeyCreate(BaseModel):
 
 @api_router.get("/admin/discount-keys")
 async def admin_discount_keys_list(x_admin_token: Optional[str] = Header(None)):
-    check_admin(x_admin_token)
+    check_owner(x_admin_token)
     keys = await db.discount_keys.find({}, {"_id": 0}).sort("created_at", -1).to_list(300)
     return {"keys": keys}
 
 
 @api_router.post("/admin/discount-keys")
 async def admin_discount_keys_create(body: DiscountKeyCreate, x_admin_token: Optional[str] = Header(None)):
-    check_admin(x_admin_token)
+    check_owner(x_admin_token)
     code = (body.code or "").strip().upper() or ("DISC-" + uuid.uuid4().hex[:8].upper())
     if await db.discount_keys.find_one({"code": code}):
         raise HTTPException(status_code=409, detail="Code already exists")
@@ -1888,7 +1888,7 @@ async def admin_discount_keys_create(body: DiscountKeyCreate, x_admin_token: Opt
 
 @api_router.delete("/admin/discount-keys/{code}")
 async def admin_discount_keys_delete(code: str, x_admin_token: Optional[str] = Header(None)):
-    check_admin(x_admin_token)
+    check_owner(x_admin_token)
     c = code.strip().upper()
     r = await db.discount_keys.delete_one({"code": c})
     if r.deleted_count == 0:
@@ -1907,11 +1907,17 @@ async def client_discount_redeem(body: DiscountRedeemBody, user: CurrentUser = D
     key = await db.discount_keys.find_one({"code": code, "active": True}, {"_id": 0})
     if not key:
         raise HTTPException(status_code=404, detail="Invalid discount key")
-    if key.get("max_uses") and int(key.get("uses") or 0) >= int(key["max_uses"]):
-        raise HTTPException(status_code=400, detail="This discount key has reached its usage limit")
     u = await db.users.find_one({"id": user.id}, {"_id": 0, "discount_code": 1})
     if (u or {}).get("discount_code") != code:
-        await db.discount_keys.update_one({"code": code}, {"$inc": {"uses": 1}})
+        # Atomic use-count increment — refuses once max_uses is hit even under concurrency.
+        r = await db.discount_keys.update_one(
+            {"code": code, "active": True,
+             "$or": [{"max_uses": None}, {"max_uses": {"$exists": False}},
+                     {"$expr": {"$lt": [{"$ifNull": ["$uses", 0]}, "$max_uses"]}}]},
+            {"$inc": {"uses": 1}},
+        )
+        if r.modified_count == 0:
+            raise HTTPException(status_code=400, detail="This discount key has reached its usage limit")
     await db.users.update_one({"id": user.id}, {"$set": {"discount_code": code, "discount_pct": float(key["percent"])}})
     return {"ok": True, "percent": float(key["percent"]), "code": code}
 
@@ -2546,6 +2552,32 @@ ADDONS_CATALOG_DEFAULTS = [
 ]
 
 
+_EURUSD_CACHE = {"rate": 1.09, "at": 0.0}
+
+
+async def _eur_usd_rate() -> float:
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if now_ts - _EURUSD_CACHE["at"] < 6 * 3600:
+        return _EURUSD_CACHE["rate"]
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            r = await c.get("https://open.er-api.com/v6/latest/EUR")
+            v = float((r.json().get("rates") or {}).get("USD") or 0)
+            if v > 0:
+                _EURUSD_CACHE.update({"rate": v, "at": now_ts})
+    except Exception:
+        pass
+    return _EURUSD_CACHE["rate"]
+
+
+async def _addon_price_usd(addon: dict) -> float:
+    """Wallet is USD — EUR-priced addons convert at the live EUR→USD rate."""
+    price = float(addon["price"])
+    if (addon.get("currency") or "USD").upper() == "EUR":
+        return round(price * await _eur_usd_rate(), 2)
+    return round(price, 2)
+
+
 async def _load_addons_catalog() -> list:
     """Merge defaults with any per-addon overrides stored in `app_settings.addon_overrides`.
     Only `price` is editable today, but structured so `name`/`description` can be added later."""
@@ -2573,7 +2605,7 @@ async def addons_catalog(user: CurrentUser = Depends(current_user_dep)):
     catalog = await _load_addons_catalog()
     return {
         "addons": [
-            {**a, "owned": bool(owned_flags.get(a["id"]))}
+            {**a, "owned": bool(owned_flags.get(a["id"])), "price_usd": await _addon_price_usd(a)}
             for a in catalog
         ],
     }
@@ -2596,10 +2628,11 @@ async def addons_purchase(body: AddonPurchase, user: CurrentUser = Depends(curre
         raise HTTPException(status_code=400, detail="You already own this addon.")
     if (u or {}).get("auto_live_enabled") and addon["id"] == "auto_live" and not (u or {}).get("auto_live_expires_at"):
         raise HTTPException(status_code=400, detail="You already own this addon.")
-    price = float(addon["price"])
+    price = await _addon_price_usd(addon)
     balance = await _get_user_balance(user.id)
     if balance < price:
-        raise HTTPException(status_code=402, detail=f"Not enough balance — needs ${price:.2f}, you have ${balance:.2f}")
+        cur_note = f" ({addon['price']:.2f} EUR)" if (addon.get("currency") or "").upper() == "EUR" else ""
+        raise HTTPException(status_code=402, detail=f"Not enough balance — needs ${price:.2f}{cur_note}, you have ${balance:.2f}")
     now = datetime.now(timezone.utc).isoformat()
     # Debit + record + unlock in one shot
     await db.transactions.insert_one({
@@ -9772,6 +9805,32 @@ app.state.check_admin = check_admin
 app.state.get_actor_display_name = get_actor_display_name
 app.state.get_user_balance = _get_user_balance
 app.state.get_user_withdrawable = _get_user_withdrawable
+
+
+@app.on_event("startup")
+async def _startup():
+    await seed_owner(db)
+    # Restore owner display nickname from DB
+    global OWNER_DISPLAY_NAME
+    cfg = await db.app_settings.find_one({"_id": "singleton"}, {"_id": 0, "owner_display_name": 1})
+    if cfg and cfg.get("owner_display_name"):
+        OWNER_DISPLAY_NAME = cfg["owner_display_name"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
+withdrawable = _get_user_withdrawable
 
 
 @app.on_event("startup")

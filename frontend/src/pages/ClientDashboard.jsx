@@ -2826,6 +2826,9 @@ function AddonsView({ authedApi, balance, reloadBalance, reloadAddons, onGoBuy, 
                 <div>
                   <div className="text-[10px] uppercase tracking-widest text-white/40">Price</div>
                   <div className="font-display font-black text-3xl text-emerald-300">{a.currency === "EUR" ? "€" : "$"}{a.price.toFixed(2)}</div>
+                  {a.currency === "EUR" && a.price_usd ? (
+                    <div className="text-[10px] text-white/40 mt-0.5">≈ ${a.price_usd.toFixed(2)} from balance</div>
+                  ) : null}
                 </div>
                 {a.owned ? (
                   <button
@@ -2865,10 +2868,13 @@ function AddonsView({ authedApi, balance, reloadBalance, reloadAddons, onGoBuy, 
             <p className="text-sm text-white/60 mb-4">{checkout.tagline}</p>
             <div className="bg-black/30 rounded-md p-4 space-y-2 mb-4 text-sm">
               <div className="flex justify-between"><span className="text-white/60">Price</span><span className="text-white font-bold">{checkout.currency === "EUR" ? "€" : "$"}{checkout.price.toFixed(2)}</span></div>
+              {checkout.currency === "EUR" && checkout.price_usd ? (
+                <div className="flex justify-between"><span className="text-white/60">Charged from balance</span><span className="text-white font-bold">${checkout.price_usd.toFixed(2)}</span></div>
+              ) : null}
               <div className="flex justify-between"><span className="text-white/60">Payment</span><span className="text-emerald-300 font-bold">Account balance</span></div>
-              <div className="flex justify-between border-t border-white/10 pt-2"><span className="text-white/60">Balance after</span><span className={`font-bold ${balance - checkout.price >= 0 ? "text-emerald-300" : "text-red-300"}`}>${(balance - checkout.price).toFixed(2)}</span></div>
+              <div className="flex justify-between border-t border-white/10 pt-2"><span className="text-white/60">Balance after</span><span className={`font-bold ${balance - (checkout.price_usd || checkout.price) >= 0 ? "text-emerald-300" : "text-red-300"}`}>${(balance - (checkout.price_usd || checkout.price)).toFixed(2)}</span></div>
             </div>
-            {balance < checkout.price && (
+            {balance < (checkout.price_usd || checkout.price) && (
               <div className="mb-3 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded p-2 text-center">
                 Not enough balance. Top up in the Wallet tab first.
               </div>
@@ -2884,7 +2890,7 @@ function AddonsView({ authedApi, balance, reloadBalance, reloadAddons, onGoBuy, 
               <button
                 onClick={() => purchase(checkout)}
                 data-testid="addon-checkout-confirm"
-                disabled={buying === checkout.id || balance < checkout.price}
+                disabled={buying === checkout.id || balance < (checkout.price_usd || checkout.price)}
                 className="py-2.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black text-sm font-black uppercase tracking-wider transition disabled:opacity-40"
               >
                 {buying === checkout.id ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Pay & Unlock"}
