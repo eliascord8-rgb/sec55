@@ -275,6 +275,27 @@ def require_staff(user: CurrentUser = Depends(current_user_dep)) -> CurrentUser:
     return user
 
 
+async def optional_current_user_dep(request: Request):
+    """Same as current_user_dep but returns None when no valid token is present.
+    Use for endpoints that are public but want richer behaviour for signed-in users."""
+    token = _get_token_from_request(request)
+    if not token:
+        return None
+    try:
+        payload = decode_token(token)
+    except Exception:
+        return None
+    db: AsyncIOMotorDatabase = request.app.state.db
+    doc = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0, "password_hash": 0})
+    if not doc or doc.get("banned"):
+        return None
+    session_epoch = int(doc.get("session_epoch", 0))
+    tok_epoch = int(payload.get("session_epoch", 0))
+    if session_epoch and tok_epoch and tok_epoch < session_epoch:
+        return None
+    return CurrentUser(id=doc["id"], username=doc["username"], role=doc.get("role", "user"))
+
+
 # ================= STARTUP =================
 
 async def seed_owner(db: AsyncIOMotorDatabase):

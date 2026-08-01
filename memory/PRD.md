@@ -45,13 +45,36 @@ Better Social is an SMM/live-automation platform (TikTok/Kick focus) with wallet
 - `client_discord_guilds`: {guild_id (unique), user_id, welcome_channel_id, welcome_text, welcomer_enabled, bot_nickname, features{}}
 - `users` new fields: discount_code, discount_pct; `username_blacklist` new field: platform; `live_subscriptions` new: tiktok_user_id, previous_username, hold_reason
 
+## Shipped 2026-08-01 (this session)
+- **In-dashboard Finder page** (view=`finder`, nav-finder, shown when user owns `id_finder`): 2-tab UI (User ID / @username) using authed `/api/tools/tiktok-lookup*`. Stat boxes, avatar, verified badge, country, creation date, copy-user-id.
+- **In-dashboard Blacklist page** (view=`blacklist`, nav-blacklist, shown when user owns `blacklist_package`/`username_blacklist`): BlacklistManager extracted from AddonsView into its own page.
+- **AddonsView "Open" button fixed**: `id_finder` → finder; `blacklist_*` → blacklist; `auto_live` → live; else → buy. Previously every non-auto-live add-on wrongly went to Buy.
+- **`/tools/tiktok-lookup-by-id` made public** (was authed+premium → 401 "Not authenticated" on guest `/tiktok-finder`). New `optional_current_user_dep` in auth_and_chat. Rate limit 10/min anonymous, 60/min if authed with `id_finder` or staff.
+- **Live TikTok reverse-lookup fallback**: `_tiktok_reverse_by_id_live` tries `/api/search/user/full/?keyword={uid}` + HTML search page. Cache-first, then live search, then 404. Populates cache on success.
+- **New public tool endpoints** (all under `/api/tools`, no auth, rate-limited):
+  - GET `/tools/tiktok-post?url=` — TikTok video/photo/reel metadata + no-watermark playAddr, cover, music, images carousel, stats
+  - GET `/tools/instagram-lookup?username=` — IG profile (avatar HD, followers, following, posts, verified, private, bio, category, external_url, best-effort country from bio)
+  - GET `/tools/instagram-post?url=` — IG post/reel image+video URLs from og:meta tags (works logged-out for public posts)
+  - GET `/tools/discord-user?user_id=` — Discord snowflake → username, global_name, avatar/banner URLs, badges, account creation date (uses admin's bot_token from discord_config)
+- **`/tiktok-finder` page cleanup**: Replaced "Live chat" (community) button with "Support" button that opens GlobalSupportWidget via `bs-open-support-chat`. Hid community-chat FAB on this route.
+
+## Key endpoints (new this session)
+- GET `/api/tools/tiktok-post`
+- GET `/api/tools/instagram-lookup`
+- GET `/api/tools/instagram-post`
+- GET `/api/tools/discord-user`
+- GET `/api/tools/tiktok-lookup-by-id` (now public + live-search fallback)
+
 ## Backlog / Next tasks
-- P0 (user env): user must redeploy VPS (git pull + rebuild) — all "Not found" endpoints exist in latest code; also configure NOWPayments IPN URL in merchant dashboard
-- P1 (security, flagged by test agent): login brute-force lockout, HttpOnly cookie auth, CORS origin allowlist (currently env `CORS_ORIGINS=*`)
-- P1: live chat queue-position display verify on prod (works in code, AIWidget line ~814)
-- P2: Discord bot feature enforcement depth (anti-raid/anti-nuke actions currently config-only toggles; welcomer + nickname active)
+- P0 (user env): user must redeploy VPS (git pull + rebuild) to expose the new endpoints — nginx `/api/` block already patched into `better-social` config (all SSL server blocks). Requires: `cd /opt/better-social && git pull && cd frontend && yarn build && systemctl reload nginx`. Then Cloudflare cache purge if public still 404s.
+- P0: Frontend `/tiktok-finder` still shows only TikTok tabs — needs UI tabs for TikTok Post, Instagram User, Instagram Post, Discord User (backend endpoints ready). Not yet built in this session.
+- P0: Configure NOWPayments IPN URL in merchant dashboard so real deposits auto-credit
+- P1: Discord bot token invalid on VPS ("Improper token has been passed") — admin must re-save bot token in Admin → Discord
+- P1 (security, flagged by test agent): login brute-force lockout, HttpOnly cookie auth, CORS origin allowlist
 - P2: Discord health widget, API usage history
-- P3: Refactor server.py (~9.8k lines), Admin.jsx (7.7k), ClientDashboard.jsx (5.2k) into modules
+- P3: Refactor server.py, Admin.jsx, ClientDashboard.jsx into modules
+
+## Backlog / Next tasks (older, unchanged)
 
 ## Constraints
 - All URLs from env; `/api` prefix; wallet settles in USD; no secrets in code/logs

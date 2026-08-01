@@ -62,6 +62,7 @@ from auth_and_chat import (  # noqa: E402
     ai_router,
     seed_owner,
     current_user_dep,
+    optional_current_user_dep,
     CurrentUser,
 )
 
@@ -3385,63 +3386,419 @@ async def tiktok_lookup(username: str, request: Request):
     return await _tiktok_public_lookup(username)
 
 
+async def _tiktok_reverse_by_id_live(uid: str) -> Optional[dict]:
+    """Attempt a live user_id → @handle resolution using TikTok's public search web endpoint.
+    Returns a full profile dict (from _tiktok_public_lookup) on success, else None.
+
+    Strategy: TikTok's web search API accepts the numeric user_id as a keyword and
+    routinely returns the exact account as the top user hit. Once we have the handle,
+    we resolve it live via the standard profile scraper (which also caches by user_id
+    for next time). No signing needed for this endpoint (public web search)."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": f"https://www.tiktok.com/search/user?q={uid}",
+    }
+    # Try the JSON web search endpoint first
+    url = f"https://www.tiktok.com/api/search/user/full/?keyword={uid}&cursor=0&web_search_code=&from_page=search"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+            r = await c.get(url, headers=headers)
+        if r.status_code == 200 and r.text.strip():
+            try:
+                j = r.json()
+            except Exception:
+                j = {}
+            for item in (j.get("user_list") or []):
+                info = (item or {}).get("user_info") or {}
+                if str(info.get("uid") or "") == uid and info.get("unique_id"):
+                    return await _tiktok_public_lookup(info["unique_id"])
+    except Exception:
+        pass
+    # Fallback: parse the HTML search results page for a matching user card
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+            r = await c.get(f"https://www.tiktok.com/search/user?q={uid}", headers={**headers, "Accept": "text/html"})
+        if r.status_code == 200:
+            html = r.text
+            m = re.search(r'<script[^>]*id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>', html, re.DOTALL)
+            if m:
+                try:
+                    data = jsonlib.loads(m.group(1))
+                except Exception:
+                    data = {}
+                scope = ((data.get("__DEFAULT_SCOPE__") or {}).get("webapp.search-detail") or {})
+                for section in (scope.get("userInfoList") or []):
+                    ui = (section or {}).get("user") or {}
+                    if str(ui.get("id") or "") == uid and ui.get("uniqueId"):
+                        return await _tiktok_public_lookup(ui["uniqueId"])
+    except Exception:
+        pass
+    return None
+
+
 @api_router.get("/tools/tiktok-lookup-by-id")
-async def tiktok_lookup_by_id(user_id: str, request: Request, user: CurrentUser = Depends(current_user_dep)):
+async def tiktok_lookup_by_id(user_id: str, request: Request, user: Optional[CurrentUser] = Depends(optional_current_user_dep)):
     """Find the @handle of a TikTok account by its numeric user_id.
-    PREMIUM: requires the `id_finder` addon (€170 — unlimited checks).
+
+    Public + free — same as the @username lookup. Rate-limited per IP.
+    Signed-in users with the `id_finder` addon (or staff) get the higher
+    rate limit; anonymous users are capped at 10/min.
 
     Strategy:
-      1. Check our own cache — every successful handle lookup writes its
-         profile snapshot indexed by user_id.
-      2. If cached but stale (>24h old), re-resolve the handle live so the
-         stats/avatar/verified flag stay current.
-      3. If not cached, we return a helpful 404 explaining the limitation —
-         TikTok doesn't expose a public user_id → handle endpoint without
-         paid signing, so the cache is populated when *anyone* first looks
-         up that handle.
+      1. Try our cache first (populated by every successful @handle scrape).
+      2. If not cached, attempt a live TikTok web-search resolution.
+      3. If still nothing, return a helpful 404.
     """
-    if user.role not in ("owner", "moderator"):
-        u = await db.users.find_one({"id": user.id}, {"_id": 0, "addons": 1})
-        if "id_finder" not in ((u or {}).get("addons") or []):
-            raise HTTPException(status_code=402, detail="Reverse lookup is a premium addon — unlock 'Find User By ID — Unlimited' (€200, unlimited finds) in the Add-ons store.")
     uid = (user_id or "").strip().replace("@", "")
     if not uid.isdigit() or len(uid) < 6:
         raise HTTPException(status_code=400, detail="Enter a valid TikTok numeric user ID (e.g. 6656114453... )")
-    # Rate limit
+    # Rate limit — signed-in premium users get a bigger bucket
+    is_premium = False
+    if user and user.role in ("owner", "moderator"):
+        is_premium = True
+    elif user:
+        u = await db.users.find_one({"id": user.id}, {"_id": 0, "addons": 1})
+        if "id_finder" in ((u or {}).get("addons") or []):
+            is_premium = True
     ip = ((request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
           or (request.client.host if request.client else "")) or "unknown"
     now = datetime.now(timezone.utc).timestamp()
     hits = [t for t in _TT_LOOKUP_BUCKET.get(ip, []) if t > now - 60]
-    if len(hits) >= 30:
+    cap = 60 if is_premium else 10
+    if len(hits) >= cap:
         raise HTTPException(status_code=429, detail="Too many lookups — try again in a minute")
     hits.append(now)
     _TT_LOOKUP_BUCKET[ip] = hits
 
+    # 1. Cached path
     cached = await db.tiktok_lookup_cache.find_one({"user_id": uid}, {"_id": 0})
-    if not cached:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No account found for user_id {uid}. "
-                "Reverse lookup only works for handles that have been looked up before — "
-                "TikTok doesn't expose a public user_id→username endpoint. "
-                "Try the username tab instead."
-            ),
-        )
-    # Refresh live if we have the handle and cache is stale
-    handle = cached.get("handle")
+    if cached:
+        handle = cached.get("handle")
+        try:
+            cached_at = cached.get("cached_at")
+            stale = True
+            if cached_at:
+                dt = datetime.fromisoformat(str(cached_at).replace("Z", "+00:00"))
+                stale = (datetime.now(timezone.utc) - dt).total_seconds() > 24 * 3600
+            if handle and stale:
+                return await _tiktok_public_lookup(handle)
+        except Exception:
+            pass
+        cached.pop("cached_at", None)
+        return cached
+
+    # 2. Live TikTok web-search resolution
     try:
-        cached_at = cached.get("cached_at")
-        stale = True
-        if cached_at:
-            dt = datetime.fromisoformat(str(cached_at).replace("Z", "+00:00"))
-            stale = (datetime.now(timezone.utc) - dt).total_seconds() > 24 * 3600
-        if handle and stale:
-            return await _tiktok_public_lookup(handle)
+        live = await _tiktok_reverse_by_id_live(uid)
+        if live:
+            return live
+    except HTTPException:
+        raise
     except Exception:
         pass
-    cached.pop("cached_at", None)
-    return cached
+
+    # 3. Nothing found
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"No TikTok account found for user_id {uid}. "
+            "The account may be deleted, private or shadow-banned. "
+            "Try the username tab if you know the @handle."
+        ),
+    )
+
+
+# ==================== Extra public tools (batch: PFP/post downloaders, Instagram, Discord) ====================
+
+_TOOLS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36"
+
+
+def _tools_rate_limit(request: Request, cap: int = 30):
+    ip = ((request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+          or (request.client.host if request.client else "")) or "unknown"
+    now = datetime.now(timezone.utc).timestamp()
+    hits = [t for t in _TT_LOOKUP_BUCKET.get(ip, []) if t > now - 60]
+    if len(hits) >= cap:
+        raise HTTPException(status_code=429, detail="Too many lookups — try again in a minute")
+    hits.append(now)
+    _TT_LOOKUP_BUCKET[ip] = hits
+
+
+@api_router.get("/tools/tiktok-post")
+async def tiktok_post_download(url: str, request: Request):
+    """Resolve a TikTok video/photo post URL and return download links + metadata.
+    Accepts full URLs (`https://www.tiktok.com/@user/video/1234`) and short links (`vm.tiktok.com/xyz`).
+    Returns: cover, author, description, no-watermark playAddr, watermarked downloadAddr, music."""
+    _tools_rate_limit(request, cap=30)
+    u = (url or "").strip()
+    if not u.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Paste the full TikTok URL (must start with https://)")
+    headers = {
+        "User-Agent": _TOOLS_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+            r = await c.get(u, headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach TikTok: {e}")
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail="TikTok post not found")
+    if r.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"TikTok returned {r.status_code}")
+    html = r.text
+    m = re.search(r'<script[^>]*id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>', html, re.DOTALL)
+    if not m:
+        raise HTTPException(status_code=404, detail="Could not parse TikTok payload — link may be private or region-blocked")
+    try:
+        data = jsonlib.loads(m.group(1))
+    except Exception:
+        raise HTTPException(status_code=500, detail="TikTok payload could not be parsed")
+    scope = data.get("__DEFAULT_SCOPE__") or {}
+    item = ((scope.get("webapp.video-detail") or {}).get("itemInfo") or {}).get("itemStruct") or {}
+    if not item:
+        raise HTTPException(status_code=404, detail="Post not found (may be deleted or private)")
+    author = item.get("author") or {}
+    video = item.get("video") or {}
+    music = item.get("music") or {}
+    stats = item.get("stats") or {}
+    # Photo carousels
+    image_post = item.get("imagePost") or {}
+    images = []
+    for img in (image_post.get("images") or []):
+        url_list = ((img.get("imageURL") or {}).get("urlList") or [])
+        if url_list:
+            images.append(url_list[0])
+    return {
+        "id": item.get("id"),
+        "desc": item.get("desc"),
+        "created_at": (
+            datetime.fromtimestamp(int(item.get("createTime")), tz=timezone.utc).isoformat()
+            if str(item.get("createTime") or "").isdigit() else None
+        ),
+        "author": {
+            "handle": author.get("uniqueId"),
+            "nickname": author.get("nickname"),
+            "avatar": author.get("avatarLarger") or author.get("avatarMedium"),
+            "verified": bool(author.get("verified")),
+        },
+        "video": {
+            "cover": video.get("cover") or video.get("originCover"),
+            "dynamic_cover": video.get("dynamicCover"),
+            "play_url": video.get("playAddr"),
+            "download_url": video.get("downloadAddr"),
+            "duration": video.get("duration"),
+            "width": video.get("width"),
+            "height": video.get("height"),
+        } if video.get("playAddr") else None,
+        "images": images or None,
+        "music": {
+            "title": music.get("title"),
+            "author": music.get("authorName"),
+            "url": music.get("playUrl"),
+            "cover": music.get("coverLarge") or music.get("coverMedium"),
+        } if music.get("playUrl") else None,
+        "stats": {
+            "plays": int(stats.get("playCount") or 0),
+            "likes": int(stats.get("diggCount") or 0),
+            "comments": int(stats.get("commentCount") or 0),
+            "shares": int(stats.get("shareCount") or 0),
+        },
+    }
+
+
+async def _ig_fetch_profile(username: str) -> dict:
+    """Fetch a public Instagram profile via the web app's undocumented (but keyless) JSON endpoint.
+    Requires the standard `x-ig-app-id` header used by instagram.com itself. Returns raw user dict."""
+    h = (username or "").strip().lstrip("@").lower()
+    if not h or not re.match(r"^[a-z0-9._]+$", h):
+        raise HTTPException(status_code=400, detail="Invalid Instagram username")
+    headers = {
+        "User-Agent": _TOOLS_UA,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "x-ig-app-id": "936619743392459",
+        "Referer": f"https://www.instagram.com/{h}/",
+    }
+    url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={h}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+            r = await c.get(url, headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Instagram: {e}")
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"@{h} not found on Instagram")
+    if r.status_code == 401 or r.status_code == 403:
+        raise HTTPException(status_code=502, detail="Instagram is rate-limiting anonymous lookups right now — try again in a minute")
+    if r.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Instagram returned {r.status_code}")
+    try:
+        j = r.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="Instagram payload could not be parsed")
+    user = ((j.get("data") or {}).get("user")) or {}
+    if not user or not user.get("username"):
+        raise HTTPException(status_code=404, detail=f"@{h} not found on Instagram")
+    return user
+
+
+@api_router.get("/tools/instagram-lookup")
+async def instagram_lookup(username: str, request: Request):
+    """Public Instagram user lookup — avatar, followers, verified, bio, best-effort country guess."""
+    _tools_rate_limit(request, cap=20)
+    user = await _ig_fetch_profile(username)
+    biography = user.get("biography") or ""
+    # Best-effort country: reuse the same signal-detector as TikTok (bio + nickname text)
+    resolved = _resolve_country(
+        region=None,
+        language=None,
+        signature=biography,
+        nickname=user.get("full_name"),
+    )
+    return {
+        "handle": user.get("username"),
+        "full_name": user.get("full_name"),
+        "avatar": user.get("profile_pic_url_hd") or user.get("profile_pic_url"),
+        "verified": bool(user.get("is_verified")),
+        "private": bool(user.get("is_private")),
+        "biography": biography,
+        "external_url": user.get("external_url"),
+        "category": user.get("category_name") or user.get("business_category_name"),
+        "user_id": str(user.get("id") or ""),
+        "followers": int(((user.get("edge_followed_by") or {}).get("count")) or 0),
+        "following": int(((user.get("edge_follow") or {}).get("count")) or 0),
+        "posts": int(((user.get("edge_owner_to_timeline_media") or {}).get("count")) or 0),
+        "profile_url": f"https://www.instagram.com/{user.get('username')}/",
+        "detected_country": resolved,
+    }
+
+
+@api_router.get("/tools/instagram-post")
+async def instagram_post_download(url: str, request: Request):
+    """Resolve an Instagram post/reel URL and return image/video download links + metadata.
+    Accepts `/p/{shortcode}/` and `/reel/{shortcode}/`."""
+    _tools_rate_limit(request, cap=20)
+    u = (url or "").strip()
+    m = re.search(r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]{5,})", u)
+    if not m:
+        raise HTTPException(status_code=400, detail="Paste a full Instagram post/reel URL (e.g. https://www.instagram.com/p/XXXX/)")
+    shortcode = m.group(1)
+    headers = {
+        "User-Agent": _TOOLS_UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+            r = await c.get(f"https://www.instagram.com/p/{shortcode}/", headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Instagram: {e}")
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail="Instagram post not found")
+    if r.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Instagram returned {r.status_code}")
+    html = r.text
+    # Pull the OG meta tags — these are exposed on the public post page for logged-out users.
+    def _meta(prop: str) -> Optional[str]:
+        mm = re.search(rf'<meta[^>]+property=["\']{re.escape(prop)}["\'][^>]+content=["\']([^"\']+)["\']', html)
+        if mm:
+            return mm.group(1)
+        mm = re.search(rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']{re.escape(prop)}["\']', html)
+        return mm.group(1) if mm else None
+    img = _meta("og:image")
+    vid = _meta("og:video") or _meta("og:video:secure_url")
+    title = _meta("og:title") or ""
+    desc = _meta("og:description") or ""
+    if not img and not vid:
+        raise HTTPException(status_code=404, detail="Post is private or Instagram blocked the request — try again shortly")
+    return {
+        "shortcode": shortcode,
+        "url": f"https://www.instagram.com/p/{shortcode}/",
+        "title": title,
+        "description": desc,
+        "image": img,
+        "video": vid,
+        "type": "reel" if "/reel/" in u else ("video" if vid else "image"),
+    }
+
+
+@api_router.get("/tools/discord-user")
+async def discord_user_lookup(user_id: str, request: Request):
+    """Fetch a Discord user's public profile via the site's own bot token.
+    Discord's API requires the user's numeric snowflake ID — usernames alone can't
+    be resolved without mutual-server access. If the site admin hasn't configured a
+    Discord bot token yet, this endpoint returns a helpful error.
+    Returns: username, global_name, avatar URL, banner, badges, account creation date."""
+    _tools_rate_limit(request, cap=30)
+    uid = (user_id or "").strip()
+    if not uid.isdigit() or len(uid) < 17:
+        raise HTTPException(status_code=400, detail="Paste a valid Discord user ID (17-20 digit snowflake). Usernames alone can't be looked up — Discord requires the numeric ID.")
+    cfg = await db.discord_config.find_one({}, {"_id": 0, "bot_token": 1}) or {}
+    token = (cfg.get("bot_token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=503, detail="Discord lookup is offline — the site admin hasn't configured a Discord bot token yet.")
+    headers = {"Authorization": f"Bot {token}", "User-Agent": "BetterSocial (https://better-social.pro, 1.0)"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(f"https://discord.com/api/v10/users/{uid}", headers=headers)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Discord: {e}")
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"No Discord user with ID {uid}")
+    if r.status_code == 401:
+        raise HTTPException(status_code=502, detail="Discord bot token appears invalid — ask an admin to re-save it.")
+    if r.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Discord returned {r.status_code}")
+    try:
+        u = r.json() or {}
+    except Exception:
+        raise HTTPException(status_code=502, detail="Discord payload could not be parsed")
+    # Snowflake creation time — Discord epoch = 2015-01-01T00:00:00Z (1420070400000 ms)
+    created_iso = None
+    try:
+        created_ms = (int(u.get("id")) >> 22) + 1420070400000
+        created_iso = datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc).isoformat()
+    except Exception:
+        pass
+    avatar_hash = u.get("avatar")
+    banner_hash = u.get("banner")
+    disc = u.get("discriminator") or "0"
+    default_index = (int(u["id"]) >> 22) % 6 if u.get("id") else 0
+    avatar_url = (
+        f"https://cdn.discordapp.com/avatars/{u['id']}/{avatar_hash}.{'gif' if str(avatar_hash).startswith('a_') else 'png'}?size=512"
+        if avatar_hash else f"https://cdn.discordapp.com/embed/avatars/{default_index}.png"
+    )
+    banner_url = (
+        f"https://cdn.discordapp.com/banners/{u['id']}/{banner_hash}.{'gif' if str(banner_hash).startswith('a_') else 'png'}?size=1024"
+        if banner_hash else None
+    )
+    flags = int(u.get("public_flags") or 0)
+    BADGES = {
+        1 << 0: "Discord Employee", 1 << 1: "Partnered Server Owner", 1 << 2: "HypeSquad Events",
+        1 << 3: "Bug Hunter Level 1", 1 << 6: "HypeSquad Bravery", 1 << 7: "HypeSquad Brilliance",
+        1 << 8: "HypeSquad Balance", 1 << 9: "Early Supporter", 1 << 14: "Bug Hunter Level 2",
+        1 << 16: "Verified Bot", 1 << 17: "Early Verified Bot Developer",
+        1 << 18: "Discord Certified Moderator", 1 << 22: "Active Developer",
+    }
+    badges = [name for bit, name in BADGES.items() if flags & bit]
+    return {
+        "id": u.get("id"),
+        "username": u.get("username"),
+        "global_name": u.get("global_name"),
+        "discriminator": disc,
+        "display": f"{u.get('username')}#{disc}" if disc and disc != "0" else (u.get("global_name") or u.get("username")),
+        "avatar_url": avatar_url,
+        "banner_url": banner_url,
+        "accent_color": u.get("accent_color"),
+        "bot": bool(u.get("bot")),
+        "system": bool(u.get("system")),
+        "public_flags": flags,
+        "badges": badges,
+        "created_at": created_iso,
+    }
 
 
 async def _tt_probe_html(handle: str, headers: dict) -> Optional[bool]:

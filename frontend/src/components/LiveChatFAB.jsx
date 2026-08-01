@@ -20,6 +20,10 @@ export default function LiveChatFAB() {
   const lastIdRef = useRef(null);
   const bottomRef = useRef(null);
 
+  // Hide the community-chat FAB on the public TikTok Finder page — that page
+  // uses the customer-support widget instead (GlobalSupportWidget).
+  const onFinderPage = typeof window !== "undefined" && window.location.pathname.startsWith("/tiktok-finder");
+
   const load = async () => {
     try {
       const r = await api.get("/public-chat/messages?limit=40");
@@ -58,7 +62,9 @@ export default function LiveChatFAB() {
   return (
     <>
       {/* Floating trigger — hidden on phones for signed-in users (the dashboard
-          bottom bar has a dedicated Chat button there). Desktop unchanged. */}
+          bottom bar has a dedicated Chat button there). Desktop unchanged.
+          Also fully hidden on the /tiktok-finder page. */}
+      {!onFinderPage && (
       <button
         onClick={() => setOpen(true)}
         data-testid="live-chat-fab"
@@ -72,6 +78,7 @@ export default function LiveChatFAB() {
           </span>
         )}
       </button>
+      )}
 
       {/* Bottom-sheet chat — full-height mobile panel */}
       {open && (
