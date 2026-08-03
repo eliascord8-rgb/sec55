@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { ShoppingBag } from "lucide-react";
 
@@ -15,89 +16,74 @@ function timeAgo(iso) {
   return `${d}d ago`;
 }
 
+function shortText(value, max = 42) {
+  if (!value) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 function shortService(name) {
   if (!name) return "an order";
   // Strip emojis and bracketed promo text
   let s = name.replace(/\[[^\]]*\]/g, "").replace(/[^\w\s|/–-]/g, "").trim();
   s = s.replace(/\|.*$/, "").trim();
-  if (s.length > 42) s = s.slice(0, 39) + "…";
-  return s || name.slice(0, 42);
+  return shortText(s, 42) || shortText(name, 42);
+}
+
+function tickerText(it) {
+  const qty = it.quantity ? `${it.quantity.toLocaleString()} × ` : "";
+  const customer = shortText(it.customer_name || it.username || it.user || it.customer || it.link, 20);
+  const service = shortService(it.service);
+  return customer ? `${qty}${customer} · ${service}` : `${qty}${service}`;
 }
 
 export default function OrderTicker() {
-  const [items, setItems] = useState([]);
+  const [, setItem] = useState(null);
 
   const load = async () => {
     try {
       const r = await api.get("/orders/recent-feed");
-      setItems(r.data.feed || []);
+      const feed = r.data.feed || [];
+      const nextItem = feed[0] || null;
+      setItem(nextItem);
+
+      if (!nextItem) return;
+
+      toast(
+        <div className="flex items-center gap-3 rounded-2xl border border-emerald-500/25 bg-[#070707]/95 px-3.5 py-3 shadow-[0_0_30px_rgba(16,185,129,0.16)] backdrop-blur-xl">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
+            <ShoppingBag className="h-4 w-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-emerald-400">
+              New order
+            </div>
+            <div className="truncate text-sm font-medium text-white">
+              {tickerText(nextItem)}
+            </div>
+            <div className="text-xs text-white/55">
+              {timeAgo(nextItem.created_at)} · {nextItem.quantity ? `${nextItem.quantity}×` : "1×"} order
+            </div>
+          </div>
+        </div>,
+        {
+          duration: 5000,
+          position: "bottom-left",
+          className: "border-0 bg-transparent p-0 shadow-none",
+          unstyled: true,
+        }
+      );
     } catch {
-      /* ignore */
+      setItem(null);
     }
   };
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 30000);
+    const t = setInterval(load, 300000);
     return () => clearInterval(t);
   }, []);
 
-  if (!items.length) return null;
-
-  // Duplicate for seamless marquee loop
-  const loop = [...items, ...items];
-
-  return (
-    <div
-      data-testid="order-ticker"
-      className="fixed bottom-0 left-0 right-0 z-40 border-t border-white/10 bg-[#050505]/95 backdrop-blur-md"
-      style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
-    >
-      <div className="flex items-center gap-3 py-2 px-3 md:px-6">
-        <div
-          className="hidden sm:flex items-center gap-2 shrink-0 text-[10px] uppercase tracking-[0.25em] text-[#00E5FF] font-bold"
-          data-testid="ticker-label"
-        >
-          <span className="w-2 h-2 rounded-full bg-[#00E5FF] animate-pulse" />
-          Live orders
-        </div>
-        <div className="flex-1 overflow-hidden mask-fade">
-          <div className="flex gap-8 animate-ticker whitespace-nowrap will-change-transform pr-20">
-            {loop.map((it, i) => (
-              <span
-                key={i}
-                data-testid={`ticker-item-${i}`}
-                className="inline-flex items-center gap-2 text-xs text-white/70"
-              >
-                <ShoppingBag className="w-3 h-3 text-[#FF007F] shrink-0" />
-                <span className="font-mono text-[#FF007F] font-bold">{it.user}</span>
-                <span className="text-white/40">bought</span>
-                <span className="text-white">
-                  {it.quantity?.toLocaleString()} <span className="text-white/60">·</span>{" "}
-                  {shortService(it.service)}
-                </span>
-                <span className="text-white/30">· {timeAgo(it.created_at)}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      </div>
-      <style>{`
-        @keyframes bs-ticker {
-          0% { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
-        }
-        .animate-ticker {
-          animation: bs-ticker 60s linear infinite;
-        }
-        .animate-ticker:hover {
-          animation-play-state: paused;
-        }
-        .mask-fade {
-          -webkit-mask-image: linear-gradient(to right, transparent, black 6%, black 94%, transparent);
-          mask-image: linear-gradient(to right, transparent, black 6%, black 94%, transparent);
-        }
-      `}</style>
-    </div>
-  );
+  return null;
 }

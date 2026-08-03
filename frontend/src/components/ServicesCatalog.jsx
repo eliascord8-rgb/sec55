@@ -1,8 +1,9 @@
 import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
+import { resolveDeliveryValue, formatDeliveryLabel } from "@/lib/serviceDisplay";
 import { Input } from "@/components/ui/input";
-import { Loader2, Search, TrendingUp, ArrowRight } from "lucide-react";
+import { Loader2, Search, TrendingUp, ArrowRight, Clock } from "lucide-react";
 
 export default function ServicesCatalog() {
   const [services, setServices] = useState([]);
@@ -31,6 +32,11 @@ export default function ServicesCatalog() {
       .filter((s) => (category === "All" ? true : s.category === category))
       .filter((s) => (q ? `${s.name} ${s.category}`.toLowerCase().includes(q) : true));
   }, [services, search, category]);
+
+  const formatDelivery = (value) => {
+    const label = formatDeliveryLabel(value);
+    return label === "—" ? null : label;
+  };
 
   return (
     <section className="py-16 md:py-24 border-t border-white/5 bg-[#0d0a14]" id="services">
@@ -73,7 +79,7 @@ export default function ServicesCatalog() {
 
         {loading ? (
           <div className="flex items-center justify-center py-16 text-white/40">
-            <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading services…
+            <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading services...
           </div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-16 text-white/40 text-sm">
@@ -108,6 +114,15 @@ export default function ServicesCatalog() {
                     Order <ArrowRight className="w-3.5 h-3.5" />
                   </div>
                 </div>
+                {(() => {
+                  const delivery = formatDelivery(resolveDeliveryValue(s));
+                  return delivery ? (
+                    <div className="mt-3 flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[10px] uppercase tracking-wider text-emerald-200 w-fit">
+                      <Clock className="w-3 h-3" />
+                      {delivery}
+                    </div>
+                  ) : null;
+                })()}
                 <div className="mt-3 pt-3 border-t border-white/5 text-[10px] font-mono text-white/30">
                   Min {s.min} · Max {s.max}
                 </div>

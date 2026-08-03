@@ -15,8 +15,10 @@ provider (Elastic → MailerSend → SMTP) the admin has configured.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -26,6 +28,7 @@ logger = logging.getLogger("notify")
 
 BRAND_NAME = "Better Social"
 BRAND_COLOR = "#10b981"  # emerald-500
+DEFAULT_SITE_URL = "https://better-social.pro"
 
 # Default rate-limit windows per event type. Chat/DM events cluster fast so
 # they get a longer cooldown; billing events fire on every occurrence.
@@ -48,6 +51,40 @@ EVENT_TOGGLE_KEYS = {
     "voice":   "email_voice",
     "generic": "email_generic",
 }
+
+
+def _sanitize_site_url(raw: Optional[str]) -> Optional[str]:
+    value = (raw or "").strip()
+    if not value:
+        return None
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    if any(token in parsed.netloc.lower() for token in ("your-domain", "example", "placeholder", "localhost")):
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _build_app_url(path: str, raw_base: Optional[str] = None) -> str:
+    if not path:
+        return DEFAULT_SITE_URL
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+
+    candidates = []
+    if raw_base:
+        candidates.append(raw_base)
+    for env_key in ("FRONTEND_URL", "REACT_APP_FRONTEND_URL", "APP_URL", "REACT_APP_BACKEND_URL", "BACKEND_URL"):
+        value = os.environ.get(env_key)
+        if value:
+            candidates.append(value)
+    for candidate in candidates:
+        base = _sanitize_site_url(candidate)
+        if base:
+            return f"{base}{path if path.startswith('/') else '/' + path}"
+    return f"{DEFAULT_SITE_URL}{path if path.startswith('/') else '/' + path}"
 
 
 async def _get_user_email_prefs(db: AsyncIOMotorDatabase, user_id: str) -> dict:
@@ -144,7 +181,8 @@ async def notify_user(
             return {"ok": False, "skipped": "opted_out"}
         if not await _rate_ok(db, user_id, event):
             return {"ok": False, "skipped": "rate_limited"}
-        html = _wrap_html(body_html, cta_url, cta_label)
+        safe_cta = _sanitize_site_url(cta_url) if cta_url and cta_url.startswith(("http://", "https://")) else cta_url
+        html = _wrap_html(body_html, safe_cta, cta_label)
         subj = f"[Better Social] {subject}"
         res = await send_email(db, email, subj, html)
         await _log_sent(db, user_id, event, subj, res.get("ok", False), res.get("error"))
@@ -175,7 +213,7 @@ async def notify_order_placed(db, user_id: str, order: dict, backend_url: str):
     return await notify_user(db, user_id, "order",
         subject=f"Order confirmed — ${charge:.2f}",
         body_html=body,
-        cta_url=f"{backend_url}/client/dashboard?tab=invoices",
+        cta_url=_build_app_url("/client/dashboard?tab=invoices", backend_url),
         cta_label="View order")
 
 
@@ -197,7 +235,7 @@ async def notify_deposit_credited(db, user_id: str, amount: float, bonus: float,
     return await notify_user(db, user_id, "deposit",
         subject=f"Deposit credited — ${amount + bonus:.2f}",
         body_html=body,
-        cta_url=f"{backend_url}/client/dashboard?tab=buy",
+        cta_url=_build_app_url("/client/dashboard?tab=buy", backend_url),
         cta_label="Place an order")
 
 
@@ -228,7 +266,7 @@ async def notify_deposit_status(db, user_id: str, status: str, amount: float, ba
     return await notify_user(db, user_id, "deposit",
         subject=f"{title.split(' ', 1)[1] if ' ' in title else title} — ${amount:.2f} deposit",
         body_html=body,
-        cta_url=f"{backend_url}/client/dashboard?tab=wallet",
+        cta_url=_build_app_url("/client/dashboard?tab=wallet", backend_url),
         cta_label="View wallet")
 
 
@@ -245,7 +283,7 @@ async def notify_bonus_waiting(db, user_id: str, amount: float, backend_url: str
     return await notify_user(db, user_id, "deposit",
         subject=f"Balance Bonus Free to your account waiting — €{amount:.2f}",
         body_html=body,
-        cta_url=f"{backend_url}/client/dashboard?tab=buy",
+        cta_url=_build_app_url("/client/dashboard?tab=buy", backend_url),
         cta_label="Claim your bonus")
 
 
@@ -261,7 +299,7 @@ async def notify_ticket_reply(db, user_id: str, ticket_id: str, subject: str, st
     return await notify_user(db, user_id, "ticket",
         subject=f"Support reply: {subject[:40]}",
         body_html=body,
-        cta_url=f"{backend_url}/client/dashboard?tab=tickets",
+        cta_url=_build_app_url("/client/dashboard?tab=tickets", backend_url),
         cta_label="Open ticket")
 
 
@@ -277,7 +315,7 @@ async def notify_dm_received(db, user_id: str, from_username: str, preview: str,
     return await notify_user(db, user_id, "voice" if kind == "voice" else "dm",
         subject=f"@{from_username} sent you a {kind_label}",
         body_html=body,
-        cta_url=f"{backend_url}/client/dashboard?tab=messages",
+        cta_url=_build_app_url("/client/dashboard?tab=messages", backend_url),
         cta_label="Open messages")
 
 
@@ -286,6 +324,7 @@ async def notify_guest_order_placed(db: AsyncIOMotorDatabase, to_email: str, ord
     if not to_email or "@" not in to_email:
         return {"ok": False, "skipped": "no_email"}
     charge = float(order.get("price_usd") or order.get("charge") or 0)
+    status_url = _build_app_url(f"/status/{order.get('id','')}", backend_url)
     body = f"""
 <h2 style="color:#fff;font-size:20px;margin:0 0 8px">🛒 Your order is confirmed</h2>
 <p>Thanks for your purchase — we've queued it with our provider network.</p>
@@ -299,9 +338,9 @@ async def notify_guest_order_placed(db: AsyncIOMotorDatabase, to_email: str, ord
     <div><strong style="color:#fff">Order ID:</strong> <code style="color:#fbbf24">{order.get('id','?')[:12]}</code></div>
   </div>
 </div>
-<p style="color:#9ca3af;font-size:13px">Track your order at <a href="{backend_url}/status/{order.get('id','')}" style="color:{BRAND_COLOR}">this link</a>. Create an account for future orders + a wallet balance.</p>
+<p style="color:#9ca3af;font-size:13px">Track your order at <a href="{status_url}" style="color:{BRAND_COLOR}">this link</a>. Create an account for future orders + a wallet balance.</p>
 """
-    html = _wrap_html(body, cta_url=f"{backend_url}/status/{order.get('id','')}", cta_label="Track order")
+    html = _wrap_html(body, cta_url=status_url, cta_label="Track order")
     subj = f"[Better Social] Order confirmed — ${charge:.2f}"
     return await send_email(db, to_email, subj, html)
 

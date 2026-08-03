@@ -5,20 +5,45 @@ Run on VPS as a systemd service. Requires env vars:
   BS_BOT_SHARED_SECRET    the same secret configured in Admin → Discord
   BS_DEVELOPER_ROLE       role name (default: "Developer")
 """
+import asyncio
 import os
 import logging
 import discord
 from discord import app_commands
 import httpx
 from typing import Optional
+from motor.motor_asyncio import AsyncIOMotorClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("bs-bot")
 
 BACKEND_URL = os.environ.get("BS_BACKEND_URL", "https://better-social.pro").rstrip("/")
-TOKEN = os.environ["BS_DISCORD_TOKEN"]
-SHARED_SECRET = os.environ["BS_BOT_SHARED_SECRET"]
+TOKEN = os.environ.get("BS_DISCORD_TOKEN", "")
+SHARED_SECRET = os.environ.get("BS_BOT_SHARED_SECRET", "")
 DEV_ROLE = os.environ.get("BS_DEVELOPER_ROLE", "Developer")
+
+
+async def _load_bot_credentials() -> tuple[str, str]:
+    token = TOKEN.strip()
+    secret = SHARED_SECRET.strip()
+    mongo_url = os.environ.get("MONGO_URL", "").strip()
+    db_name = os.environ.get("DB_NAME", "").strip()
+    if token and secret:
+        return token, secret
+    if mongo_url and db_name:
+        try:
+            client = AsyncIOMotorClient(mongo_url)
+            try:
+                cfg = await client[db_name].discord_config.find_one({}, {"_id": 0, "bot_token": 1, "shared_secret": 1}) or {}
+                if not token:
+                    token = (cfg.get("bot_token") or "").strip()
+                if not secret:
+                    secret = (cfg.get("shared_secret") or "").strip()
+            finally:
+                client.close()
+        except Exception as exc:
+            log.warning("Failed to load Discord credentials from MongoDB: %s", exc)
+    return token, secret
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -146,4 +171,10 @@ async def ping(interaction: discord.Interaction):
 
 
 if __name__ == "__main__":
-    client.run(TOKEN)
+    TOKEN, SHARED_SECRET = asyncio.run(_load_bot_credentials())
+    if not TOKEN:
+        log.warning("Discord bot disabled: no bot token available. Save it in Admin → Discord or set BS_DISCORD_TOKEN and restart the service.")
+    elif not SHARED_SECRET:
+        log.warning("Discord bot disabled: no shared secret available. Save it in Admin → Discord or set BS_BOT_SHARED_SECRET and restart the service.")
+    else:
+        client.run(TOKEN)

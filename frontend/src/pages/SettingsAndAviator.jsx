@@ -170,7 +170,6 @@ export function AviatorGame({ authedApi, balance, reloadBalance }) {
 
 const THEMES = [
   { id: "green",  label: "Emerald (default)", color: "#10b981" },
-  { id: "blue",   label: "Ocean Blue",        color: "#2563eb" },
   { id: "red",    label: "Ruby Red",          color: "#dc2626" },
   { id: "purple", label: "Royal Purple",      color: "#7c3aed" },
 ];
@@ -445,6 +444,35 @@ function AccountSettings({ authedApi, user }) {
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
   const [savingPw, setSavingPw] = useState(false);
+  const [usernameInput, setUsernameInput] = useState("");
+  const [submittingUsername, setSubmittingUsername] = useState(false);
+  const [usernameRequest, setUsernameRequest] = useState(null);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const r = await authedApi().get("/auth/me/username-change-request");
+        if (mounted) setUsernameRequest(r.data.request || null);
+      } catch { /* ignore */ }
+    })();
+    return () => { mounted = false; };
+  }, [authedApi]);
+
+  const submitUsernameRequest = async () => {
+    const next = usernameInput.trim();
+    if (!next) { toast.error("Enter a new username"); return; }
+    setSubmittingUsername(true);
+    try {
+      const r = await authedApi().post("/auth/me/username-change-request", { requested_username: next });
+      setUsernameRequest(r.data.request || null);
+      setUsernameInput("");
+      toast.success("Username change request submitted for review.");
+      toast.warning("Pending admin/support approval. Once approved, this could take up to 15 minutes to apply.");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not submit username change request");
+    } finally { setSubmittingUsername(false); }
+  };
 
   const saveEmail = async () => {
     if (!/@/.test(email)) { toast.error("Enter a valid email"); return; }
@@ -472,6 +500,29 @@ function AccountSettings({ authedApi, user }) {
 
   return (
     <div className="space-y-4">
+      <div className="bg-[#0d0a14] border border-emerald-500/40 rounded-md p-5" data-testid="settings-username-prominent">
+        <div className="flex items-center gap-2 mb-3">
+          <User className="w-4 h-4 text-emerald-400" />
+          <div className="font-display font-bold text-sm">Change username</div>
+        </div>
+        <p className="text-xs text-white/50 mb-3">Request one username change per month. It must be approved by admin or support, and it will apply automatically after 15 minutes.</p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input type="text" value={usernameInput} onChange={(e) => setUsernameInput(e.target.value)} placeholder="Enter your new username" data-testid="settings-username-input"
+            className="flex-1 bg-black/40 border border-white/10 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-400" />
+          <button onClick={submitUsernameRequest} disabled={submittingUsername} data-testid="settings-username-save"
+            className="px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider bg-emerald-500 text-black hover:bg-emerald-400 disabled:opacity-50 inline-flex items-center justify-center gap-2">
+            {submittingUsername ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Request change
+          </button>
+        </div>
+        {usernameRequest && (
+          <div className="mt-3 rounded-md border border-white/10 bg-black/30 p-3 text-sm text-white/70">
+            <div className="font-semibold text-white">Current review status</div>
+            <div className="mt-1">Status: <span className="font-bold text-emerald-300 uppercase">{usernameRequest.status}</span></div>
+            <div className="mt-1">Requested username: <span className="font-mono text-emerald-300">{usernameRequest.requested_username}</span></div>
+          </div>
+        )}
+      </div>
+
       <AvatarSettings authedApi={authedApi} user={user} />
 
       <div className="bg-[#0d0a14] border border-white/5 rounded-md p-5" data-testid="settings-email">
@@ -519,14 +570,14 @@ function AppearanceSettings({ authedApi }) {
 
   const apply = (id) => {
     // Body class toggle — instant preview across the whole dashboard.
-    ["green", "blue", "red", "purple"].forEach((t) => {
+    ["green", "red", "purple"].forEach((t) => {
       document.body.classList.remove(`theme-${t}-body`);
     });
     document.body.classList.add(`theme-${id}-body`);
     // Also update the theme-green scope class on <main> if present; simplest way:
-    const shells = document.querySelectorAll(".theme-green, .theme-blue, .theme-red, .theme-purple");
+    const shells = document.querySelectorAll(".theme-green, .theme-red, .theme-purple");
     shells.forEach((el) => {
-      el.classList.remove("theme-green", "theme-blue", "theme-red", "theme-purple");
+      el.classList.remove("theme-green", "theme-red", "theme-purple");
       el.classList.add(`theme-${id}`);
     });
     localStorage.setItem("bs_theme", id);

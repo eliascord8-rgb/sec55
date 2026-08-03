@@ -12,7 +12,7 @@ import logging
 import mimetypes
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, EmailStr, Field
@@ -90,6 +90,10 @@ class AIChatRequest(BaseModel):
 class AIIdentifyRequest(BaseModel):
     session_id: Optional[str] = None
     identifier: str = Field(..., min_length=2, max_length=80)
+
+
+class UsernameChangeRequestBody(BaseModel):
+    requested_username: str = Field(..., min_length=3, max_length=24, pattern=r"^[a-zA-Z0-9_]+$")
 
 
 def _identifier_kind(s: str) -> str:
@@ -223,6 +227,108 @@ def half_username(u: str) -> str:
     return u[:half] + "•" * (len(u) - half)
 
 
+def parse_order_request_text(text: str) -> Optional[Dict[str, Any]]:
+    """Parse natural-language order requests like:
+    - `%buy 1000 tiktok likes @username`
+    - `%kaufen 500 instagram followers`
+    - `buy tiktok custom comments for username`
+
+    Returns a normalized dict with platform/service/quantity/target/custom_comments.
+    """
+    if not text:
+        return None
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if not any(token in lowered for token in ["%buy", "%kaufen", " buy ", "kaufen", "followers", "likes", "views", "comments"]):
+        return None
+
+    platform = "tiktok" if "tiktok" in lowered else "instagram" if "instagram" in lowered else None
+    service = None
+    custom_comments = False
+
+    if re.search(r"custom comments|custom comment|comments", lowered):
+        service = "comments"
+        custom_comments = True
+    elif "followers" in lowered:
+        service = "followers"
+    elif "likes" in lowered:
+        service = "likes"
+    elif "views" in lowered:
+        service = "views"
+
+    if not platform or not service:
+        return None
+
+    quantity = None
+    m_qty = re.search(r"(\d+)", raw)
+    if m_qty:
+        quantity = int(m_qty.group(1))
+    if quantity is None or quantity <= 0:
+        quantity = 100
+
+    target = None
+    for part in re.split(r"\s+", raw):
+        part = part.strip().strip(".,;:")
+        if not part:
+            continue
+        lower = part.lower()
+        if lower in {"buy", "kaufen", "tiktok", "instagram", "followers", "likes", "views", "comments", "custom", "for", "the", "a", "an"}:
+            continue
+        if lower.isdigit() or re.fullmatch(r"\d+", lower):
+            continue
+        if part.startswith("@") or part.startswith("http"):
+            target = part
+            break
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", part):
+            target = part
+            break
+
+    return {
+        "platform": platform,
+        "service": service,
+        "quantity": quantity,
+        "target": target,
+        "custom_comments": custom_comments,
+        "raw": raw,
+    }
+
+
+def build_order_support_reply(text: str) -> Optional[str]:
+    """Return a human-friendly order-help message for bot/Discord commands.
+    The reply is bilingual (English + German) so users get guidance immediately.
+    """
+    parsed = parse_order_request_text(text)
+    if not parsed:
+        return None
+
+    command = (text or "").strip()
+    is_german = "%kaufen" in command.lower() or "kaufen" in command.lower()
+    if is_german:
+        service_name = parsed["service"].replace("comments", "Kommentare")
+        service_name = service_name.replace("followers", "Follower")
+        service_name = service_name.replace("likes", "Likes")
+        service_name = service_name.replace("views", "Views")
+        target = parsed.get("target") or "dein Ziel"
+        return (
+            f"🛍️ Bestellhilfe: Dein Befehl {command} wurde erkannt als {parsed['platform']} {service_name} x{parsed['quantity']}. "
+            f"Bitte sende mir den Ziel-Link oder den Nutzernamen ({target}) und ich leite deine Anfrage an unser Team weiter. "
+            f"Falls du Custom-Comments willst, schreibe einfach den Text, den du verwenden möchtest."
+        )
+
+    service_name = parsed["service"].replace("comments", "comments")
+    service_name = service_name.replace("followers", "followers")
+    service_name = service_name.replace("likes", "likes")
+    service_name = service_name.replace("views", "views")
+    target = parsed.get("target") or "your target"
+    return (
+        f"🛍️ Order help: Your command {command} was recognized as a {parsed['platform']} {service_name} order x{parsed['quantity']}. "
+        f"Please send the target link or username ({target}) and I’ll route this to our team for confirmation. "
+        f"If you want custom comments, just send the exact comment text you want to use."
+    )
+
+
 def _user_public(doc: dict) -> dict:
     return {
         "id": doc["id"],
@@ -234,6 +340,78 @@ def _user_public(doc: dict) -> dict:
         "chat_level": doc.get("chat_level", 1),
         "chat_xp": doc.get("chat_xp", 0),
     }
+
+
+async def _can_request_username_change(user_doc: Optional[dict], db: AsyncIOMotorDatabase) -> tuple[bool, str]:
+    if not user_doc:
+        return False, "User not found"
+    user_id = user_doc.get("id")
+    if not user_id:
+        return False, "User id missing"
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    cursor = db.username_change_requests.find({"user_id": user_id})
+    requests = await cursor.to_list(100)
+    for req in requests:
+        timestamp = None
+        for key in ("requested_at", "reviewed_at", "approved_at", "created_at"):
+            value = req.get(key)
+            if value:
+                timestamp = value
+                break
+        if not timestamp:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts >= cutoff:
+            return False, "You can request a username change only once every 30 days (monthly limit)."
+    return True, ""
+
+
+async def _create_username_change_request(db: AsyncIOMotorDatabase, user_doc: dict, requested_username: str) -> dict:
+    candidate = (requested_username or "").strip()
+    if len(candidate) < 3 or len(candidate) > 24 or not re.fullmatch(r"[a-zA-Z0-9_]+", candidate):
+        raise HTTPException(status_code=400, detail="Username must be 3-24 chars and use letters, numbers or underscores only")
+    current_username = user_doc.get("username") or ""
+    current_lower = (current_username or "").lower()
+    if candidate.lower() == current_lower:
+        raise HTTPException(status_code=400, detail="That is already your current username")
+
+    existing = await db.users.find_one(
+        {
+            "$or": [
+                {"username_lower": candidate.lower()},
+                {"username": {"$regex": f"^{re.escape(candidate)}$", "$options": "i"}},
+            ],
+            "id": {"$ne": user_doc.get("id")},
+        },
+        {"_id": 0, "id": 1},
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="That username is already taken")
+
+    ok, msg = await _can_request_username_change(user_doc, db)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_doc["id"],
+        "current_username": current_username,
+        "requested_username": candidate,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "status": "pending",
+        "email": user_doc.get("email"),
+        "reviewed_at": None,
+        "reviewed_by": None,
+        "review_note": None,
+    }
+    await db.username_change_requests.insert_one(doc.copy())
+    return doc
 
 
 # ================= DEPENDENCY =================
@@ -632,6 +810,27 @@ async def me(user: CurrentUser = Depends(current_user_dep), request: Request = N
     db: AsyncIOMotorDatabase = request.app.state.db
     doc = await db.users.find_one({"id": user.id}, {"_id": 0, "password_hash": 0})
     return {"user": _user_public(doc)}
+
+
+@auth_router.post("/me/username-change-request")
+async def request_username_change(payload: UsernameChangeRequestBody, request: Request, user: CurrentUser = Depends(current_user_dep)):
+    db: AsyncIOMotorDatabase = request.app.state.db
+    user_doc = await db.users.find_one({"id": user.id}, {"_id": 0, "id": 1, "username": 1, "username_lower": 1, "email": 1})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+    doc = await _create_username_change_request(db, user_doc, payload.requested_username)
+    return {"ok": True, "message": "Your username change request has been submitted for review.", "request": {"id": doc["id"], "status": doc["status"], "requested_username": doc["requested_username"]}}
+
+
+@auth_router.get("/me/username-change-request")
+async def get_username_change_request(request: Request, user: CurrentUser = Depends(current_user_dep)):
+    db: AsyncIOMotorDatabase = request.app.state.db
+    req = await db.username_change_requests.find({"user_id": user.id}).sort("requested_at", -1).to_list(1)
+    if not req:
+        return {"request": None}
+    item = dict(req[0])
+    item.pop("_id", None)
+    return {"request": item}
 
 
 # ============ PROFILE PICTURES ============
@@ -1429,6 +1628,14 @@ async def ai_chat(req: AIChatRequest, request: Request):
 
     # Detect handover request
     needs_handover = "HANDOVER_REQUEST" in reply_text
+    if not needs_handover:
+        parsed = parse_order_request_text(last_user)
+        if parsed:
+            reply_text = build_order_support_reply(last_user) or (
+                f"Thanks — I can help with a {parsed['platform']} {parsed['service']} order. "
+                f"I’ll route this to a human agent so we can confirm the details and place it correctly."
+            )
+            needs_handover = True
     if needs_handover:
         # Strip the marker before showing to user
         reply_text = re.sub(r"\n?HANDOVER_REQUEST\b\s*", "", reply_text).strip()

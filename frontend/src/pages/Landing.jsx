@@ -136,17 +136,17 @@ export default function Landing() {
             </span>
           </Link>
 
-          <nav className="hidden lg:flex items-center gap-9 text-sm font-manrope">
+          <nav className="hidden lg:flex items-center gap-6 xl:gap-8 text-sm font-manrope">
             <a
               href="#services"
-              className="text-zinc-400 hover:text-white transition-colors"
+              className="text-zinc-400 hover:text-white transition-colors px-2 py-1 rounded-full hover:bg-white/5"
               data-testid="nav-services"
             >
               Services
             </a>
             <a
               href="#how"
-              className="text-zinc-400 hover:text-white transition-colors"
+              className="text-zinc-400 hover:text-white transition-colors px-2 py-1 rounded-full hover:bg-white/5"
               data-testid="nav-how"
             >
               How it works
@@ -155,18 +155,25 @@ export default function Landing() {
               href="/tiktok-finder"
               target="_blank"
               rel="noreferrer"
-              className="text-emerald-300 hover:text-white transition-colors inline-flex items-center gap-1.5"
+              className="text-emerald-300 hover:text-white transition-colors inline-flex items-center gap-1.5 px-2 py-1 rounded-full hover:bg-emerald-500/10"
               data-testid="nav-tiktok-finder"
             >
               <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="currentColor" aria-hidden><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5.8 20.1a6.34 6.34 0 0 0 10.86-4.43V8.71a8.16 8.16 0 0 0 4.77 1.52V6.78a4.85 4.85 0 0 1-1.84-.09z"/></svg>
-              TikTok Finder
+              Finder
             </a>
             <a
               href="#faq"
-              className="text-zinc-400 hover:text-white transition-colors"
+              className="text-zinc-400 hover:text-white transition-colors px-2 py-1 rounded-full hover:bg-white/5"
               data-testid="nav-faq"
             >
               FAQ
+            </a>
+            <a
+              href="#pricing"
+              className="text-zinc-400 hover:text-white transition-colors px-2 py-1 rounded-full hover:bg-white/5"
+              data-testid="nav-pricing"
+            >
+              Prices
             </a>
           </nav>
 
@@ -452,6 +459,51 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* ==================== DISCORD CTA ==================== */}
+      <section className="relative py-24 md:py-32 border-t border-white/5 overflow-hidden">
+        <div className="absolute inset-0 opacity-30 pointer-events-none" style={{ background: "radial-gradient(circle at 30% 30%, rgba(88,101,242,0.25), transparent 60%)" }} />
+        <div className="relative max-w-5xl mx-auto px-6 md:px-10">
+          <div className="rounded-2xl border border-[#5865F2]/30 bg-gradient-to-br from-[#5865F2]/10 via-transparent to-emerald-500/5 p-8 md:p-14 text-center">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[#5865F2]/15 border border-[#5865F2]/30 mb-6">
+              <MessageCircle className="w-8 h-8 text-[#5865F2]" />
+            </div>
+            <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-[#5865F2] mb-4">
+              Community
+            </div>
+            <h2 className="font-display text-3xl md:text-5xl font-black tracking-tighter mb-4">
+              Join our Discord.
+            </h2>
+            <p className="text-sm md:text-base text-zinc-400 max-w-xl mx-auto mb-8 leading-relaxed">
+              Hang out, get order updates in real time, and grab support straight from our team —
+              plus try out our <span className="text-white font-bold">free Anti-Nuke, Moderation &amp; Raid Protection bot</span>{" "}
+              for your own server.
+            </p>
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+              <a
+                href="https://discord.gg/namelessstore"
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="landing-discord-join"
+                className="inline-flex items-center gap-2 px-7 py-3.5 rounded-sm bg-[#5865F2] hover:bg-[#4752c4] transition-colors font-bold text-sm uppercase tracking-wider"
+              >
+                <MessageCircle className="w-4 h-4" />
+                Join our Discord
+              </a>
+              <a
+                href="https://discord.gg/namelessstore"
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="landing-antinuke-bot"
+                className="inline-flex items-center gap-2 px-7 py-3.5 rounded-sm border border-emerald-400/30 bg-emerald-400/5 hover:bg-emerald-400/10 transition-colors font-bold text-sm uppercase tracking-wider text-emerald-300"
+              >
+                <Shield className="w-4 h-4" />
+                Try our Free Anti-Nuke Bot
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* ==================== FOOTER ==================== */}
       <footer className="relative border-t border-white/10 pt-20 pb-8 overflow-hidden">
         <div
@@ -482,13 +534,14 @@ export default function Landing() {
                 <span className="text-emerald-300 font-bold">Sinester</span>
               </span>
               <span className="text-white/20">·</span>
-              <a
-                href="mailto:balkinstr@web.de"
+              <button
+                type="button"
+                onClick={() => setAiOpen(true)}
                 data-testid="footer-contact"
                 className="text-emerald-300 hover:text-white transition"
               >
-                balkinstr@web.de
-              </a>
+                Contact us via chat — available 24/7
+              </button>
             </div>
             <a
               href="/admin"
@@ -501,35 +554,7 @@ export default function Landing() {
         </div>
       </footer>
 
-      {/* AI Widget + Floating Support FAB (Cyan glass) */}
       <AIWidget open={aiOpen} onOpenChange={setAiOpen} />
-      {!aiOpen &&
-        !(typeof window !== "undefined" && localStorage.getItem("bs_chat_banned") === "1") && (
-          <button
-            onClick={() => setAiOpen(true)}
-            data-testid="ai-fab"
-            aria-label="Open customer support"
-            className="fixed bottom-16 right-5 md:bottom-16 md:right-6 z-50 group flex items-center gap-3"
-          >
-            <span
-              className="hidden sm:inline-block px-3.5 py-2 rounded-full backdrop-blur-xl bg-black/60 border border-emerald-500/20 text-xs font-semibold text-white shadow-lg group-hover:border-emerald-500/50 group-hover:bg-black/80 transition-all"
-              data-testid="ai-fab-label"
-            >
-              Need help? Customer support
-            </span>
-            <div className="relative">
-              <span className="absolute inset-0 rounded-full bg-emerald-500/40 blur-2xl opacity-70 group-hover:opacity-100 transition animate-pulse" />
-              <div className="relative w-14 h-14 md:w-16 md:h-16 rounded-full backdrop-blur-xl bg-emerald-500/25 border border-emerald-400/50 flex items-center justify-center shadow-[0_0_30px_rgba(52,211,153,0.4)] group-hover:scale-105 group-hover:bg-emerald-500/40 transition-all">
-                <MessageCircle
-                  className="w-6 h-6 md:w-7 md:h-7 text-emerald-100"
-                  strokeWidth={2.2}
-                />
-              </div>
-              <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-[#050505] animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.9)]" />
-            </div>
-          </button>
-        )}
-
       <OrderTicker />
     </div>
   );

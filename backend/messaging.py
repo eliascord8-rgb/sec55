@@ -214,7 +214,7 @@ async def send_message(payload: SendMessage, request: Request, user: CurrentUser
     try:
         import asyncio as _asyncio, os as _os
         from notification_service import notify_dm_received
-        backend_url = _os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+        backend_url = _os.environ.get("REACT_APP_FRONTEND_URL") or _os.environ.get("FRONTEND_URL") or _os.environ.get("REACT_APP_BACKEND_URL") or _os.environ.get("BACKEND_URL") or ""
         # Voice messages get their own event type + email template
         kind = "voice" if payload.attachment_kind == "voice" else "text"
         preview = doc["text"] or f"[{payload.attachment_kind or 'attachment'}]"

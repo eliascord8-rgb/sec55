@@ -63,6 +63,7 @@ import NewsModal from "@/components/NewsModal";
 import { LanguagePicker, useLang } from "@/context/LanguageContext";
 import { CurrencyPicker, useCurrency } from "@/context/CurrencyContext";
 import { toast } from "sonner";
+import { resolveDeliveryValue, formatDeliveryLabel } from "@/lib/serviceDisplay";
 
 const POLL_MS = 3000;
 
@@ -113,15 +114,34 @@ export default function ClientDashboard() {
   const [freeBet, setFreeBet] = useState({ can_claim: false, amount: 0.8 });
   const [claimingFreeBet, setClaimingFreeBet] = useState(false);
   const chatEndRef = useRef(null);
+  const mobileMenuAutoOpened = useRef(false);
+
+  useEffect(() => {
+    if (!user || !useNewLayout || typeof window === "undefined") return;
+    if (window.innerWidth < 768 && !mobileMenuAutoOpened.current) {
+      mobileMenuAutoOpened.current = true;
+      openMobileMenu();
+    }
+  }, [user?.id, useNewLayout]);
 
   // Smooth-preloader when switching tabs (short delay for perceived polish, no full-page reload)
+  const openMobileMenu = () => {
+    setSidebarOpen(true);
+    setMobileMenuOpen(true);
+  };
+
+  const closeMobileMenu = () => {
+    setSidebarOpen(false);
+    setMobileMenuOpen(false);
+  };
+
   const changeView = (v) => {
     if (v === view) {
-      setSidebarOpen(false);
+      closeMobileMenu();
       return;
     }
     setViewLoading(true);
-    setSidebarOpen(false);
+    closeMobileMenu();
     setTimeout(() => {
       setView(v);
       setTimeout(() => setViewLoading(false), 150);
@@ -207,6 +227,7 @@ export default function ClientDashboard() {
         } catch { theme = "green"; }
       }
       if (!theme) theme = "green";
+      if (theme === "blue") theme = "green";
       // Reset then apply
       ["green", "blue", "red", "purple"].forEach((t) => document.body.classList.remove(`theme-${t}-body`));
       document.body.classList.add(`theme-${theme}-body`);
@@ -307,8 +328,33 @@ export default function ClientDashboard() {
   }, [view]);
 
   useEffect(() => {
-    if (!loading && !user) nav("/client");
-  }, [loading, user, nav]);
+    if (!user || loading) return;
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("tab") || params.get("view") || params.get("destination");
+    const map = {
+      home: "home",
+      buy: "buy",
+      addons: "addons",
+      numbers: "numbers",
+      games: "games",
+      finder: "finder",
+      blacklist: "blacklist",
+      invoices: "invoices",
+      api: "api",
+      help: "help",
+      messages: "messages",
+      tickets: "tickets",
+      funds: "funds",
+      discord: "discord",
+      referrals: "referrals",
+      redeem: "redeem",
+      withdraw: "withdraw",
+    };
+    const resolved = map[requested] || null;
+    if (resolved && resolved !== view) {
+      setView(resolved);
+    }
+  }, [loading, user, view]);
 
   const loadStats = async () => {
     try {
@@ -452,7 +498,6 @@ export default function ClientDashboard() {
   const primaryTabs = [
     { id: "home", label: t("nav_home"), testId: "nav-home" },
     { id: "buy", label: t("nav_buy"), testId: "nav-buy" },
-    ...(ownsAutoLive && feat("live_orders") ? [{ id: "live", label: t("nav_live"), testId: "nav-live", isNew: true }] : []),
     ...(feat("addons") ? [{ id: "addons", label: t("nav_addons"), testId: "nav-addons" }] : []),
     ...(feat("numbers") ? [{ id: "numbers", label: t("nav_numbers"), testId: "nav-numbers" }] : []),
     ...(feat("games") ? [{ id: "games", label: t("nav_games"), testId: "nav-games" }] : []),
@@ -460,18 +505,18 @@ export default function ClientDashboard() {
   // Secondary tabs — collapsed under a "More ▾" dropdown on PC. Full list appears
   // in the mobile drawer.
   const secondaryTabs = [
-    ...(ownsIdFinder ? [{ id: "finder", label: "Finder", testId: "nav-finder", isNew: true }] : []),
-    ...(ownsBlacklist ? [{ id: "blacklist", label: "Blacklist", testId: "nav-blacklist" }] : []),
-    { id: "invoices", label: t("nav_invoices"), testId: "nav-invoices", badge: unpaidInvoices },
-    { id: "api", label: "API", testId: "nav-api" },
-    { id: "help", label: t("nav_help"), testId: "nav-help" },
-    { id: "messages", label: t("nav_messages"), testId: "nav-messages", badge: unreadDms },
-    { id: "tickets", label: t("nav_tickets"), testId: "nav-tickets", badge: unreadTickets },
-    { id: "funds", label: t("nav_funds"), testId: "nav-funds" },
-    { id: "discord", label: "Manage Discord", testId: "nav-discord" },
-    { id: "referrals", label: "Referrals", testId: "nav-referrals" },
-    { id: "redeem", label: t("nav_redeem"), testId: "nav-redeem" },
-    { id: "withdraw", label: t("nav_withdraw"), testId: "nav-withdraw" },
+    ...(ownsIdFinder ? [{ id: "finder", label: "Finder", testId: "nav-finder", isNew: true, icon: Search }] : []),
+    ...(ownsBlacklist ? [{ id: "blacklist", label: "Blacklist", testId: "nav-blacklist", icon: ShieldOff }] : []),
+    { id: "invoices", label: t("nav_invoices"), testId: "nav-invoices", badge: unpaidInvoices, icon: FileText },
+    { id: "api", label: "API", testId: "nav-api", icon: Zap },
+    { id: "help", label: t("nav_help"), testId: "nav-help", icon: LifeBuoy },
+    { id: "messages", label: t("nav_messages"), testId: "nav-messages", badge: unreadDms, icon: MessageSquare },
+    { id: "tickets", label: t("nav_tickets"), testId: "nav-tickets", badge: unreadTickets, icon: Ticket },
+    { id: "funds", label: t("nav_funds"), testId: "nav-funds", icon: CreditCard },
+    { id: "discord", label: "Manage Discord", testId: "nav-discord", icon: MessageCircle },
+    { id: "referrals", label: "Referrals", testId: "nav-referrals", icon: Users },
+    { id: "redeem", label: t("nav_redeem"), testId: "nav-redeem", icon: Gift },
+    { id: "withdraw", label: t("nav_withdraw"), testId: "nav-withdraw", icon: ArrowUpRight },
   ];
   const navTabs = [...primaryTabs, ...secondaryTabs];
   const secondaryBadgeCount = secondaryTabs.reduce((n, tab) => n + (tab.badge || 0), 0);
@@ -504,10 +549,10 @@ export default function ClientDashboard() {
   }
 
   return (
-    <div className={`min-h-screen flex flex-col text-white ${useNewLayout ? "bg-[#0a1a0a]" : "bg-[#0a0a14]"}`}>
+    <div className={`min-h-screen flex flex-col text-white ${useNewLayout ? "theme-green bg-[#05110a]" : "bg-[#05110a]"}`}>
       {useNewLayout ? (
         /* GREEN TOP-NAV shell — no sidebar */
-        <header className="bg-[#0d2b12] sticky top-0 z-20 shadow-lg shadow-emerald-900/40 border-b border-emerald-500/20">
+        <header className="sticky top-0 z-20 border-b border-emerald-500/20 bg-[#07150d]/95 backdrop-blur-xl shadow-[0_10px_30px_rgba(16,185,129,0.12)]">
           <div className="flex items-center h-16 px-3 md:px-6 gap-2 md:gap-4">
             <div className="flex items-center gap-2 shrink-0">
               <div className="w-9 h-9 rounded-md bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
@@ -557,22 +602,28 @@ export default function ClientDashboard() {
                 {moreOpen && (
                   <>
                     <div className="fixed inset-0 z-30" onClick={() => setMoreOpen(false)} />
-                    <div className="absolute right-0 top-full mt-1 w-52 bg-[#0d2b12] border border-emerald-500/30 rounded-md shadow-2xl z-40 py-1" data-testid="nav-more-menu">
-                      {secondaryTabs.map((tab) => (
-                        <button
-                          key={tab.id}
-                          onClick={() => { changeView(tab.id); setMoreOpen(false); }}
-                          data-testid={tab.testId}
-                          className={`w-full flex items-center justify-between px-3 py-2 text-sm transition ${view === tab.id ? "bg-emerald-500/15 text-emerald-200" : "text-white hover:bg-emerald-500/10"}`}
-                        >
-                          <span className="font-medium">{tab.label}</span>
-                          {tab.badge > 0 && (
-                            <span className="min-w-[18px] h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none">
-                              {tab.badge}
-                            </span>
-                          )}
-                        </button>
-                      ))}
+                    <div className="bs-dropdown-anim absolute right-0 top-full mt-2 w-[340px] bg-[#050505] border border-emerald-500/30 rounded-xl shadow-2xl shadow-black/50 z-40 p-2" data-testid="nav-more-menu">
+                      <div className="grid grid-cols-2 gap-1">
+                        {secondaryTabs.map((tab) => {
+                          const Icon = tab.icon;
+                          return (
+                          <button
+                            key={tab.id}
+                            onClick={() => { changeView(tab.id); setMoreOpen(false); }}
+                            data-testid={tab.testId}
+                            className={`relative flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm transition ${view === tab.id ? "bg-emerald-500/15 text-emerald-200" : "text-white/80 hover:bg-emerald-500/10 hover:text-white"}`}
+                          >
+                            {Icon && <Icon className="w-4 h-4 shrink-0 opacity-80" />}
+                            <span className="font-medium truncate">{tab.label}</span>
+                            {tab.badge > 0 && (
+                              <span className="ml-auto min-w-[18px] h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none shrink-0">
+                                {tab.badge}
+                              </span>
+                            )}
+                          </button>
+                          );
+                        })}
+                      </div>
                     </div>
                   </>
                 )}
@@ -618,7 +669,7 @@ export default function ClientDashboard() {
                 {giftPopupOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setGiftPopupOpen(false)} />
-                    <div className="absolute right-0 top-11 z-50 w-[300px] bg-[#0d2b12] border border-emerald-500/30 rounded-md shadow-2xl overflow-hidden" data-testid="gift-popup">
+                    <div className="bs-dropdown-anim absolute right-0 top-11 z-50 w-[300px] bg-[#050505] border border-emerald-500/30 rounded-xl shadow-2xl shadow-black/50 overflow-hidden" data-testid="gift-popup">
                       <div className="px-3 py-2.5 border-b border-emerald-500/20 flex items-center gap-2">
                         <Gift className="w-3.5 h-3.5 text-emerald-300" />
                         <span className="text-[10px] font-black uppercase tracking-widest text-emerald-200">Gifts you received</span>
@@ -690,36 +741,38 @@ export default function ClientDashboard() {
                 {profileOpen && (
                   <>
                     <div className="fixed inset-0 z-30" onClick={() => setProfileOpen(false)} />
-                    <div className="absolute right-0 top-full mt-2 w-52 bg-[#0d2b12] border border-emerald-500/30 rounded-md shadow-2xl z-40 py-1" data-testid="profile-menu">
+                    <div className="bs-dropdown-anim absolute right-0 top-full mt-2 w-56 bg-[#050505] border border-emerald-500/30 rounded-xl shadow-2xl shadow-black/50 z-40 p-1.5" data-testid="profile-menu">
                       <button onClick={() => { setProfileOpen(false); changeView("settings"); }}
                         data-testid="profile-settings-btn"
-                        className="w-full text-left px-3 py-2 text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2">
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2.5 transition">
                         ⚙️ Settings
                       </button>
                       <button onClick={() => { setProfileOpen(false); changeView("security"); }}
                         data-testid="profile-security-btn"
-                        className="w-full text-left px-3 py-2 text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2">
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2.5 transition">
                         🛡️ Security & 2FA
                       </button>
                       <button onClick={() => { setProfileOpen(false); changeView("invoices"); }}
-                        className="w-full text-left px-3 py-2 text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2">
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2.5 transition">
                         🧾 My invoices
                       </button>
                       <button onClick={() => { setProfileOpen(false); changeView("help"); }}
-                        className="w-full text-left px-3 py-2 text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2">
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-white hover:bg-emerald-500/15 flex items-center gap-2.5 transition">
                         ❓ Help center
                       </button>
-                      <div className="border-t border-white/10 my-1" />
-                      <button onClick={() => { logout(); nav("/"); }}
-                        className="w-full text-left px-3 py-2 text-sm text-red-300 hover:bg-red-500/15 flex items-center gap-2">
-                        🚪 Sign out
+                      <div className="border-t border-white/10 my-1.5 mx-1" />
+                      <div className="px-3 py-1.5">
+                        <LanguagePicker compact />
+                      </div>
+                      <div className="border-t border-white/10 my-1.5 mx-1" />
+                      <button onClick={() => { logout(); nav("/"); }} data-testid="client-logout"
+                        className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-red-300 hover:bg-red-500/15 flex items-center gap-2.5 transition">
+                        <LogOut className="w-4 h-4" /> Sign out
                       </button>
                     </div>
                   </>
                 )}
               </div>
-              <div className="hidden md:block"><LanguagePicker compact /></div>
-              {/* Currency picker moved to Settings → Preferences per user request */}
               {user.role === "owner" && (
                 <a href="/admin" data-testid="nav-admin-green" title="Open admin panel"
                    className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 transition shadow-sm shadow-emerald-500/40">
@@ -734,73 +787,8 @@ export default function ClientDashboard() {
                   Support Panel
                 </a>
               )}
-              <button onClick={() => { logout(); nav("/"); }} data-testid="client-logout" className="hidden md:flex w-9 h-9 rounded-md hover:bg-white/10 items-center justify-center text-white/70" title="Logout">
-                <LogOut className="w-4 h-4" />
-              </button>
             </div>
           </div>
-          {/* Mobile side drawer — full page list (opened from bottom-bar Menu) */}
-          {mobileMenuOpen && (
-            <>
-              <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-40 md:hidden" onClick={() => setMobileMenuOpen(false)} />
-              <div className="fixed top-0 left-0 bottom-0 z-50 w-[280px] bg-[#0d2b12] border-r border-emerald-500/30 shadow-2xl md:hidden overflow-y-auto" data-testid="mobile-nav-drawer">
-                <div className="flex items-center justify-between px-4 h-14 border-b border-emerald-500/20 sticky top-0 bg-[#0d2b12]">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-md bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
-                      <Sparkles className="w-4 h-4 text-emerald-300" strokeWidth={2.5} />
-                    </div>
-                    <span className="font-display font-black text-sm text-white">Menu</span>
-                  </div>
-                  <button onClick={() => setMobileMenuOpen(false)} data-testid="mobile-drawer-close" className="w-8 h-8 rounded-md hover:bg-white/10 flex items-center justify-center text-white/60">
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-                <div className="p-2 space-y-0.5">
-                  {navTabs.map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() => { changeView(t.id); setMobileMenuOpen(false); }}
-                      data-testid={`m-${t.testId}`}
-                      className={`relative w-full flex items-center justify-between px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider transition ${view === t.id ? "bg-emerald-500/20 text-emerald-200" : "text-white/70 hover:bg-emerald-500/10"}`}
-                    >
-                      <span>{t.label}</span>
-                      {t.isNew && (
-                        <span className="text-[8px] font-black px-1.5 py-[1px] rounded-full bg-emerald-400 text-black tracking-wider leading-none">NEW</span>
-                      )}
-                      {t.badge > 0 && (
-                        <span className="min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none">
-                          {t.badge}
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                  <button
-                    onClick={() => { setMobileMenuOpen(false); changeView("settings"); }}
-                    className="w-full flex items-center justify-between px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider text-white/70 hover:bg-emerald-500/10"
-                  >
-                    <span>Settings</span>
-                  </button>
-                  <button
-                    onClick={() => { logout(); nav("/"); }}
-                    data-testid="m-logout"
-                    className="w-full flex items-center gap-2 px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider text-red-300 hover:bg-red-500/10"
-                  >
-                    <LogOut className="w-4 h-4" /> Sign out
-                  </button>
-                </div>
-                {user.role === "owner" && (
-                  <div className="p-2 border-t border-emerald-500/20">
-                    <a href="/admin" className="block px-3 py-2 rounded-md text-xs font-black uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 text-center">Admin panel</a>
-                  </div>
-                )}
-                {(user.role === "moderator" || user.role === "admin") && (
-                  <div className="p-2 border-t border-emerald-500/20">
-                    <a href="/admin" className="block px-3 py-2 rounded-md text-xs font-black uppercase tracking-wider text-black bg-amber-400 hover:bg-amber-300 text-center">Support panel</a>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
         </header>
       ) : (
       <header className="bg-[#2563eb] sticky top-0 z-20 shadow-lg shadow-[#2563eb]/20">
@@ -814,7 +802,7 @@ export default function ClientDashboard() {
           </div>
           <div className="lg:hidden flex items-center gap-2 px-4">
             <button
-              onClick={() => setSidebarOpen(true)}
+              onClick={openMobileMenu}
               data-testid="mobile-menu-btn"
               className="w-8 h-8 rounded-md hover:bg-white/15 flex items-center justify-center"
               title="Open menu"
@@ -889,6 +877,71 @@ export default function ClientDashboard() {
       </header>
       )}
 
+      {/* Mobile side drawer — full page list (opened from bottom-bar Menu). Rendered outside any
+          backdrop-blur/filter ancestor so its `fixed` positioning is relative to the viewport, not
+          clipped to the header's containing block. */}
+      {useNewLayout && mobileMenuOpen && (
+        <>
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-40 md:hidden" onClick={closeMobileMenu} />
+          <div className="fixed top-0 left-0 bottom-0 z-50 w-[280px] bg-[#0d2b12] border-r border-emerald-500/30 shadow-2xl md:hidden overflow-y-auto" data-testid="mobile-nav-drawer">
+            <div className="flex items-center justify-between px-4 h-14 border-b border-emerald-500/20 sticky top-0 bg-[#0d2b12]">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-md bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
+                  <Sparkles className="w-4 h-4 text-emerald-300" strokeWidth={2.5} />
+                </div>
+                <span className="font-display font-black text-sm text-white">Menu</span>
+              </div>
+              <button onClick={closeMobileMenu} data-testid="mobile-drawer-close" className="w-8 h-8 rounded-md hover:bg-white/10 flex items-center justify-center text-white/60">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-2 space-y-0.5">
+              {navTabs.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => { changeView(t.id); }}
+                  data-testid={`m-${t.testId}`}
+                  className={`relative w-full flex items-center justify-between px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider transition ${view === t.id ? "bg-emerald-500/20 text-emerald-200" : "text-white/70 hover:bg-emerald-500/10"}`}
+                >
+                  <span>{t.label}</span>
+                  {t.isNew && (
+                    <span className="text-[8px] font-black px-1.5 py-[1px] rounded-full bg-emerald-400 text-black tracking-wider leading-none">NEW</span>
+                  )}
+                  {t.badge > 0 && (
+                    <span className="min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none">
+                      {t.badge}
+                    </span>
+                  )}
+                </button>
+              ))}
+              <button
+                onClick={() => { changeView("settings"); }}
+                className="w-full flex items-center justify-between px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider text-white/70 hover:bg-emerald-500/10"
+              >
+                <span>Settings</span>
+              </button>
+              <button
+                onClick={() => { logout(); nav("/"); }}
+                data-testid="m-logout"
+                className="w-full flex items-center gap-2 px-3 py-3 rounded-md text-sm font-bold uppercase tracking-wider text-red-300 hover:bg-red-500/10"
+              >
+                <LogOut className="w-4 h-4" /> Sign out
+              </button>
+            </div>
+            {user.role === "owner" && (
+              <div className="p-2 border-t border-emerald-500/20">
+                <a href="/admin" className="block px-3 py-2 rounded-md text-xs font-black uppercase tracking-wider text-black bg-emerald-400 hover:bg-emerald-300 text-center">Admin panel</a>
+              </div>
+            )}
+            {(user.role === "moderator" || user.role === "admin") && (
+              <div className="p-2 border-t border-emerald-500/20">
+                <a href="/admin" className="block px-3 py-2 rounded-md text-xs font-black uppercase tracking-wider text-black bg-amber-400 hover:bg-amber-300 text-center">Support panel</a>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       <div className={useNewLayout ? "flex-1 px-4 md:px-6 pt-4 pb-24 md:pb-4" : "flex flex-1"}>
         {/* SIDEBAR — only for classic layout */}
         {!useNewLayout && (
@@ -958,7 +1011,7 @@ export default function ClientDashboard() {
         {/* Mobile drawer backdrop */}
         {!useNewLayout && sidebarOpen && (
           <div
-            onClick={() => setSidebarOpen(false)}
+            onClick={closeMobileMenu}
             data-testid="sidebar-backdrop"
             className="lg:hidden fixed inset-0 top-16 z-30 bg-black/60 backdrop-blur-sm"
           />
@@ -1060,7 +1113,7 @@ export default function ClientDashboard() {
       {useNewLayout && (
         <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0d2b12]/95 backdrop-blur border-t border-emerald-500/25 shadow-[0_-4px_20px_rgba(0,0,0,0.5)]" data-testid="mobile-bottom-nav">
           <div className="grid grid-cols-5 h-16">
-            <button onClick={() => setMobileMenuOpen(true)} data-testid="bottomnav-menu"
+            <button onClick={openMobileMenu} data-testid="bottomnav-menu"
                     className="flex flex-col items-center justify-center gap-0.5 text-white/60 active:scale-95 transition">
               <Menu className="w-5 h-5" />
               <span className="text-[9px] font-bold uppercase tracking-wider">Menu</span>
@@ -3491,12 +3544,23 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
   const subscribe = async () => {
     if (!selected) return;
     if (!subUsername.trim()) { toast.error("Enter the TikTok @username"); return; }
+
+    const normalizedComments = selected.needs_custom_text
+      ? comments.replace(/\r\n?/g, "\n").trim()
+      : "";
+    const commentLineCount = selected.needs_custom_text
+      ? normalizedComments.split("\n").filter((l) => l.trim()).length
+      : 0;
+
     if (selected.needs_custom_text) {
-      const nLines = comments.split("\n").filter((l) => l.trim()).length;
-      if (nLines < 1) { toast.error("Enter at least one comment line — line count is the quantity"); return; }
+      if (commentLineCount < 1) {
+        toast.error("Enter at least one comment line — line count is the quantity");
+        return;
+      }
     } else if (qty < (selected.min || 1)) {
       toast.error(`Minimum quantity is ${selected.min}`); return;
     }
+
     setSubSubmitting(true);
     const handles = subUsername.split(/[\n,]+/).map((h) => h.trim().replace(/^@/, "")).filter(Boolean);
     try {
@@ -3508,11 +3572,11 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
           const r = await authedApi().post("/client/live-sub/create", {
             service_id: selected.service,
             tiktok_username: h,
-            quantity_per_burst: Number(qty),
+            quantity_per_burst: selected.needs_custom_text ? commentLineCount : Number(qty),
             duration_days: subDays,
             repeat_every_minutes: subRepeatMins,
             mode: subFireMode,
-            comments: selected.needs_custom_text ? comments.trim() : undefined,
+            comments: selected.needs_custom_text ? normalizedComments : undefined,
           });
           okCount++;
           lastHandle = r.data.subscription.tiktok_username;
@@ -3540,6 +3604,12 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
     } catch (e) { toast.error(e.response?.data?.detail || "Cancel failed"); }
   };
 
+  const formatDeliveryTime = (value) => {
+    const resolved = resolveDeliveryValue({ delivery_minutes: value });
+    const label = formatDeliveryLabel(resolved);
+    return label === "—" ? "Delivery varies" : label;
+  };
+
   const loadServices = async () => {
     setLoadingSvc(true);
     try {
@@ -3554,6 +3624,13 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
 
   useEffect(() => {
     loadServices();
+    const interval = window.setInterval(() => loadServices(), 15000);
+    const onFocus = () => loadServices();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
   }, []);
 
   const categories = ["all", ...Array.from(new Set(services.map((s) => s.category))).slice(0, 30)];
@@ -3989,6 +4066,15 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
               <div className="text-xs text-white/50 mt-1">
                 ${Number(selected.rate).toFixed(3)} / 1000 · Min {selected.min} · Max {selected.max}
               </div>
+              {(() => {
+                const delivery = formatDeliveryLabel(resolveDeliveryValue(selected));
+                return delivery !== "—" ? (
+                  <div className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                    <Clock className="w-3 h-3" />
+                    {delivery}
+                  </div>
+                ) : null;
+              })()}
             </div>
             <button
               onClick={() => setSelected(null)}
@@ -4366,6 +4452,15 @@ function BuyView({ authedApi, balance, reloadBalance, ownsAutoLive, onGoAddons, 
                       {s.category}
                     </div>
                     <div className="text-sm font-medium text-white/90 truncate">{s.name}</div>
+                    {(() => {
+                      const delivery = formatDeliveryLabel(resolveDeliveryValue(s));
+                      return delivery !== "—" ? (
+                        <div className="mt-1 flex items-center gap-1 text-[10px] text-emerald-300/90">
+                          <Clock className="w-3 h-3" />
+                          {delivery}
+                        </div>
+                      ) : null;
+                    })()}
                   </button>
                   <div className="text-right shrink-0 flex items-center gap-3">
                     <div>

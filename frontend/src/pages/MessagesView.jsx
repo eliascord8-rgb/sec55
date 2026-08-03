@@ -580,66 +580,91 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
         {/* Thread list */}
-        <div className="bg-[#0d0a14] border border-white/5 rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-white/5 text-[10px] uppercase tracking-wider text-white/40 font-bold">Recent</div>
+        <div className="bg-[#0d0a14] border border-white/5 rounded-2xl overflow-hidden shadow-xl shadow-black/20">
+          <div className="px-4 py-3.5 border-b border-white/5 text-[10px] uppercase tracking-widest text-white/40 font-black flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#3b82f6] animate-pulse" /> Recent
+          </div>
           <div className="max-h-[500px] overflow-y-auto">
-            {threads.length === 0 && <div className="p-6 text-center text-xs text-white/40">No conversations yet.<br/>Search a username above.</div>}
-            {threads.map((t) => (
+            {threads.length === 0 && (
+              <div className="p-8 text-center text-xs text-white/40">
+                <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-white/5 flex items-center justify-center">
+                  <Search className="w-5 h-5 text-white/25" />
+                </div>
+                No conversations yet.<br/>Search a username above.
+              </div>
+            )}
+            {threads.map((t) => {
+              const isActive = activeUser?.id === t.other_id;
+              return (
               <button
                 key={t.other_id}
                 onClick={() => setActiveUser({ id: t.other_id, username: t.other_username })}
                 data-testid={`thread-${t.other_username}`}
-                className={`w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-white/5 transition border-b border-white/5 ${activeUser?.id === t.other_id ? "bg-[#3b82f6]/10" : ""}`}
+                className={`relative w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-white/5 transition-all border-b border-white/5 ${isActive ? "bg-gradient-to-r from-[#3b82f6]/15 to-transparent" : ""}`}
               >
-                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#3b82f6] to-[#7c3aed] flex items-center justify-center text-xs font-bold shrink-0">{t.other_username.slice(0,2).toUpperCase()}</div>
+                {isActive && <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full bg-[#3b82f6]" />}
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#3b82f6] to-[#7c3aed] flex items-center justify-center text-xs font-bold shrink-0 ring-2 ring-white/10">{t.other_username.slice(0,2).toUpperCase()}</div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between">
-                    <div className="font-bold text-sm truncate">{t.other_username}</div>
-                    {t.unread > 0 && <span className="w-5 h-5 rounded-full bg-red-500 text-white text-[10px] flex items-center justify-center font-bold">{t.unread}</span>}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className={`text-sm truncate ${t.unread > 0 ? "font-black text-white" : "font-bold text-white/90"}`}>{t.other_username}</div>
+                    {t.unread > 0 && <span className="w-5 h-5 rounded-full bg-red-500 text-white text-[10px] flex items-center justify-center font-bold shadow-md shadow-red-500/40">{t.unread}</span>}
                   </div>
-                  <div className="text-[11px] text-white/50 truncate">{t.last_from_me && "You: "}{t.last_text}</div>
+                  <div className={`text-[11px] truncate mt-0.5 ${t.unread > 0 ? "text-white/80" : "text-white/45"}`}>{t.last_from_me && "You: "}{t.last_text}</div>
                 </div>
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
 
         {/* Chat area */}
-        <div className="bg-[#0d0a14] border border-white/5 rounded-lg flex flex-col h-[500px]">
+        <div className="bg-[#0d0a14] border border-white/5 rounded-2xl flex flex-col h-[500px] shadow-xl shadow-black/20 overflow-hidden">
           {!activeUser ? (
             <div className="flex-1 flex items-center justify-center text-white/40 text-sm">
               Select a conversation or search a username to start chatting.
             </div>
           ) : (
             <>
-              <div className="px-4 py-3 border-b border-white/5 flex items-center gap-3">
-                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#3b82f6] to-[#7c3aed] flex items-center justify-center text-xs font-bold">{activeUser.username.slice(0,2).toUpperCase()}</div>
-                <div className="flex-1">
-                  <div className="font-bold text-sm">@{activeUser.username}</div>
+              <div className="px-4 py-3 border-b border-white/5 flex items-center gap-3 bg-white/[0.02]">
+                <div className="relative shrink-0">
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#3b82f6] to-[#7c3aed] flex items-center justify-center text-xs font-bold ring-2 ring-white/10">{activeUser.username.slice(0,2).toUpperCase()}</div>
+                  {fmtLastSeen(activeUserInfo?.last_seen) === "online now" && (
+                    <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[#0d0a14]" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-sm truncate">@{activeUser.username}</div>
                   <div className="text-[10px] uppercase tracking-wider text-white/50" data-testid="last-seen">
-                    Last seen · {fmtLastSeen(activeUserInfo?.last_seen)}
+                    {fmtLastSeen(activeUserInfo?.last_seen)}
                   </div>
                 </div>
-                <button onClick={() => startCall(false)} data-testid="call-audio-btn" className="w-9 h-9 rounded-md hover:bg-emerald-500/20 flex items-center justify-center text-emerald-400" title="Voice call">
+                <button onClick={() => startCall(false)} data-testid="call-audio-btn" className="w-9 h-9 rounded-full hover:bg-emerald-500/20 hover:scale-105 flex items-center justify-center text-emerald-400 transition" title="Voice call">
                   <Phone className="w-4 h-4" />
                 </button>
-                <button onClick={() => startCall(true)} data-testid="call-video-btn" className="w-9 h-9 rounded-md hover:bg-blue-500/20 flex items-center justify-center text-blue-400" title="Video call">
+                <button onClick={() => startCall(true)} data-testid="call-video-btn" className="w-9 h-9 rounded-full hover:bg-blue-500/20 hover:scale-105 flex items-center justify-center text-blue-400 transition" title="Video call">
                   <Video className="w-4 h-4" />
                 </button>
-                <button onClick={toggleBlock} data-testid="block-btn" className={`w-9 h-9 rounded-md flex items-center justify-center ${activeUserInfo?.i_blocked ? "bg-red-500/20 text-red-400" : "hover:bg-red-500/20 text-white/50"}`} title={activeUserInfo?.i_blocked ? "Unblock user" : "Block user"}>
+                <button onClick={toggleBlock} data-testid="block-btn" className={`w-9 h-9 rounded-full flex items-center justify-center transition hover:scale-105 ${activeUserInfo?.i_blocked ? "bg-red-500/20 text-red-400" : "hover:bg-red-500/20 text-white/50"}`} title={activeUserInfo?.i_blocked ? "Unblock user" : "Block user"}>
                   <Ban className="w-4 h-4" />
                 </button>
-                <button onClick={() => setReportOpen(true)} data-testid="report-btn" className="w-9 h-9 rounded-md hover:bg-amber-500/20 flex items-center justify-center text-amber-400" title="Report this chat to admins">
+                <button onClick={() => setReportOpen(true)} data-testid="report-btn" className="w-9 h-9 rounded-full hover:bg-amber-500/20 hover:scale-105 flex items-center justify-center text-amber-400 transition" title="Report this chat to admins">
                   <Flag className="w-4 h-4" />
                 </button>
               </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                {messages.length === 0 && <div className="text-center text-white/30 text-xs py-8">Start the conversation…</div>}
+              <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+                {messages.length === 0 && (
+                  <div className="text-center text-white/30 text-xs py-8">
+                    <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-white/5 flex items-center justify-center">
+                      <Send className="w-5 h-5 text-white/20" />
+                    </div>
+                    Start the conversation…
+                  </div>
+                )}
                 {messages.map((m) => (
-                  <div key={m.id} className={`flex ${m.from_id === me.id ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-[70%] px-3 py-2 rounded-lg text-sm ${m.from_id === me.id ? "bg-[#3b82f6] text-white" : "bg-white/10 text-white"}`}>
+                  <div key={m.id} className={`flex ${m.from_id === me.id ? "justify-end" : "justify-start"} animate-[fadeIn_0.2s_ease-out]`}>
+                    <div className={`max-w-[70%] px-3.5 py-2.5 text-sm shadow-md ${m.from_id === me.id ? "bg-gradient-to-br from-[#3b82f6] to-[#2f6fe0] text-white rounded-2xl rounded-br-md" : "bg-white/[0.08] text-white rounded-2xl rounded-bl-md"}`}>
                       {m.attachment_url && m.attachment_kind === "voice" && (
                         <audio src={m.attachment_url} controls preload="metadata" className="max-w-[240px] mb-1" data-testid="voice-msg" />
                       )}
@@ -674,12 +699,12 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
                 )}
                 <div ref={chatEndRef} />
               </div>
-              <form onSubmit={send} className="border-t border-white/5 p-3 flex gap-2 items-center">
+              <form onSubmit={send} className="border-t border-white/5 p-3 flex gap-2 items-center bg-white/[0.02]">
                 <input type="file" ref={fileInputRef} onChange={onFilePick} className="hidden" data-testid="file-input" />
-                <button type="button" onClick={() => fileInputRef.current?.click()} data-testid="attach-btn" className="w-9 h-9 rounded-md hover:bg-white/10 flex items-center justify-center text-white/60" title="Attach file">
+                <button type="button" onClick={() => fileInputRef.current?.click()} data-testid="attach-btn" className="w-9 h-9 rounded-full hover:bg-white/10 hover:scale-105 flex items-center justify-center text-white/60 transition shrink-0" title="Attach file">
                   <Paperclip className="w-4 h-4" />
                 </button>
-                <button type="button" onClick={toggleRecording} data-testid="voice-btn" className={`w-9 h-9 rounded-md flex items-center justify-center ${recording ? "bg-red-500 text-white animate-pulse" : "hover:bg-white/10 text-white/60"}`} title={recording ? "Click to stop & send" : "Click to record voice message"}>
+                <button type="button" onClick={toggleRecording} data-testid="voice-btn" className={`w-9 h-9 rounded-full flex items-center justify-center transition shrink-0 ${recording ? "bg-red-500 text-white animate-pulse" : "hover:bg-white/10 hover:scale-105 text-white/60"}`} title={recording ? "Click to stop & send" : "Click to record voice message"}>
                   {recording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
                 </button>
                 <input
@@ -688,9 +713,9 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
                   onChange={onTextChange}
                   placeholder={recording ? "🔴 Recording… click mic again to send" : "Type a message…"}
                   disabled={recording}
-                  className="flex-1 bg-[#1a1525] border border-white/10 rounded-md px-3 py-2 text-sm outline-none focus:border-[#3b82f6]"
+                  className="flex-1 bg-[#1a1525] border border-white/10 rounded-full px-4 py-2.5 text-sm outline-none focus:border-[#3b82f6] focus:ring-2 focus:ring-[#3b82f6]/20 transition"
                 />
-                <button type="submit" disabled={sending || !text.trim()} data-testid="dm-send" className="px-4 bg-[#3b82f6] hover:bg-[#2563eb] rounded-md disabled:opacity-40 inline-flex items-center">
+                <button type="submit" disabled={sending || !text.trim()} data-testid="dm-send" className="w-10 h-10 shrink-0 bg-[#3b82f6] hover:bg-[#2563eb] rounded-full disabled:opacity-40 inline-flex items-center justify-center transition hover:scale-105 shadow-md shadow-[#3b82f6]/30">
                   {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 </button>
               </form>

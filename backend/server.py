@@ -17,7 +17,7 @@ import string
 import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlencode
 
@@ -54,6 +54,17 @@ api_router = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
 
 
+def _auto_approve_orders_enabled() -> bool:
+    value = str(os.environ.get("AUTO_APPROVE_ORDERS", "true")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _default_order_status(is_manual: bool) -> str:
+    if is_manual:
+        return "awaiting_manual_fulfillment"
+    return "approved" if _auto_approve_orders_enabled() else "Pending"
+
+
 # Import auth deps so we can build authenticated routes below
 from auth_and_chat import (  # noqa: E402
     auth_router,
@@ -65,6 +76,8 @@ from auth_and_chat import (  # noqa: E402
     optional_current_user_dep,
     CurrentUser,
 )
+from email_service import send_email
+from service_catalog import parse_delivery_minutes, refresh_catalog_delivery_minutes, extract_provider_delivery_minutes, normalize_provider_services_payload
 
 
 # ============ MODELS ============
@@ -116,6 +129,7 @@ class ServiceUpdate(BaseModel):
     provider_id: Optional[str] = None
     description: Optional[str] = None
     delivery_minutes: Optional[int] = None
+    delivery_minutes_manual: Optional[bool] = None
 
 
 class ManualServiceCreate(BaseModel):
@@ -133,6 +147,11 @@ class AdminLogin(BaseModel):
 
 class CheckTxRequest(BaseModel):
     order_id: str
+
+
+class UsernameReviewDecision(BaseModel):
+    decision: str  # approve | decline
+    note: Optional[str] = None
 
 
 # ============ HELPERS ============
@@ -180,6 +199,75 @@ async def get_actor_display_name(token: Optional[str]) -> str:
     return "Support"
 
 
+async def _send_username_change_emails(db: AsyncIOMotorDatabase, user_doc: dict, request_doc: dict, approved: bool, actor_name: str, note: Optional[str] = None) -> None:
+    email = (user_doc.get("email") or "").strip()
+    if not email:
+        return
+    if approved:
+        subject = "Your username change request was approved"
+        html = f"""
+        <h2>Your username change request was approved</h2>
+        <p>Your requested username change to <strong>{request_doc.get('requested_username')}</strong> has been approved by {actor_name}.</p>
+        <p>Your username will be updated in 15 minutes.</p>
+        <p>{note or ''}</p>
+        """
+    else:
+        subject = "Your username change request was declined"
+        html = f"""
+        <h2>Your username change request was declined</h2>
+        <p>Your requested username change to <strong>{request_doc.get('requested_username')}</strong> was declined by {actor_name}.</p>
+        <p>Your current username remains <strong>{request_doc.get('current_username')}</strong>.</p>
+        <p>{note or ''}</p>
+        """
+    try:
+        await send_email(db, email, subject, html)
+    except Exception:
+        logger.exception("Failed to send username-change email")
+
+
+async def _apply_username_change_after_delay(db: AsyncIOMotorDatabase, request_id: str) -> None:
+    await asyncio.sleep(900)
+    request_doc = await db.username_change_requests.find_one({"id": request_id})
+    if not request_doc or request_doc.get("status") != "approved":
+        return
+    user_doc = await db.users.find_one({"id": request_doc.get("user_id")})
+    if not user_doc:
+        return
+    new_username = (request_doc.get("requested_username") or "").strip()
+    current_username = (user_doc.get("username") or "").strip()
+    if not new_username or new_username.lower() == current_username.lower():
+        return
+    existing = await db.users.find_one({
+        "$or": [
+            {"username_lower": new_username.lower()},
+            {"username": {"$regex": f"^{re.escape(new_username)}$", "$options": "i"}},
+        ],
+        "id": {"$ne": user_doc.get("id")},
+    }, {"_id": 0, "id": 1})
+    if existing:
+        await db.username_change_requests.update_one({"id": request_id}, {"$set": {"status": "declined", "reviewed_at": datetime.now(timezone.utc).isoformat(), "review_note": "Username was taken by the time the approval was executed"}})
+        return
+    await db.users.update_one({"id": user_doc.get("id")}, {"$set": {"username": new_username, "username_lower": new_username.lower()}})
+    await db.username_change_requests.update_one({"id": request_id}, {"$set": {"executed_at": datetime.now(timezone.utc).isoformat(), "completed": True}})
+    await db.username_change_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "request_id": request_id,
+        "user_id": user_doc.get("id"),
+        "old_username": current_username,
+        "new_username": new_username,
+        "changed_at": datetime.now(timezone.utc).isoformat(),
+    })
+    try:
+        await send_email(
+            db,
+            user_doc.get("email"),
+            "Your username change has been applied",
+            f"<h2>Your username has been updated</h2><p>Your username is now <strong>{new_username}</strong>.</p>",
+        )
+    except Exception:
+        logger.exception("Failed to send applied username change email")
+
+
 def gen_coupon_code() -> str:
     chars = string.ascii_uppercase + string.digits
     return "BS-" + "-".join("".join(secrets.choice(chars) for _ in range(4)) for _ in range(3))
@@ -225,6 +313,49 @@ async def place_smm_order(service_id: int, link: str, quantity: int, comments: O
     return await smm_request(payload, provider_id=provider_id)
 
 
+def _build_tiktok_live_link_candidates(handle: str) -> List[str]:
+    cleaned = (handle or "").strip().lstrip("@")
+    if not cleaned:
+        return []
+    return [
+        f"https://www.tiktok.com/@{cleaned}/live",
+        f"https://www.tiktok.com/@{cleaned}",
+        f"https://www.tiktok.com/{cleaned}",
+        f"@{cleaned}",
+        cleaned,
+    ]
+
+
+async def _place_live_order_with_fallback(
+    service_id: int,
+    handle: str,
+    quantity: int,
+    comments: Optional[str] = None,
+    provider_id: Optional[str] = None,
+    order_fn=None,
+) -> tuple[dict, str]:
+    candidates = _build_tiktok_live_link_candidates(handle)
+    if not candidates:
+        raise HTTPException(status_code=400, detail="Invalid TikTok handle")
+    if order_fn is None:
+        order_fn = place_smm_order
+
+    last_error = None
+    for link in candidates:
+        try:
+            resp = await order_fn(service_id, link, quantity, comments=comments, provider_id=provider_id)
+            if resp and resp.get("order"):
+                return resp, link
+            last_error = resp
+        except Exception as exc:
+            last_error = exc
+    if isinstance(last_error, HTTPException):
+        raise last_error
+    if last_error is None:
+        raise HTTPException(status_code=502, detail="Provider returned no usable order id")
+    raise HTTPException(status_code=502, detail=f"Order failed: {last_error}")
+
+
 # ============ PUBLIC ROUTES ============
 @api_router.get("/")
 async def root():
@@ -232,42 +363,30 @@ async def root():
 
 
 def _parse_delivery_minutes(text: str) -> Optional[int]:
-    """Try to extract a delivery time (in minutes) from a free-form description.
-    Looks for patterns like 'Start time: 0-1H', 'Speed: 1k/24h', '5 min start', '~2 hours' etc.
-    Returns None if nothing parseable found."""
-    if not text:
-        return None
-    import re as _re
-    t = text.lower()
-    # Direct: "30 minute(s)" / "2 hour(s)" / "1 day"
-    m = _re.search(r"(\d+)\s*(min|minute|hour|hr|day|d)\b", t)
-    if m:
-        n = int(m.group(1))
-        unit = m.group(2)
-        if unit.startswith("min"):
-            return n
-        if unit.startswith("hr") or unit.startswith("hour"):
-            return n * 60
-        if unit.startswith("d"):
-            return n * 60 * 24
-    # Range like "0-1h" or "1-6 hours"
-    m = _re.search(r"(\d+)\s*-\s*(\d+)\s*(h|hour|m|min|d|day)", t)
-    if m:
-        hi = int(m.group(2))
-        unit = m.group(3)
-        if unit.startswith("h"):
-            return hi * 60
-        if unit.startswith("m"):
-            return hi
-        if unit.startswith("d"):
-            return hi * 60 * 24
-    return None
+    """Backward-compatible wrapper for delivery-minute parsing."""
+    return parse_delivery_minutes(text)
 
 
 @api_router.get("/services")
 async def list_services():
     """Public catalog: only curated enabled services with admin's custom price."""
     items = await db.curated_services.find({"enabled": True}, {"_id": 0}).to_list(2000)
+    refresh_cache = {}
+    # Refresh once per distinct provider (including the legacy default provider, provider_id=None)
+    # so services synced before the multi-provider system get real average-time data too.
+    for provider_id in {item.get("provider_id") for item in items}:
+        try:
+            await refresh_catalog_delivery_minutes(
+                db,
+                lambda pid=provider_id: smm_request({"action": "services"}, provider_id=pid),
+                provider_id=provider_id,
+                cache=refresh_cache,
+                cache_ttl_seconds=90,
+            )
+        except Exception:
+            pass
+
+    refreshed_items = await db.curated_services.find({"enabled": True}, {"_id": 0}).to_list(2000)
     services = [
         {
             "service": s["service_id"],
@@ -281,11 +400,11 @@ async def list_services():
             "provider_id": s.get("provider_id"),
             "provider_name": s.get("provider_name", ""),
             "description": s.get("description", "") or "",
-            "delivery_minutes": s.get("delivery_minutes"),
+            "delivery_minutes": s.get("delivery_minutes") if s.get("delivery_minutes") is not None else _parse_delivery_minutes(s.get("description", "") or ""),
             "manual": bool(s.get("manual", False)),
             "price_flat": s.get("price_flat"),  # for manual services, total price (not per 1k)
         }
-        for s in items
+        for s in refreshed_items
     ]
     return {"services": services}
 
@@ -1350,18 +1469,28 @@ async def admin_update_coupon_balance(
 
 @api_router.get("/orders/recent-feed")
 async def public_orders_feed():
-    """Public ticker feed — masked email + service name. Last 30 completed orders."""
+    """Public ticker feed — latest recent orders so the landing-page ticker updates quickly."""
     cursor = (
         db.orders.find(
-            {"smm_order_id": {"$ne": None}},
-            {"_id": 0, "service_id": 1, "quantity": 1, "customer_email": 1, "created_at": 1, "source": 1},
+            {"created_at": {"$exists": True}},
+            {
+                "_id": 0,
+                "service_id": 1,
+                "service_name": 1,
+                "service": 1,
+                "quantity": 1,
+                "customer_email": 1,
+                "username": 1,
+                "created_at": 1,
+                "source": 1,
+                "status": 1,
+            },
         )
         .sort("created_at", -1)
-        .limit(30)
+        .limit(60)
     )
-    items = await cursor.to_list(30)
+    items = await cursor.to_list(60)
 
-    # Resolve service names (cache in dict to avoid N+1)
     svc_ids = list({i.get("service_id") for i in items if i.get("service_id")})
     svc_map = {}
     if svc_ids:
@@ -1379,11 +1508,21 @@ async def public_orders_feed():
 
     feed = []
     for o in items:
+        username = (o.get("username") or "").strip()
+        display_user = username or mask(o.get("customer_email", ""))
+        service_name = (
+            svc_map.get(o.get("service_id"))
+            or o.get("service_name")
+            or o.get("service")
+            or "an SMM service"
+        )
         feed.append({
-            "user": mask(o.get("customer_email", "")),
-            "service": svc_map.get(o.get("service_id"), "an SMM service"),
-            "quantity": o.get("quantity"),
+            "user": display_user,
+            "customer_name": display_user,
+            "service": service_name,
+            "quantity": o.get("quantity") or 1,
             "created_at": o.get("created_at"),
+            "status": o.get("status"),
         })
     return {"feed": feed}
 
@@ -1412,6 +1551,53 @@ class AdminBalanceAdjust(BaseModel):
     amount: float = Field(..., ge=-100000, le=100000)  # positive = add, negative = subtract
     reason: Optional[str] = "admin_adjustment"
     note: Optional[str] = ""
+
+
+@api_router.get("/admin/username-change-requests")
+async def admin_username_change_requests(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "username_review")
+    items = await db.username_change_requests.find({}).sort("requested_at", -1).to_list(200)
+    cleaned = []
+    for item in items:
+        item = dict(item)
+        item.pop("_id", None)
+        cleaned.append(item)
+    return {"requests": cleaned}
+
+
+@api_router.get("/admin/username-change-log")
+async def admin_username_change_log(x_admin_token: Optional[str] = Header(None)):
+    """Full history of completed username changes — old username → new username, who and when."""
+    check_admin(x_admin_token, "username_review")
+    items = await db.username_change_log.find({}, {"_id": 0}).sort("changed_at", -1).to_list(500)
+    return {"log": items}
+
+
+@api_router.post("/admin/username-change-requests/{request_id}/review")
+async def admin_review_username_change_request(request_id: str, payload: UsernameReviewDecision, request: Request, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "username_review")
+    db_req = await db.username_change_requests.find_one({"id": request_id})
+    if not db_req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if db_req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="This request has already been reviewed")
+    decision = (payload.decision or "").strip().lower()
+    if decision not in {"approve", "decline"}:
+        raise HTTPException(status_code=400, detail="Decision must be approve or decline")
+    actor_name = await get_actor_display_name(x_admin_token)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.username_change_requests.update_one({"id": request_id}, {"$set": {
+        "status": "approved" if decision == "approve" else "declined",
+        "reviewed_at": now,
+        "reviewed_by": actor_name,
+        "review_note": payload.note,
+    }})
+    user_doc = await db.users.find_one({"id": db_req.get("user_id")}, {"_id": 0, "id": 1, "email": 1, "username": 1})
+    if user_doc:
+        await _send_username_change_emails(db, user_doc, {**db_req, "status": "approved" if decision == "approve" else "declined", "reviewed_at": now, "reviewed_by": actor_name, "review_note": payload.note}, decision == "approve", actor_name, payload.note)
+    if decision == "approve":
+        asyncio.create_task(_apply_username_change_after_delay(db, request_id))
+    return {"ok": True, "status": "approved" if decision == "approve" else "declined"}
 
 
 @api_router.post("/admin/users/{user_id}/adjust-balance")
@@ -1452,6 +1638,7 @@ class AdminUserUpdate(BaseModel):
     role: Optional[str] = None  # 'user' | 'admin' | 'owner'
     muted_until: Optional[str] = None
     new_password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+    username: Optional[str] = Field(default=None, min_length=3, max_length=24)
 
 
 @api_router.put("/admin/users/{user_id}")
@@ -1480,6 +1667,18 @@ async def admin_update_user(
     if payload.new_password:
         from auth_and_chat import hash_password
         update["password_hash"] = hash_password(payload.new_password)
+    if payload.username is not None:
+        candidate = (payload.username or "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_]+", candidate):
+            raise HTTPException(status_code=400, detail="Username must be 3-24 chars and use letters, numbers or underscores only")
+        existing = await db.users.find_one(
+            {"$or": [{"username_lower": candidate.lower()}, {"username": {"$regex": f"^{re.escape(candidate)}$", "$options": "i"}}], "id": {"$ne": user_id}},
+            {"_id": 0, "id": 1},
+        )
+        if existing:
+            raise HTTPException(status_code=400, detail="That username is already taken")
+        update["username"] = candidate
+        update["username_lower"] = candidate.lower()
     if not update:
         raise HTTPException(status_code=400, detail="Nothing to update")
     res = await db.users.find_one_and_update(
@@ -2143,7 +2342,7 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
             "username": user.username,
             "payment_method": "balance",
             "source": "dashboard",
-            "status": "awaiting_manual_fulfillment",
+            "status": _default_order_status(is_manual=True),
             "manual": True,
             "delivery_minutes": svc.get("delivery_minutes"),
             "created_at": now,
@@ -2209,7 +2408,7 @@ async def order_with_balance(body: BuyWithBalanceRequest, user: CurrentUser = De
         "username": user.username,
         "payment_method": "balance",
         "source": "dashboard",
-        "status": "Pending",
+        "status": _default_order_status(is_manual=False),
         "created_at": now,
         "comments": comments,
         "provider_id": svc.get("provider_id"),
@@ -2334,7 +2533,7 @@ async def place_multi_order(body: MultiOrderRequest, user: CurrentUser = Depends
             order_doc = {
                 **base_doc,
                 "smm_order_id": None,
-                "status": "awaiting_manual_fulfillment",
+                "status": _default_order_status(is_manual=True),
                 "manual": True,
                 "delivery_minutes": svc.get("delivery_minutes"),
             }
@@ -2374,7 +2573,7 @@ async def place_multi_order(body: MultiOrderRequest, user: CurrentUser = Depends
             "approved_at": now,
         })
         debited += charge
-        order_doc = {**base_doc, "smm_order_id": smm_order_id, "status": "Pending"}
+        order_doc = {**base_doc, "smm_order_id": smm_order_id, "status": _default_order_status(is_manual=False)}
         await db.orders.insert_one(order_doc.copy())
         await _notify_discord_purchase(order_doc)
         order_ids.append(order_id)
@@ -2506,7 +2705,7 @@ async def order_bulk(body: BulkOrderRequest, user: CurrentUser = Depends(current
             "charge": per_charge,
             "user_id": user.id, "username": user.username,
             "payment_method": "balance", "source": "bulk",
-            "status": "Pending", "created_at": now,
+            "status": _default_order_status(is_manual=False), "created_at": now,
             "comments": comments, "provider_id": provider_id,
         })
     if order_docs:
@@ -3515,6 +3714,17 @@ async def tiktok_lookup_by_id(user_id: str, request: Request, user: Optional[Cur
 _TOOLS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36"
 
 
+def _auto_approve_orders_enabled() -> bool:
+    value = str(os.environ.get("AUTO_APPROVE_ORDERS", "true")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _default_order_status(is_manual: bool) -> str:
+    if is_manual:
+        return "awaiting_manual_fulfillment"
+    return "approved" if _auto_approve_orders_enabled() else "Pending"
+
+
 def _tools_rate_limit(request: Request, cap: int = 30):
     ip = ((request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
           or (request.client.host if request.client else "")) or "unknown"
@@ -3633,6 +3843,8 @@ async def _ig_fetch_profile(username: str) -> dict:
         raise HTTPException(status_code=404, detail=f"@{h} not found on Instagram")
     if r.status_code == 401 or r.status_code == 403:
         raise HTTPException(status_code=502, detail="Instagram is rate-limiting anonymous lookups right now — try again in a minute")
+    if r.status_code == 429:
+        raise HTTPException(status_code=429, detail="Instagram is rate-limiting lookups from our server right now — try again shortly")
     if r.status_code >= 400:
         raise HTTPException(status_code=502, detail=f"Instagram returned {r.status_code}")
     try:
@@ -3888,7 +4100,7 @@ class LiveSubCreate(BaseModel):
 
 
 @client_router.post("/live-sub/create")
-async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(current_user_dep)):
+async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(current_user_dep), request: Request = None):
     if body.duration_days not in LIVE_SUB_ALLOWED_DAYS:
         raise HTTPException(status_code=400, detail=f"Duration must be one of {LIVE_SUB_ALLOWED_DAYS}")
     if body.repeat_every_minutes not in TIKTOK_ALLOWED_REPEAT_MINUTES:
@@ -4019,12 +4231,14 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
 
     if should_fire_initial:
         try:
-            resp = await place_smm_order(
+            order_fn = request.app.state.place_smm_order if request is not None else place_smm_order
+            resp, used_link = await _place_live_order_with_fallback(
                 body.service_id,
-                f"https://www.tiktok.com/@{handle}/live",
+                handle,
                 body.quantity_per_burst,
                 comments=comments_raw,
                 provider_id=svc.get("provider_id"),
+                order_fn=order_fn,
             )
             smm_order_id = resp.get("order")
             await db.orders.insert_one({
@@ -4032,7 +4246,7 @@ async def live_sub_create(body: LiveSubCreate, user: CurrentUser = Depends(curre
                 "smm_order_id": smm_order_id,
                 "service_id": body.service_id,
                 "service_name": svc.get("custom_name") or svc.get("name") or "",
-                "link": f"https://www.tiktok.com/@{handle}/live",
+                "link": used_link,
                 "quantity": body.quantity_per_burst,
                 "charge": charge_per_burst,
                 "customer_email": "",
@@ -4336,7 +4550,14 @@ async def _fire_one_burst(sub: dict, link: str, tag: str = "burst") -> bool:
         logger.info("[livesub] sub %s ON HOLD — user balance too low ($%.4f < $%.4f)", sub["id"], balance, charge)
         return False
     try:
-        resp = await place_smm_order(sub["service_id"], link, int(sub["quantity_per_burst"]), comments=sub.get("comments"), provider_id=sub.get("provider_id"))
+        resp, used_link = await _place_live_order_with_fallback(
+            sub["service_id"],
+            sub.get("tiktok_username") or sub.get("username") or "",
+            int(sub["quantity_per_burst"]),
+            comments=sub.get("comments"),
+            provider_id=sub.get("provider_id"),
+            order_fn=place_smm_order,
+        )
     except Exception as e:
         logger.warning("[livesub] provider order failed for sub=%s (%s): %s", sub["id"], tag, e)
         return False
@@ -4355,7 +4576,7 @@ async def _fire_one_burst(sub: dict, link: str, tag: str = "burst") -> bool:
         "smm_order_id": resp.get("order"),
         "service_id": sub["service_id"],
         "service_name": sub.get("service_name"),
-        "link": link,
+        "link": used_link or link,
         "quantity": int(sub["quantity_per_burst"]),
         "charge": charge,
         "user_id": sub["user_id"],
@@ -5438,8 +5659,20 @@ NOWPAYMENTS_API_BASE = "https://api.nowpayments.io/v1"
 
 async def _get_nowpayments_config() -> dict:
     cfg = await db.nowpayments_config.find_one({"_id": "singleton"}, {"_id": 0}) or {}
+    env_api_key = (os.environ.get("NOWPAYMENTS_API_KEY") or "").strip()
+    env_email = (os.environ.get("NOWPAYMENTS_EMAIL") or "").strip()
+    env_password = (os.environ.get("NOWPAYMENTS_PASSWORD") or "").strip()
+    if env_api_key:
+        cfg.setdefault("api_key", env_api_key)
+    if env_email:
+        cfg.setdefault("email", env_email)
+    if env_password:
+        cfg.setdefault("password", env_password)
     if not cfg.get("api_key"):
-        raise HTTPException(status_code=503, detail="NOWPayments not configured — admin must add API key in Settings")
+        raise HTTPException(
+            status_code=503,
+            detail="NOWPayments not configured — add an API key in Settings or set NOWPAYMENTS_API_KEY in the environment",
+        )
     return cfg
 
 
@@ -7870,8 +8103,10 @@ async def nowpayments_webhook(request: Request):
 
 async def _get_nowpayments_jwt(cfg: dict) -> str | None:
     """NOWPayments' /payment/ (list-payments) endpoint requires a JWT Bearer,
-    NOT the x-api-key.  If the admin saved email+password, exchange them for a
+    NOT the x-api-key. If the admin saved email+password, exchange them for a
     JWT via /v1/auth. Returns None if credentials aren't set (caller falls back)."""
+    if not cfg:
+        return None
     email = (cfg or {}).get("email", "").strip()
     password = (cfg or {}).get("password", "")
     if not email or not password:
@@ -7896,13 +8131,18 @@ async def _fetch_nowpayments_invoice_status(invoice_id: str) -> dict:
     jwt = await _get_nowpayments_jwt(cfg)
     async with httpx.AsyncClient(timeout=20.0) as c:
         if jwt:
+            # NOTE: /v1/payment/ requires BOTH the JWT bearer AND the x-api-key header —
+            # sending only one of them fails with "Invalid api key". Also, the
+            # `invoiceId` query filter is unreliable on NOWPayments' side, so we
+            # list recent payments and filter client-side by invoice_id instead.
             r = await c.get(
-                f"{NOWPAYMENTS_API_BASE}/payment/?invoiceId={invoice_id}&limit=10",
-                headers={"Authorization": f"Bearer {jwt}"},
+                f"{NOWPAYMENTS_API_BASE}/payment/?limit=100&orderBy=DESC",
+                headers={"Authorization": f"Bearer {jwt}", "x-api-key": cfg["api_key"]},
             )
             if r.status_code < 400:
                 js = r.json()
                 payments = js.get("data") or js.get("payments") or ([] if not isinstance(js, list) else js)
+                payments = [p for p in payments if str(p.get("invoice_id") or "") == str(invoice_id)]
                 if payments:
                     order = {s: i for i, s in enumerate(["finished", "confirmed", "sending", "partially_paid", "confirming", "waiting", "expired", "failed"])}
                     payments.sort(key=lambda p: order.get((p.get("payment_status") or "").lower(), 99))
@@ -9302,6 +9542,7 @@ async def _discord_bot_start_from_config() -> dict:
         "message": cfg.get("welcome_message"),
         "channel": cfg.get("welcome_channel"),
     }
+    bot_manager.command_only = bool(cfg.get("command_only"))
     return await bot_manager.start(db, token, activity_text=cfg.get("activity_text") or "", banned_words=words, welcome=welcome)
 
 
@@ -9318,6 +9559,7 @@ async def discord_bot_status(x_admin_token: Optional[str] = Header(None)):
         "message": cfg.get("welcome_message") or "Welcome {user} to {server}! 🎉",
         "channel": cfg.get("welcome_channel") or "",
     }
+    info["command_only"] = bool(cfg.get("command_only"))
     return info
 
 
@@ -9421,14 +9663,43 @@ async def discord_bot_dm_thread(duid: str, x_admin_token: Optional[str] = Header
 
 
 class DiscordDmSendReq(BaseModel):
-    text: str = Field(..., min_length=1, max_length=2000)
+    text: str = Field(default="", max_length=2000)
+    image_url: Optional[str] = None
+    voice_url: Optional[str] = None
+    image_base64: Optional[str] = None
+    voice_base64: Optional[str] = None
+    image_name: Optional[str] = None
+    voice_name: Optional[str] = None
 
 
 @api_router.post("/admin/discord/dms/{duid}/send")
 async def discord_bot_dm_send(duid: str, body: DiscordDmSendReq, x_admin_token: Optional[str] = Header(None)):
     check_admin(x_admin_token, "discord")
+    image_bytes = None
+    voice_bytes = None
+    if body.image_base64:
+        raw = body.image_base64.split(",", 1)[-1]
+        try:
+            image_bytes = base64.b64decode(raw)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid image payload: {e}")
+    if body.voice_base64:
+        raw = body.voice_base64.split(",", 1)[-1]
+        try:
+            voice_bytes = base64.b64decode(raw)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid voice payload: {e}")
     try:
-        return await bot_manager.send_dm(duid, body.text)
+        return await bot_manager.send_dm(
+            duid,
+            body.text or "",
+            image_url=body.image_url,
+            voice_url=body.voice_url,
+            image_bytes=image_bytes,
+            voice_bytes=voice_bytes,
+            image_name=body.image_name or "image.png",
+            voice_name=body.voice_name or "voice.mp3",
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
@@ -9439,6 +9710,54 @@ class DiscordWelcomeReq(BaseModel):
     enabled: bool = False
     message: str = Field(default="Welcome {user} to {server}! 🎉", max_length=1000)
     channel: str = Field(default="", max_length=100)
+    extra_messages: Optional[list[dict]] = None
+
+
+@api_router.get("/admin/discord/channels")
+async def discord_bot_channels(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    try:
+        channels = await bot_manager.list_text_channels()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not list channels: {str(e)[:200]}")
+    return {"channels": channels}
+
+
+@api_router.get("/admin/discord/guild-messages")
+async def discord_bot_guild_messages(channel_id: Optional[str] = None, limit: int = 200, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    query = {"channel_id": channel_id} if channel_id else {}
+    limit = max(1, min(limit, 500))
+    cur = db.discord_guild_messages.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
+    msgs = await cur.to_list(limit)
+    msgs.reverse()
+    return {"messages": msgs}
+
+
+class DiscordGuildMessageSendReq(BaseModel):
+    channel_id: str
+    text: str = Field(..., min_length=1, max_length=2000)
+    mention_user_id: Optional[str] = None
+
+
+@api_router.post("/admin/discord/guild-messages/send")
+async def discord_bot_guild_message_send(body: DiscordGuildMessageSendReq, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    try:
+        return await bot_manager.send_guild_message(body.channel_id, body.text, mention_user_id=body.mention_user_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Send failed: {str(e)[:200]}")
+
+
+@api_router.post("/admin/discord/command-only")
+async def discord_bot_command_only(body: dict, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    enabled = bool(body.get("enabled"))
+    await db.discord_config.update_one({}, {"$set": {"command_only": enabled}}, upsert=True)
+    bot_manager.command_only = enabled
+    return {"ok": True, "enabled": enabled}
 
 
 @api_router.post("/admin/discord/welcome")
@@ -9448,10 +9767,12 @@ async def discord_bot_welcome_config(body: DiscordWelcomeReq, x_admin_token: Opt
         "welcome_enabled": body.enabled,
         "welcome_message": body.message,
         "welcome_channel": body.channel.strip(),
+        "welcome_extra_messages": body.extra_messages or [],
     }}, upsert=True)
     bot_manager.welcome_enabled = body.enabled
     bot_manager.welcome_message = body.message
     bot_manager.welcome_channel = body.channel.strip()
+    bot_manager.welcome_extra_messages = body.extra_messages or []
     return {"ok": True}
 
 
@@ -9477,6 +9798,45 @@ async def discord_bot_leave_server(gid: str, x_admin_token: Optional[str] = Head
 
 class DiscordMassDmReq(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000)
+
+
+@api_router.post("/admin/discord/voice/join")
+async def discord_bot_voice_join(body: dict, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    try:
+        return await bot_manager.join_voice_channel(str(body.get("channel_id", "")), guild_id=body.get("guild_id") or None)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Voice join failed: {str(e)[:200]}")
+
+
+@api_router.post("/admin/discord/voice/leave")
+async def discord_bot_voice_leave(x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    return await bot_manager.leave_voice_channel()
+
+
+@api_router.post("/admin/discord/voice/speak")
+async def discord_bot_voice_speak(body: dict, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    try:
+        return await bot_manager.speak_text(str(body.get("text", "")), channel_id=body.get("channel_id") or None, guild_id=body.get("guild_id") or None)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Voice speak failed: {str(e)[:200]}")
+
+
+@api_router.post("/admin/discord/voice/play-url")
+async def discord_bot_voice_play_url(body: dict, x_admin_token: Optional[str] = Header(None)):
+    check_admin(x_admin_token, "discord")
+    try:
+        return await bot_manager.play_audio_url(str(body.get("url", "")), channel_id=body.get("channel_id") or None, guild_id=body.get("guild_id") or None)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Voice playback failed: {str(e)[:200]}")
 
 
 @api_router.post("/admin/discord/mass-dm")
@@ -9751,24 +10111,25 @@ async def sync_provider_services(pid: str, x_admin_token: Optional[str] = Header
         data = await smm_request({"action": "services"}, provider_id=pid)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch from {p['name']}: {e}")
-    if not isinstance(data, list):
+    services = normalize_provider_services_payload(data)
+    if not services:
         raise HTTPException(status_code=502, detail="Provider returned unexpected format")
 
     added = 0
     updated = 0
-    for s in data:
+    for s in services:
         try:
             sid = int(s.get("service"))
         except (TypeError, ValueError):
             continue
         provider_rate = float(s.get("rate") or 0)
         name_lower = (s.get("name") or "").lower()
+        parsed_delivery = extract_provider_delivery_minutes(s)
         # Auto-detect "needs custom text" (custom comments / mentions etc.)
         # Heuristic: contains "custom" AND NOT "random" / "emoji"
         needs_custom = ("custom" in name_lower) and ("random" not in name_lower) and ("emoji" not in name_lower)
         # Try to capture provider description & parse delivery time
         api_desc = str(s.get("description") or "").strip()
-        # Common alternate fields some providers use
         speed_hint = str(s.get("average_time") or s.get("speed") or s.get("delivery") or "").strip()
         combined_hint = " · ".join(x for x in [api_desc, speed_hint] if x)
         parsed_delivery = _parse_delivery_minutes(combined_hint)
@@ -9831,11 +10192,12 @@ async def add_service_by_id(payload: dict, x_admin_token: Optional[str] = Header
         data = await smm_request({"action": "services"})
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch from provider: {e}")
-    if not isinstance(data, list):
+    services = normalize_provider_services_payload(data)
+    if not services:
         raise HTTPException(status_code=502, detail="Provider returned unexpected format")
 
     match = None
-    for s in data:
+    for s in services:
         try:
             if int(s.get("service")) == sid:
                 match = s
@@ -9846,6 +10208,19 @@ async def add_service_by_id(payload: dict, x_admin_token: Optional[str] = Header
         raise HTTPException(status_code=404, detail=f"Service #{sid} not found at provider")
 
     provider_rate = float(match.get("rate") or 0)
+    parsed_delivery = None
+    for candidate in [match.get("average_time"), match.get("speed"), match.get("delivery"), match.get("delivery_minutes"), match.get("delivery_time"), match.get("average")]:
+        if candidate is None:
+            continue
+        if isinstance(candidate, (int, float)):
+            parsed_delivery = int(candidate)
+            break
+        if isinstance(candidate, str):
+            parsed_delivery = _parse_delivery_minutes(candidate)
+            if parsed_delivery is not None:
+                break
+    if parsed_delivery is None:
+        parsed_delivery = _parse_delivery_minutes(str(match.get("description") or ""))
     base = {
         "name": match.get("name", ""),
         "category": match.get("category", "Other"),
@@ -9853,6 +10228,7 @@ async def add_service_by_id(payload: dict, x_admin_token: Optional[str] = Header
         "min": int(match.get("min", 1)),
         "max": int(match.get("max", 1000000)),
         "type": match.get("type", "Default"),
+        "delivery_minutes": parsed_delivery,
         "synced_at": datetime.now(timezone.utc).isoformat(),
     }
     existing = await db.curated_services.find_one({"service_id": sid})
@@ -9871,17 +10247,19 @@ async def sync_services(x_admin_token: Optional[str] = Header(None)):
         data = await smm_request({"action": "services"})
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch from provider: {e}")
-    if not isinstance(data, list):
+    services = normalize_provider_services_payload(data)
+    if not services:
         raise HTTPException(status_code=502, detail="Provider returned unexpected format")
 
     added = 0
     updated = 0
-    for s in data:
+    for s in services:
         try:
             sid = int(s.get("service"))
         except (TypeError, ValueError):
             continue
         provider_rate = float(s.get("rate") or 0)
+        parsed_delivery = extract_provider_delivery_minutes(s)
         existing = await db.curated_services.find_one({"service_id": sid})
         update_doc = {
             "name": s.get("name", ""),
@@ -9890,6 +10268,7 @@ async def sync_services(x_admin_token: Optional[str] = Header(None)):
             "min": int(s.get("min", 1)),
             "max": int(s.get("max", 1000000)),
             "type": s.get("type", "Default"),
+            "delivery_minutes": parsed_delivery,
             "synced_at": datetime.now(timezone.utc).isoformat(),
         }
         if not existing:

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { adminApi, api } from "@/lib/api";
 import { AdminAlertsWatcher } from "@/components/AdminAlertsWatcher";
@@ -9,16 +9,41 @@ import { LogOut, Sparkles, Loader2, Plus, Copy, KeyRound, Trash2, Pencil, FileTe
 import { toast } from "sonner";
 
 export default function Admin() {
-  const [token, setToken] = useState(localStorage.getItem("bs_admin_token") || "");
+  const [token, setToken] = useState(() => localStorage.getItem("bs_admin_token") || "");
   const [u, setU] = useState("");
   const [p, setP] = useState("");
   const [loading, setLoading] = useState(false);
   const [secretLoggingIn, setSecretLoggingIn] = useState(false);
   const [role, setRole] = useState("owner"); // 'owner' | 'staff'
+  const [activeTab, setActiveTab] = useState("orders");
   const [perms, setPerms] = useState([]);
   const [displayName, setDisplayName] = useState("");
   const [username, setUsername] = useState("");
   const navigate = useNavigate();
+  const autoLoginAttemptedRef = useRef(false);
+
+  const restoreAdminSession = useCallback(() => {
+    if (token || autoLoginAttemptedRef.current) return;
+    const userToken = localStorage.getItem("bs_user_token");
+    if (!userToken) return;
+    autoLoginAttemptedRef.current = true;
+    setSecretLoggingIn(true);
+    api
+      .post("/admin/session-from-user", null, {
+        headers: { Authorization: `Bearer ${userToken}` },
+      })
+      .then((r) => {
+        const adminToken = r.data?.token;
+        if (!adminToken) return;
+        localStorage.setItem("bs_admin_token", adminToken);
+        setToken(adminToken);
+        toast.success(`Welcome, ${r.data.username || "admin"}`);
+      })
+      .catch(() => {
+        // Not an owner — fall through to the classic login form silently.
+      })
+      .finally(() => setSecretLoggingIn(false));
+  }, [token]);
 
   // Load role + perms + display_name once we have a token
   const loadMe = () => {
@@ -26,15 +51,24 @@ export default function Admin() {
     adminApi(token)
       .get("/admin/me")
       .then((r) => {
-        setRole(r.data.role || "owner");
-        setPerms(r.data.perms || []);
-        setDisplayName(r.data.display_name || "");
-        setUsername(r.data.username || "");
+        const nextRole = r.data.role || "owner";
+        const nextPerms = r.data.perms || [];
+        const nextDisplayName = r.data.display_name || "";
+        const nextUsername = r.data.username || "";
+        setRole((prev) => (prev === nextRole ? prev : nextRole));
+        setPerms((prev) => (JSON.stringify(prev) === JSON.stringify(nextPerms) ? prev : nextPerms));
+        setDisplayName((prev) => (prev === nextDisplayName ? prev : nextDisplayName));
+        setUsername((prev) => (prev === nextUsername ? prev : nextUsername));
       })
-      .catch(() => {
-        // invalid token — clear
-        localStorage.removeItem("bs_admin_token");
-        setToken("");
+      .catch((err) => {
+        const status = err.response?.status;
+        const detail = String(err.response?.data?.detail || "").toLowerCase();
+        if (status === 401 || (status === 403 && detail.includes("unauthorized"))) {
+          // Keep the current session intact for a moment and let the caller retry.
+          // A transient auth check failure should not immediately log the admin out.
+          return;
+        }
+        // Keep the token if the API is temporarily unavailable; don't nuke the session.
       });
   };
   useEffect(() => {
@@ -48,24 +82,16 @@ export default function Admin() {
   // AND their DB role is 'owner', exchange their user JWT for an admin session
   // silently — no separate admin login required.
   useEffect(() => {
-    if (token) return;
-    const userToken = localStorage.getItem("bs_user_token");
-    if (!userToken) return;
-    setSecretLoggingIn(true);
-    api
-      .post("/admin/session-from-user", null, {
-        headers: { Authorization: `Bearer ${userToken}` },
-      })
-      .then((r) => {
-        localStorage.setItem("bs_admin_token", r.data.token);
-        setToken(r.data.token);
-        toast.success(`Welcome, ${r.data.username || "owner"}`);
-      })
-      .catch(() => {
-        // Not an owner — fall through to the classic login form silently
-      })
-      .finally(() => setSecretLoggingIn(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    restoreAdminSession();
+  }, [restoreAdminSession]);
+
+  useEffect(() => {
+    const onAdminLogout = () => {
+      localStorage.removeItem("bs_admin_token");
+      setToken("");
+    };
+    window.addEventListener("bs-admin-logout", onAdminLogout);
+    return () => window.removeEventListener("bs-admin-logout", onAdminLogout);
   }, []);
 
   // Auto-login via secret URL (e.g. /admin?key=mysecret)
@@ -201,10 +227,10 @@ export default function Admin() {
     );
   }
 
-  return <Dashboard token={token} onLogout={logout} role={role} can={can} displayName={displayName} username={username} loadMe={loadMe} />;
+  return <Dashboard token={token} onLogout={logout} role={role} can={can} displayName={displayName} username={username} loadMe={loadMe} activeTab={activeTab} setActiveTab={setActiveTab} />;
 }
 
-function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }) {
+function Dashboard({ token, onLogout, role, can, displayName, username, loadMe, activeTab, setActiveTab }) {
   const [nickOpen, setNickOpen] = useState(false);
   const [nickValue, setNickValue] = useState(displayName || "");
   const [savingNick, setSavingNick] = useState(false);
@@ -316,7 +342,7 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
       )}
 
       <main className="max-w-7xl mx-auto px-3 md:px-10 py-6 md:py-10">
-        <Tabs defaultValue={role === "staff" ? (can("ai_inbox") ? "inbox" : "tickets") : "orders"} className="w-full">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="flex flex-wrap gap-1 h-auto justify-start p-1 bg-[#1a1525] mb-6 rounded-sm w-full">
             {can("orders") && (
             <TabsTrigger
@@ -397,6 +423,15 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
               className="data-[state=active]:bg-[#FF007F] rounded-sm"
             >
               Tickets
+            </TabsTrigger>
+            )}
+            {can("username_review") && (
+            <TabsTrigger
+              value="username"
+              data-testid="tab-username"
+              className="data-[state=active]:bg-[#FF007F] rounded-sm"
+            >
+              Username Review
             </TabsTrigger>
             )}
             {role === "owner" && (
@@ -536,6 +571,12 @@ function Dashboard({ token, onLogout, role, can, displayName, username, loadMe }
           </TabsContent>
           <TabsContent value="tickets">
             <TicketsAdminPanel token={token} displayName={displayName} />
+          </TabsContent>
+          <TabsContent value="username">
+            <div className="space-y-6">
+              <UsernameChangeReviewPanel token={token} />
+              <UsernameChangeLogPanel token={token} />
+            </div>
           </TabsContent>
           <TabsContent value="ai">
             <AIPanel token={token} />
@@ -1464,6 +1505,52 @@ function CouponsPanel({ token }) {
   );
 }
 
+function DeliveryTimeEditor({ service, edited, onChange, onClearOverride }) {
+  const total = Math.max(0, Number(edited ?? service.delivery_minutes ?? 0) || 0);
+  const hours = Math.floor(total / 60);
+  const mins = total % 60;
+  const isManual = !!service.delivery_minutes_manual;
+  return (
+    <div className="inline-flex flex-col items-center gap-1">
+      <div className="flex items-center justify-center gap-1">
+        <Input
+          type="number"
+          min={0}
+          value={hours}
+          onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0) * 60 + mins)}
+          data-testid={`delivery-hours-${service.service_id}`}
+          title="Hours"
+          className="w-12 h-7 bg-[#0d0a14] border-white/10 text-[10px] text-center px-1"
+        />
+        <span className="text-[9px] text-white/30">h</span>
+        <Input
+          type="number"
+          min={0}
+          max={59}
+          value={mins}
+          onChange={(e) => onChange(hours * 60 + Math.max(0, Math.min(59, Number(e.target.value) || 0)))}
+          data-testid={`delivery-mins-${service.service_id}`}
+          title="Minutes"
+          className="w-12 h-7 bg-[#0d0a14] border-white/10 text-[10px] text-center px-1"
+        />
+        <span className="text-[9px] text-white/30">m</span>
+      </div>
+      {isManual ? (
+        <button
+          onClick={onClearOverride}
+          data-testid={`delivery-clear-${service.service_id}`}
+          title="Stop overriding — go back to auto-parsed provider time"
+          className="text-[8px] uppercase tracking-wider text-amber-300/80 hover:text-amber-200"
+        >
+          manual · reset to auto
+        </button>
+      ) : (
+        <span className="text-[8px] uppercase tracking-wider text-white/25">auto</span>
+      )}
+    </div>
+  );
+}
+
 function ServicesPanel({ token }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1715,6 +1802,7 @@ function ServicesPanel({ token }) {
                 <th className="text-left px-4 py-3">Category</th>
                 <th className="text-right px-4 py-3">Provider $/k</th>
                 <th className="text-right px-4 py-3">Your $/k</th>
+                <th className="text-center px-4 py-3">Avg time</th>
                 <th className="text-center px-4 py-3">Live</th>
                 <th className="text-center px-4 py-3" title="Service requires user to enter custom comment text">
                   Custom?
@@ -1788,6 +1876,20 @@ function ServicesPanel({ token }) {
                         }
                         data-testid={`rate-input-${s.service_id}`}
                         className="w-24 h-8 bg-[#0d0a14] border-white/10 font-mono text-xs ml-auto text-right"
+                      />
+                    </td>
+                    <td className="px-4 py-2 text-center text-[11px] text-white/70">
+                      <DeliveryTimeEditor
+                        service={s}
+                        edited={dirty?.delivery_minutes}
+                        onChange={(minutes) => setEdit(s.service_id, { delivery_minutes: minutes, delivery_minutes_manual: true })}
+                        onClearOverride={async () => {
+                          try {
+                            await adminApi(token).patch(`/admin/services/${s.service_id}`, { delivery_minutes_manual: false });
+                            toast.success(`#${s.service_id} back to auto`);
+                            load();
+                          } catch (e) { toast.error(e.response?.data?.detail || "Failed"); }
+                        }}
                       />
                     </td>
                     <td className="px-4 py-2 text-center">
@@ -1993,10 +2095,152 @@ function SettingsPanel({ token }) {
       <FeatureTogglesPanel token={token} />
       <NewsAnnouncementPanel token={token} />
       <FakeOnlineTogglePanel token={token} />
+      <FakeChatTogglePanel token={token} />
       <Sim5ConfigPanel token={token} />
       <SmmConfigPanel token={token} />
       <NowpaymentsConfigPanel token={token} />
       <EmailConfigPanel token={token} />
+    </div>
+  );
+}
+
+function UsernameChangeReviewPanel({ token }) {
+  const [requests, setRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
+  const [note, setNote] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await adminApi(token).get("/admin/username-change-requests");
+      setRequests(r.data.requests || []);
+    } catch {
+      toast.error("Failed to load username review queue");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [token]);
+
+  const pending = requests.filter((r) => r.status === "pending");
+
+  const review = async (requestId, decision) => {
+    setBusyId(requestId);
+    try {
+      await adminApi(token).post(`/admin/username-change-requests/${requestId}/review`, { decision, note });
+      toast.success(decision === "approve" ? "Username request approved" : "Username request declined");
+      setNote("");
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not review request");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="username-change-review-panel">
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 className="font-display font-bold text-lg mb-1">Username change review queue</h2>
+          <p className="text-xs text-white/50">Approve or decline username requests from the dashboard. Approved requests apply automatically after 15 minutes.</p>
+        </div>
+        <button onClick={load} className="inline-flex items-center gap-2 px-3 py-2 rounded-sm border border-white/10 text-xs uppercase tracking-wider hover:bg-white/5">
+          <RotateCw className="w-3.5 h-3.5" /> Refresh
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="text-white/40 text-sm">Loading requests…</div>
+      ) : pending.length === 0 ? (
+        <div className="text-white/40 text-sm">No pending username change requests.</div>
+      ) : (
+        <div className="space-y-3">
+          {pending.map((req) => (
+            <div key={req.id} className="rounded-sm border border-white/10 bg-[#0d0a14] p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-white/40">User</div>
+                  <div className="font-semibold text-white">{req.user_id || "—"}</div>
+                  <div className="mt-2 text-sm text-white/70">Requested: <span className="font-mono text-emerald-300">{req.requested_username || "—"}</span></div>
+                  <div className="text-sm text-white/70">Current: <span className="font-mono text-white/60">{req.current_username || "—"}</span></div>
+                  <div className="text-[11px] text-white/40 mt-2">Submitted {req.requested_at ? new Date(req.requested_at).toLocaleString() : "—"}</div>
+                </div>
+                <div className="min-w-[220px]">
+                  <label className="text-[10px] uppercase tracking-wider text-white/60">Review note</label>
+                  <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder="Optional note for the user" className="w-full mt-1 bg-black/40 border border-white/10 rounded-sm px-3 py-2 text-sm outline-none focus:border-emerald-400" />
+                  <div className="flex gap-2 mt-3">
+                    <button onClick={() => review(req.id, "decline")} disabled={busyId === req.id} className="flex-1 px-3 py-2 rounded-sm bg-red-600/90 hover:bg-red-500 text-white text-xs font-bold uppercase tracking-wider disabled:opacity-50">{busyId === req.id ? <Loader2 className="w-3.5 h-3.5 animate-spin mx-auto" /> : "Decline"}</button>
+                    <button onClick={() => review(req.id, "approve")} disabled={busyId === req.id} className="flex-1 px-3 py-2 rounded-sm bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold uppercase tracking-wider disabled:opacity-50">{busyId === req.id ? <Loader2 className="w-3.5 h-3.5 animate-spin mx-auto" /> : "Approve"}</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UsernameChangeLogPanel({ token }) {
+  const [log, setLog] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await adminApi(token).get("/admin/username-change-log");
+      setLog(r.data.log || []);
+    } catch {
+      toast.error("Failed to load username change history");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, [token]);
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="username-change-log-panel">
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 className="font-display font-bold text-lg mb-1">Username change history</h2>
+          <p className="text-xs text-white/50">Every username change that has actually been applied — old name → new name.</p>
+        </div>
+        <button onClick={load} className="inline-flex items-center gap-2 px-3 py-2 rounded-sm border border-white/10 text-xs uppercase tracking-wider hover:bg-white/5">
+          <RotateCw className="w-3.5 h-3.5" /> Refresh
+        </button>
+      </div>
+      {loading ? (
+        <div className="text-white/40 text-sm">Loading…</div>
+      ) : log.length === 0 ? (
+        <div className="text-white/40 text-sm">No username changes have been applied yet.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-[10px] uppercase tracking-[0.2em] text-white/40">
+              <tr>
+                <th className="text-left px-3 py-2">User ID</th>
+                <th className="text-left px-3 py-2">Old username</th>
+                <th className="text-left px-3 py-2">New username</th>
+                <th className="text-left px-3 py-2">Changed at</th>
+              </tr>
+            </thead>
+            <tbody>
+              {log.map((row) => (
+                <tr key={row.id} className="border-t border-white/5">
+                  <td className="px-3 py-2 font-mono text-[11px] text-white/50">{row.user_id}</td>
+                  <td className="px-3 py-2 text-white/70">{row.old_username}</td>
+                  <td className="px-3 py-2 font-mono text-emerald-300">{row.new_username}</td>
+                  <td className="px-3 py-2 text-[11px] text-white/40">{row.changed_at ? new Date(row.changed_at).toLocaleString() : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -2111,6 +2355,84 @@ function FakeOnlineTogglePanel({ token }) {
         <span className="text-sm font-bold" data-testid="fake-online-status">
           {loading ? "Loading…" : enabled ? "Fake boost ✓ ON" : "OFF — real users only"}
         </span>
+      </div>
+    </div>
+  );
+}
+
+
+function FakeChatTogglePanel({ token }) {
+  const [enabled, setEnabled] = useState(true);
+  const [fakeCount, setFakeCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [purging, setPurging] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await adminApi(token).get("/admin/fake-chat/status");
+      setEnabled(!!r.data.enabled);
+      setFakeCount(r.data.fake_message_count || 0);
+    } catch {}
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, [token]);
+
+  const save = async (next) => {
+    setSaving(true);
+    try {
+      await adminApi(token).post("/admin/fake-chat/toggle", { enabled: next });
+      setEnabled(next);
+      toast.success(next
+        ? "Fake chat people ENABLED — simulated messages & orders will keep posting."
+        : "Fake chat people DISABLED — only real users will post now.");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to save");
+    }
+    setSaving(false);
+  };
+
+  const purge = async () => {
+    setPurging(true);
+    try {
+      const r = await adminApi(token).post("/admin/fake-chat/purge");
+      setFakeCount(0);
+      toast.success(`Removed ${r.data.deleted || 0} fake chat message(s).`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Purge failed");
+    }
+    setPurging(false);
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="fake-chat-panel">
+      <h2 className="font-display font-bold text-lg mb-1">Fake chat people</h2>
+      <p className="text-xs text-white/50 mb-4">
+        Simulated "customers" that post social-proof messages and orders in the public chat when it's quiet. Toggle OFF to only show real user activity.
+      </p>
+      <div className="flex items-center gap-4 flex-wrap">
+        <button
+          onClick={() => save(!enabled)}
+          disabled={loading || saving}
+          data-testid="toggle-fake-chat"
+          className={`relative w-14 h-7 rounded-full transition ${enabled ? "bg-emerald-500" : "bg-white/15"} disabled:opacity-50`}
+        >
+          <span className={`absolute top-0.5 ${enabled ? "left-8" : "left-0.5"} w-6 h-6 rounded-full bg-white shadow transition-all`} />
+        </button>
+        <span className="text-sm font-bold" data-testid="fake-chat-status">
+          {loading ? "Loading…" : enabled ? "Fake chat people ✓ ON" : "OFF — real users only"}
+        </span>
+        <div className="flex-1" />
+        <span className="text-xs text-white/40">{fakeCount} fake message{fakeCount === 1 ? "" : "s"} currently stored</span>
+        <button
+          onClick={purge}
+          disabled={purging}
+          data-testid="purge-fake-chat"
+          className="px-3 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 transition disabled:opacity-50"
+        >
+          {purging ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Purge existing fake messages"}
+        </button>
       </div>
     </div>
   );
@@ -3331,7 +3653,9 @@ function DiscordBotControl({ token }) {
   const [activity, setActivity] = useState("");
   const [words, setWords] = useState("");
   const [avatarFile, setAvatarFile] = useState(null);
-  const [welcome, setWelcome] = useState({ enabled: false, message: "Welcome {user} to {server}! 🎉", channel: "" });
+  const [welcome, setWelcome] = useState({ enabled: false, message: "Welcome {user} to {server}! 🎉", channel: "", extra_messages: [] });
+  const [commandOnly, setCommandOnly] = useState(false);
+  const [voiceState, setVoiceState] = useState({ channelId: "", guildId: "", text: "", url: "" });
   const welcomeLoaded = useRef(false);
 
   const load = async () => {
@@ -3342,8 +3666,10 @@ function DiscordBotControl({ token }) {
       setWords((prev) => prev || r.data.banned_words || "");
       if (!welcomeLoaded.current && r.data.saved_welcome) {
         welcomeLoaded.current = true;
-        setWelcome(r.data.saved_welcome);
+        const saved = { enabled: false, message: "Welcome {user} to {server}! 🎉", channel: "", extra_messages: [], ...(r.data.saved_welcome || {}) };
+        setWelcome(saved);
       }
+      setCommandOnly(Boolean(r.data.command_only));
     } catch { /* silent */ }
   };
   useEffect(() => { load(); const i = setInterval(load, 10000); return () => clearInterval(i); // eslint-disable-next-line
@@ -3449,6 +3775,17 @@ function DiscordBotControl({ token }) {
         </div>
         <div className="border-t border-white/5 pt-4">
           <div className="flex items-center justify-between">
+            <Label className="text-[11px] uppercase tracking-wider text-white/60">Command-only mode</Label>
+            <button onClick={() => act("command-only", async () => { await adminApi(token).post("/admin/discord/command-only", { enabled: !commandOnly }); toast.success(commandOnly ? "Normal replies enabled" : "Command-only mode enabled"); setCommandOnly((v) => !v); })} data-testid="discord-command-only-toggle"
+                    className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${commandOnly ? "bg-emerald-500 text-black" : "bg-white/10 text-white/50"}`}>
+              {commandOnly ? "ON" : "OFF"}
+            </button>
+          </div>
+          <p className="text-[10px] text-white/40 mt-1">When enabled, the bot only responds to commands and ticket phrases instead of chatting normally.</p>
+        </div>
+
+        <div className="border-t border-white/5 pt-4">
+          <div className="flex items-center justify-between">
             <Label className="text-[11px] uppercase tracking-wider text-white/60">Welcomer — greet new members in text chat</Label>
             <button onClick={() => setWelcome((w) => ({ ...w, enabled: !w.enabled }))} data-testid="discord-welcome-toggle"
                     className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${welcome.enabled ? "bg-emerald-500 text-black" : "bg-white/10 text-white/50"}`}>
@@ -3463,6 +3800,16 @@ function DiscordBotControl({ token }) {
                    data-testid="discord-welcome-channel" placeholder="channel name (optional)"
                    className="bg-[#0d0a14] border-white/10 text-xs" />
           </div>
+          <div className="mt-2 text-[10px] text-white/40">Optional extra welcome messages by channel: enter one line per channel as <code className="text-[#FF007F]">channelName|message</code>.</div>
+          <textarea value={(welcome.extra_messages || []).map((x) => `${x.channel}|${x.message}`).join("\n")} onChange={(e) => {
+            const rows = e.target.value.split(/\n/).map((line) => line.trim()).filter(Boolean);
+            const parsed = rows.map((row) => {
+              const idx = row.indexOf('|');
+              if (idx === -1) return null;
+              return { channel: row.slice(0, idx).trim(), message: row.slice(idx + 1).trim() };
+            }).filter(Boolean);
+            setWelcome((w) => ({ ...w, extra_messages: parsed }));
+          }} rows={4} className="w-full mt-2 bg-[#0d0a14] border border-white/10 rounded-sm p-2.5 text-xs text-white outline-none focus:border-[#FF007F] resize-y" placeholder="general|Welcome to the server!\nannouncements|Thanks for joining!" />
           <div className="flex items-center justify-between mt-2">
             <p className="text-[10px] text-white/40">Placeholders: <code className="text-[#FF007F]">{"{user}"}</code> mentions the member, <code className="text-[#FF007F]">{"{server}"}</code> is the server name. Empty channel = system channel.</p>
             <button onClick={() => act("welcome", async () => { await adminApi(token).post("/admin/discord/welcome", welcome); toast.success("Welcomer saved"); })}
@@ -3471,6 +3818,22 @@ function DiscordBotControl({ token }) {
               Save
             </button>
           </div>
+        </div>
+
+        <div className="border-t border-white/5 pt-4">
+          <h3 className="font-display font-bold text-sm uppercase tracking-wider mb-2">Voice & media controls</h3>
+          <div className="grid sm:grid-cols-2 gap-2">
+            <Input value={voiceState.channelId} onChange={(e) => setVoiceState((s) => ({ ...s, channelId: e.target.value }))} placeholder="Voice channel ID" className="bg-[#0d0a14] border-white/10 text-xs" />
+            <Input value={voiceState.guildId} onChange={(e) => setVoiceState((s) => ({ ...s, guildId: e.target.value }))} placeholder="Guild ID (optional)" className="bg-[#0d0a14] border-white/10 text-xs" />
+          </div>
+          <div className="flex flex-wrap gap-2 mt-2">
+            <button onClick={() => act("voice-join", async () => { await adminApi(token).post("/admin/discord/voice/join", { channel_id: voiceState.channelId, guild_id: voiceState.guildId || undefined }); toast.success("Joined voice channel"); })} disabled={busy === "voice-join" || !voiceState.channelId} className="px-3 py-1.5 bg-emerald-500/20 border border-emerald-500/30 rounded-sm text-xs font-bold uppercase tracking-wider">Join voice</button>
+            <button onClick={() => act("voice-leave", async () => { await adminApi(token).post("/admin/discord/voice/leave"); toast.success("Left voice channel"); })} disabled={busy === "voice-leave"} className="px-3 py-1.5 bg-white/5 rounded-sm text-xs font-bold uppercase tracking-wider">Leave voice</button>
+            <button onClick={() => act("voice-speak", async () => { await adminApi(token).post("/admin/discord/voice/speak", { text: voiceState.text, channel_id: voiceState.channelId, guild_id: voiceState.guildId || undefined }); toast.success("Voice message queued"); })} disabled={busy === "voice-speak" || !voiceState.text} className="px-3 py-1.5 bg-[#5865F2]/20 border border-[#5865F2]/30 rounded-sm text-xs font-bold uppercase tracking-wider">Speak text</button>
+            <button onClick={() => act("voice-url", async () => { await adminApi(token).post("/admin/discord/voice/play-url", { url: voiceState.url, channel_id: voiceState.channelId, guild_id: voiceState.guildId || undefined }); toast.success("Audio playback started"); })} disabled={busy === "voice-url" || !voiceState.url} className="px-3 py-1.5 bg-[#FF007F]/20 border border-[#FF007F]/30 rounded-sm text-xs font-bold uppercase tracking-wider">Play URL</button>
+          </div>
+          <Input value={voiceState.text} onChange={(e) => setVoiceState((s) => ({ ...s, text: e.target.value }))} placeholder="Text to speak in voice" className="bg-[#0d0a14] border-white/10 text-xs mt-2" />
+          <Input value={voiceState.url} onChange={(e) => setVoiceState((s) => ({ ...s, url: e.target.value }))} placeholder="MP3/stream URL for music playback" className="bg-[#0d0a14] border-white/10 text-xs mt-2" />
         </div>
 
         <DiscordOAuthConfigForm token={token} />
@@ -3652,6 +4015,8 @@ function DiscordDmConsole({ token }) {
   const [text, setText] = useState("");
   const [newId, setNewId] = useState("");
   const [sending, setSending] = useState(false);
+  const [imageFile, setImageFile] = useState(null);
+  const [voiceFile, setVoiceFile] = useState(null);
 
   const loadConvos = async () => {
     try { const r = await adminApi(token).get("/admin/discord/dms"); setConvos(r.data.conversations || []); } catch { /* */ }
@@ -3665,11 +4030,24 @@ function DiscordDmConsole({ token }) {
 
   const send = async () => {
     const target = sel || newId.trim();
-    if (!target || !text.trim()) return;
+    if (!target || (!text.trim() && !imageFile && !voiceFile)) return;
     setSending(true);
     try {
-      await adminApi(token).post(`/admin/discord/dms/${target}/send`, { text: text.trim() });
+      const toBase64 = (file) => new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.onerror = reject;
+        fr.readAsDataURL(file);
+      });
+      const payload = { text: text.trim() };
+      if (imageFile) payload.image_base64 = await toBase64(imageFile);
+      if (voiceFile) payload.voice_base64 = await toBase64(voiceFile);
+      payload.image_name = imageFile?.name || "image.png";
+      payload.voice_name = voiceFile?.name || "voice.mp3";
+      await adminApi(token).post(`/admin/discord/dms/${target}/send`, payload);
       setText("");
+      setImageFile(null);
+      setVoiceFile(null);
       if (!sel) setSel(target);
       loadThread(target);
       loadConvos();
@@ -3710,10 +4088,112 @@ function DiscordDmConsole({ token }) {
               </div>
             ))}
           </div>
-          <div className="flex gap-2 mt-2">
+          <div className="flex flex-col gap-2 mt-2">
             <Input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
                    placeholder="Type a DM…" data-testid="discord-dm-input" className="bg-[#0d0a14] border-white/10" />
-            <button onClick={send} disabled={sending || !text.trim() || (!sel && !newId.trim())} data-testid="discord-dm-send"
+            <div className="flex flex-wrap gap-2">
+              <label className="text-[10px] uppercase tracking-wider text-white/40">Image
+                <input type="file" accept="image/*" onChange={(e) => setImageFile(e.target.files?.[0] || null)} className="block mt-1 text-xs text-white/70 file:mr-2 file:px-2 file:py-1 file:rounded file:bg-white/10 file:border-0" />
+              </label>
+              <label className="text-[10px] uppercase tracking-wider text-white/40">Voice
+                <input type="file" accept="audio/*" onChange={(e) => setVoiceFile(e.target.files?.[0] || null)} className="block mt-1 text-xs text-white/70 file:mr-2 file:px-2 file:py-1 file:rounded file:bg-white/10 file:border-0" />
+              </label>
+            </div>
+            <button onClick={send} disabled={sending || (!text.trim() && !imageFile && !voiceFile) || (!sel && !newId.trim())} data-testid="discord-dm-send"
+                    className="px-5 gradient-pp rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-40">
+              Send
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DiscordGuildChatConsole({ token }) {
+  const [channels, setChannels] = useState([]);
+  const [sel, setSel] = useState("");
+  const [msgs, setMsgs] = useState([]);
+  const [text, setText] = useState("");
+  const [mentionId, setMentionId] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const loadChannels = async () => {
+    try { const r = await adminApi(token).get("/admin/discord/channels"); setChannels(r.data.channels || []); } catch { /* */ }
+  };
+  const loadMsgs = async (channelId) => {
+    if (!channelId) return;
+    try { const r = await adminApi(token).get("/admin/discord/guild-messages", { params: { channel_id: channelId, limit: 200 } }); setMsgs(r.data.messages || []); } catch { /* */ }
+  };
+  useEffect(() => { loadChannels(); }, [token]); // eslint-disable-line
+  useEffect(() => {
+    if (!sel) return;
+    loadMsgs(sel);
+    const i = setInterval(() => loadMsgs(sel), 6000);
+    return () => clearInterval(i);
+    // eslint-disable-next-line
+  }, [sel]);
+
+  // recent unique authors seen in this channel, for the "tag" dropdown
+  const knownAuthors = Array.from(
+    new Map(msgs.filter((m) => m.direction !== "out").map((m) => [m.author_id, m.author_name])).entries()
+  );
+
+  const send = async () => {
+    if (!sel || !text.trim()) return;
+    setSending(true);
+    try {
+      await adminApi(token).post("/admin/discord/guild-messages/send", {
+        channel_id: sel, text: text.trim(), mention_user_id: mentionId || null,
+      });
+      setText("");
+      loadMsgs(sel);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Send failed");
+    } finally { setSending(false); }
+  };
+
+  return (
+    <div className="bg-[#1a1525] border border-white/5 rounded-sm p-6" data-testid="discord-guild-chat-console">
+      <h2 className="font-display font-bold text-lg mb-1">Server Chat</h2>
+      <p className="text-xs text-white/50 mb-4">Live history of every server channel the bot can see. Reply and tag users directly from here.</p>
+      <div className="grid md:grid-cols-3 gap-4">
+        <div className="space-y-1 max-h-72 overflow-y-auto" data-testid="discord-channel-list">
+          {channels.map((c) => (
+            <button key={c.channel_id} onClick={() => { setSel(c.channel_id); setMsgs([]); setMentionId(""); }}
+                    data-testid={`discord-channel-${c.channel_id}`}
+                    className={`w-full text-left px-2 py-1.5 rounded text-xs ${sel === c.channel_id ? "bg-[#FF007F]/20 text-white" : "text-white/70 hover:bg-white/5"}`}>
+              <div className="font-bold truncate">#{c.channel_name}</div>
+              <div className="text-white/40 truncate">{c.guild_name}</div>
+            </button>
+          ))}
+          {channels.length === 0 && <div className="text-white/30 text-xs italic px-2">No channels found — is the bot online and in a server?</div>}
+        </div>
+        <div className="md:col-span-2 flex flex-col">
+          <div className="flex-1 bg-[#0d0a14] border border-white/10 rounded-sm p-3 h-56 overflow-y-auto space-y-2" data-testid="discord-channel-thread">
+            {!sel && <div className="text-white/30 text-xs italic">Select a channel.</div>}
+            {msgs.map((m) => (
+              <div key={m.id} className={`max-w-[85%] px-2.5 py-1.5 rounded text-xs ${m.direction === "out" ? "ml-auto bg-[#FF007F]/25 text-white" : "bg-white/8 text-white/85"}`}>
+                <div className="text-[9px] text-white/40 font-bold">{m.author_name}</div>
+                <div>{m.text}</div>
+                <div className="text-[9px] text-white/35 mt-0.5">{new Date(m.created_at).toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+          <div className="flex flex-col gap-2 mt-2">
+            <div className="flex gap-2">
+              <select value={mentionId} onChange={(e) => setMentionId(e.target.value)}
+                      data-testid="discord-channel-tag-select"
+                      className="bg-[#0d0a14] border border-white/10 rounded-sm text-xs px-2 py-1.5 text-white/70">
+                <option value="">No tag</option>
+                {knownAuthors.map(([id, name]) => (
+                  <option key={id} value={id}>Tag {name}</option>
+                ))}
+              </select>
+              <Input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
+                     placeholder="Message the channel…" data-testid="discord-channel-input" className="bg-[#0d0a14] border-white/10 flex-1" />
+            </div>
+            <button onClick={send} disabled={sending || !text.trim() || !sel} data-testid="discord-channel-send"
                     className="px-5 gradient-pp rounded-sm text-xs font-bold uppercase tracking-wider disabled:opacity-40">
               Send
             </button>
@@ -3946,6 +4426,7 @@ function DiscordPanel({ token }) {
       <DiscordPurchaseChannelPanel token={token} />
       <DiscordServersPanel token={token} />
       <DiscordDmConsole token={token} />
+      <DiscordGuildChatConsole token={token} />
       <form
         onSubmit={save}
         data-testid="discord-form"
@@ -5159,7 +5640,7 @@ function UsersPanel({ token }) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null); // user doc
-  const [edit, setEdit] = useState({ email: "", role: "user", new_password: "" });
+  const [edit, setEdit] = useState({ email: "", role: "user", new_password: "", username: "" });
   const [saving, setSaving] = useState(false);
   const [balUser, setBalUser] = useState(null); // user for balance adjust modal
   const [balAmount, setBalAmount] = useState("");
@@ -5304,6 +5785,7 @@ function UsersPanel({ token }) {
       email: u.email || "",
       role: u.role || "user",
       new_password: "",
+      username: u.username || "",
     });
   };
 
@@ -5315,6 +5797,7 @@ function UsersPanel({ token }) {
       if (edit.email && edit.email !== editing.email) payload.email = edit.email;
       if (edit.role && edit.role !== editing.role) payload.role = edit.role;
       if (edit.new_password) payload.new_password = edit.new_password;
+      if (edit.username && edit.username.trim() !== (editing.username || "")) payload.username = edit.username.trim();
       if (Object.keys(payload).length === 0) {
         toast.error("Nothing changed");
         setSaving(false);
@@ -5868,6 +6351,17 @@ function UsersPanel({ token }) {
             <h3 className="font-display font-bold text-lg mb-1">Edit User</h3>
             <div className="text-xs text-white/50 font-mono mb-4">{editing.username}</div>
             <div className="space-y-3">
+              <div>
+                <Label className="text-[11px] uppercase tracking-wider text-white/60">
+                  Username
+                </Label>
+                <Input
+                  data-testid="edit-user-username"
+                  value={edit.username}
+                  onChange={(e) => setEdit({ ...edit, username: e.target.value })}
+                  className="bg-[#0d0a14] border-white/10 mt-1"
+                />
+              </div>
               <div>
                 <Label className="text-[11px] uppercase tracking-wider text-white/60">
                   Email
@@ -6933,7 +7427,7 @@ function ChatBansButton({ token }) {
   );
 }
 
-const STAFF_PERMS_OPTIONS = ["tickets", "ai_inbox", "orders", "discord", "withdrawals"];
+const STAFF_PERMS_OPTIONS = ["tickets", "ai_inbox", "orders", "discord", "withdrawals", "username_review"];
 
 function StaffPanel({ token }) {
   const [items, setItems] = useState([]);

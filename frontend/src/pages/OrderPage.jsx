@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { api } from "@/lib/api";
+import { resolveDeliveryValue, formatDeliveryLabel } from "@/lib/serviceDisplay";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -166,6 +167,7 @@ export default function OrderPage() {
             <div className="grid grid-cols-2 gap-3 mb-6">
               <InfoTile label="Min Qty" value={service.min} />
               <InfoTile label="Max Qty" value={service.max} />
+              <InfoTile label="Delivery" value={formatDeliveryLabel(resolveDeliveryValue(service))} />
               <InfoTile label="Service ID" value={`#${service.service}`} />
               <InfoTile label="Type" value={service.type || "Default"} />
             </div>
@@ -342,3 +344,4 @@ function Feature({ icon: Icon, text }) {
     </div>
   );
 }
+

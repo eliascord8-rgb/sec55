@@ -186,3 +186,5 @@ mongodump/
 frontend/node_modules/.cache/default-development/13.pack
 frontend/node_modules/.cache/default-development/5.pack
 frontend/node_modules/.cache/default-development/15.pack
+nohup.out
+backend/uploads/

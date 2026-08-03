@@ -391,18 +391,34 @@ export default function AIWidget({ open, onOpenChange }) {
       // AI backend is unreachable — render an inline handover CTA in the chat
       // instead of a generic error. The message has a `handover` flag the
       // renderer picks up to draw a "Connect with our team" button.
-      const detail = err?.response?.data?.detail || "";
-      const isRateLimit = err?.response?.status === 429 || /rate.limit/i.test(String(detail));
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          handover: true,
-          text: isRateLimit
-            ? "⏱ Sorry — I'm getting a lot of questions right now."
-            : "⚠️ Sorry, our AI operator is currently unreachable.",
-        },
-      ]);
+      const status = err?.response?.status;
+      const rawDetail = err?.response?.data?.detail;
+      const detail = typeof rawDetail === "string" ? rawDetail : (rawDetail?.message || "");
+      const isRateLimit = status === 429 && !/muted/i.test(String(detail));
+      const isMuted = status === 429 && /muted/i.test(String(detail));
+      const isBanned = status === 403 && /banned/i.test(String(detail));
+      const isIdentifyRequired = status === 403 && (rawDetail?.code === "identification_required");
+      if (isBanned) {
+        try { localStorage.setItem("bs_chat_banned", "1"); } catch { /* ignore */ }
+        setMessages((prev) => [...prev, { role: "system", text: "🚫 You've been banned from chat support. Contact us another way if you think this is a mistake." }]);
+        onOpenChange(false);
+      } else if (isMuted) {
+        setMessages((prev) => [...prev, { role: "system", text: "🔇 You're temporarily muted from chat — please try again shortly." }]);
+      } else if (isIdentifyRequired) {
+        setIdentified(false);
+        setMessages((prev) => [...prev, { role: "system", text: "Please tell us your email or username to start chatting." }]);
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            handover: true,
+            text: isRateLimit
+              ? "⏱ Sorry — I'm getting a lot of questions right now."
+              : "⚠️ Sorry, our AI operator is currently unreachable.",
+          },
+        ]);
+      }
     } finally {
       setSending(false);
     }
@@ -843,15 +859,11 @@ export default function AIWidget({ open, onOpenChange }) {
               <Bubble m={m} />
               {/* Handover CTA — appears under the assistant's error message when AI backend is unreachable */}
               {m.handover && (
-                <div className="mx-3 -mt-1 mb-2 flex items-start gap-2" data-testid={`ai-handover-cta-${i}`}>
-                  <button
-                    onClick={requestHumanHandover}
-                    data-testid="ai-connect-team-btn"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm bg-emerald-500 hover:bg-emerald-400 text-black text-[11px] font-black uppercase tracking-wider transition"
-                  >
+                <div className="mx-3 -mt-1 mb-2" data-testid={`ai-handover-cta-${i}`}>
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm bg-amber-500/15 border border-amber-500/40 text-amber-200 text-[10px] uppercase tracking-wider">
                     <User className="w-3 h-3" />
-                    Connect with our team
-                  </button>
+                    A human support agent will join shortly
+                  </div>
                 </div>
               )}
               {m.handoverPending && (

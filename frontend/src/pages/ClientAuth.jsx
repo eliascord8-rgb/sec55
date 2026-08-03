@@ -17,66 +17,57 @@ export default function ClientAuth() {
   }, [user, nav]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 md:p-6 relative overflow-hidden">
-      <div
-        className="absolute inset-0 opacity-40"
-        style={{
-          background:
-            "radial-gradient(circle at 20% 30%, #ff007f 0%, transparent 45%), radial-gradient(circle at 80% 70%, #7000ff 0%, transparent 45%)",
-        }}
-      />
-      <div
-        className="absolute inset-0 opacity-60"
-        style={{ background: "linear-gradient(180deg, #0a0014 0%, #050505 100%)" }}
-      />
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(52,211,153,0.14),_transparent_34%),linear-gradient(135deg,_#040806_0%,_#07110b_50%,_#030705_100%)] px-3 py-6 sm:px-5 md:px-6">
+      <div className="absolute inset-0 opacity-70" style={{ background: "radial-gradient(circle at 20% 20%, rgba(16,185,129,0.18), transparent 28%), radial-gradient(circle at 80% 80%, rgba(52,211,153,0.16), transparent 30%)" }} />
 
-      <div className="relative w-full max-w-md">
+      <div className="relative w-full max-w-[430px]">
         <Link
           to="/"
           data-testid="back-home-link"
-          className="absolute -top-12 left-0 text-xs uppercase tracking-wider text-white/60 hover:text-white flex items-center gap-1"
+          className="mb-4 inline-flex items-center gap-1 text-xs uppercase tracking-[0.24em] text-white/60 transition hover:text-white"
         >
-          <ArrowLeft className="w-3 h-3" /> Home
+          <ArrowLeft className="h-3.5 w-3.5" /> Home
         </Link>
 
-        <div className="glass rounded-sm p-6 md:p-8">
-          <div className="flex items-center gap-2 mb-6">
-            <div className="w-8 h-8 rounded-sm gradient-pp flex items-center justify-center">
-              <Sparkles className="w-4 h-4" strokeWidth={2.5} />
+        <div className="rounded-[28px] border border-white/10 bg-[#07140d]/95 p-5 shadow-[0_20px_80px_rgba(0,0,0,0.35)] backdrop-blur-xl sm:p-8">
+          <div className="mb-6 flex items-center gap-2">
+            <div className="flex h-9 w-9 items-center justify-center rounded-2xl border border-emerald-400/30 bg-emerald-500/10">
+              <Sparkles className="h-4.5 w-4.5 text-emerald-300" strokeWidth={2.3} />
             </div>
-            <span className="font-display font-black text-lg">
-              Better<span className="text-[#FF007F]">Social</span>
-            </span>
-            <span className="ml-auto text-xs uppercase tracking-[0.2em] text-white/40">
-              Client Area
-            </span>
+            <div>
+              <div className="font-display text-lg font-black leading-none">
+                Better<span className="text-emerald-300">Social</span>
+              </div>
+              <div className="mt-1 text-[10px] uppercase tracking-[0.26em] text-white/45">
+                Client Area
+              </div>
+            </div>
           </div>
 
           <Tabs defaultValue="login" className="w-full">
-            <TabsList className="grid grid-cols-2 bg-[#1a1525] mb-5 rounded-sm">
+            <TabsList className="mb-5 grid grid-cols-2 rounded-2xl border border-white/10 bg-[#0c1b13] p-1">
               <TabsTrigger
                 value="login"
                 data-testid="tab-login"
-                className="data-[state=active]:bg-[#FF007F] rounded-sm"
+                className="rounded-xl text-sm font-semibold data-[state=active]:bg-emerald-500 data-[state=active]:text-black"
               >
                 Sign in
               </TabsTrigger>
               <TabsTrigger
                 value="register"
                 data-testid="tab-register"
-                className="data-[state=active]:bg-[#FF007F] rounded-sm"
+                className="rounded-xl text-sm font-semibold data-[state=active]:bg-emerald-500 data-[state=active]:text-black"
               >
                 Create account
               </TabsTrigger>
             </TabsList>
 
-            {/* Google Sign-in / Sign-up — one button, unified flow */}
             <GoogleSignInButton />
 
-            <div className="flex items-center gap-3 my-5">
-              <div className="flex-1 h-px bg-white/10" />
-              <span className="text-[10px] uppercase tracking-widest text-white/40 font-bold">or</span>
-              <div className="flex-1 h-px bg-white/10" />
+            <div className="my-5 flex items-center gap-3">
+              <div className="h-px flex-1 bg-white/10" />
+              <span className="text-[10px] font-bold uppercase tracking-[0.24em] text-white/40">or</span>
+              <div className="h-px flex-1 bg-white/10" />
             </div>
 
             <TabsContent value="login">
@@ -102,7 +93,7 @@ function GoogleSignInButton() {
     <button
       onClick={startGoogle}
       data-testid="google-signin-btn"
-      className="w-full inline-flex items-center justify-center gap-3 py-3 rounded-md bg-white hover:bg-white/90 text-black font-bold text-sm transition-all shadow-lg"
+      className="w-full inline-flex items-center justify-center gap-3 rounded-2xl bg-white py-3 text-sm font-bold text-black shadow-lg transition hover:bg-white/90"
     >
       <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
         <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
@@ -183,7 +174,7 @@ function LoginForm({ onSuccess }) {
             value={ident}
             onChange={(e) => setIdent(e.target.value)}
             required
-            className="bg-[#1a1525] border-white/10 mt-1"
+            className="mt-1 border-white/10 bg-[#0d1b13] text-white placeholder:text-white/30"
           />
         </div>
         <div>
@@ -204,7 +195,7 @@ function LoginForm({ onSuccess }) {
             value={pw}
             onChange={(e) => setPw(e.target.value)}
             required
-            className="bg-[#1a1525] border-white/10 mt-1"
+            className="mt-1 border-white/10 bg-[#0d1b13] text-white placeholder:text-white/30"
           />
         </div>
         <MathCaptcha key={`l-${captchaResetKey}`} onChange={setCaptcha} testId="login-captcha" />
@@ -212,7 +203,7 @@ function LoginForm({ onSuccess }) {
           type="submit"
           disabled={loading}
           data-testid="login-submit"
-          className="w-full py-3 gradient-pp rounded-sm font-bold tracking-wide disabled:opacity-50 hover:opacity-90 transition"
+          className="w-full rounded-2xl bg-emerald-500 py-3 font-bold tracking-wide text-black transition hover:bg-emerald-400 disabled:opacity-50"
         >
           {loading ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Sign in"}
         </button>
@@ -298,7 +289,7 @@ function RegisterForm({ onSuccess }) {
           maxLength={24}
           pattern="^[a-zA-Z0-9_]+$"
           required
-          className="bg-[#1a1525] border-white/10 mt-1"
+          className="mt-1 border-white/10 bg-[#0d1b13] text-white placeholder:text-white/30"
         />
         <p className="text-[10px] text-white/30 mt-1">
           3–24 chars · letters, numbers, underscore
@@ -312,7 +303,7 @@ function RegisterForm({ onSuccess }) {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
-          className="bg-[#1a1525] border-white/10 mt-1"
+          className="mt-1 border-white/10 bg-[#0d1b13] text-white placeholder:text-white/30"
         />
       </div>
       <div>
@@ -324,7 +315,7 @@ function RegisterForm({ onSuccess }) {
           onChange={(e) => setPw(e.target.value)}
           minLength={8}
           required
-          className="bg-[#1a1525] border-white/10 mt-1"
+          className="mt-1 border-white/10 bg-[#0d1b13] text-white placeholder:text-white/30"
         />
         <p className="text-[10px] text-white/30 mt-1">min 8 chars</p>
       </div>
@@ -333,7 +324,7 @@ function RegisterForm({ onSuccess }) {
         type="submit"
         disabled={loading}
         data-testid="register-submit"
-        className="w-full py-3 gradient-pp rounded-sm font-bold tracking-wide disabled:opacity-50 hover:opacity-90 transition"
+        className="w-full rounded-2xl bg-emerald-500 py-3 font-bold tracking-wide text-black transition hover:bg-emerald-400 disabled:opacity-50"
       >
         {loading ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Create account"}
       </button>

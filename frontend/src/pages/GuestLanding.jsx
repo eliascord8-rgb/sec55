@@ -61,6 +61,14 @@ export default function GuestLanding() {
   const [authOpen, setAuthOpen] = useState(null); // 'login' | 'signup' | null
   const { t } = useLang();
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("tab") || params.get("view") || params.get("destination");
+    if (requested === "messages") {
+      setAuthOpen("login");
+    }
+  }, []);
+
   return (
     <div className="min-h-screen flex flex-col text-white bg-[#0a1a0a] theme-green" data-testid="guest-landing">
       {/* Header */}
@@ -373,7 +381,8 @@ function AuthModal({ mode, onClose, switchMode }) {
         <button
           type="button"
           onClick={() => {
-            // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+            const redirectTarget = `${window.location.pathname}${window.location.search || ""}`;
+            sessionStorage.setItem("bs_after_auth_redirect", redirectTarget || "/client/dashboard");
             const redirectUrl = window.location.origin + "/client/dashboard";
             window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
           }}

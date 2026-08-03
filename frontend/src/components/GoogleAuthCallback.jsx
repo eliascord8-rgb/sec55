@@ -34,10 +34,11 @@ export default function GoogleAuthCallback() {
     (async () => {
       try {
         const r = await api.post("/auth/google-status", { session_id: sid });
+        const redirectTarget = (sessionStorage.getItem("bs_after_auth_redirect") || "/client/dashboard").trim();
         if (r.data.kind === "existing_user") {
           setAuth(r.data.token, r.data.user);
           toast.success(`Welcome back, ${r.data.user.username}!`);
-          nav("/client/dashboard");
+          nav(redirectTarget.startsWith("/") ? redirectTarget : "/client/dashboard");
         } else if (r.data.kind === "needs_username") {
           // Suggest a username from the email local-part
           const emailLocal = (r.data.google_data?.email || "").split("@")[0]
@@ -71,10 +72,11 @@ export default function GoogleAuthCallback() {
         signup_token: signup.signup_token,
         username: u,
       });
+      const redirectTarget = (sessionStorage.getItem("bs_after_auth_redirect") || "/client/dashboard").trim();
       setAuth(r.data.token, r.data.user);
       toast.success(`Welcome, @${r.data.user.username}!`);
       setSignup(null);
-      nav("/client/dashboard");
+      nav(redirectTarget.startsWith("/") ? redirectTarget : "/client/dashboard");
     } catch (err) {
       toast.error(err.response?.data?.detail || "Couldn't finish sign-up.");
     } finally {

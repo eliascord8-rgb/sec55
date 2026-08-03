@@ -241,6 +241,88 @@ body.theme-purple-body { background: #0f051a; }
 .theme-green .bg-\[\#1a1525\] { background-color: #0f2a15 !important; }
 .theme-green .bg-\[\#12101a\] { background-color: #0f2a15 !important; }
 
+/* =====================================================================
+   "New layout" (green top-nav dashboard) theme overrides.
+   This shell uses Tailwind's built-in emerald-* utility classes plus a
+   few custom dark-green hex surfaces, none of which are covered by the
+   legacy .theme-* rules above (those target the old #FF007F/#7000FF
+   palette). These rules retint the emerald accents + dark-green surfaces
+   for the blue/red/purple palettes so the picker actually re-colors the
+   whole dashboard (header, mobile drawer, bottom nav, home view, etc).
+   Green needs no override — it's the native palette already in use.
+   Note: `[class~="..."]` matches only the exact (solid) utility class,
+   while `[class*="prefix/"]` matches any opacity-suffixed variant
+   (e.g. bg-emerald-500/20) so solid buttons stay solid and translucent
+   tints stay translucent. */
+.theme-blue [class~="bg-emerald-500"], .theme-blue [class~="hover:bg-emerald-500"]:hover { background-color: #3b82f6 !important; }
+.theme-blue [class~="bg-emerald-400"], .theme-blue [class~="hover:bg-emerald-400"]:hover { background-color: #60a5fa !important; }
+.theme-blue [class~="hover:bg-emerald-300"]:hover { background-color: #93c5fd !important; }
+.theme-blue [class*="bg-emerald-500/"] { background-color: rgba(59, 130, 246, 0.18) !important; }
+.theme-blue [class*="bg-emerald-400/"] { background-color: rgba(96, 165, 250, 0.18) !important; }
+.theme-blue [class*="hover:bg-emerald-500/"]:hover { background-color: rgba(59, 130, 246, 0.28) !important; }
+.theme-blue [class~="border-emerald-500"], .theme-blue [class~="border-emerald-400"] { border-color: #3b82f6 !important; }
+.theme-blue [class*="border-emerald-500/"], .theme-blue [class*="border-emerald-400/"] { border-color: rgba(59, 130, 246, 0.35) !important; }
+.theme-blue [class*="hover:border-emerald-400"]:hover { border-color: #60a5fa !important; }
+.theme-blue [class*="text-emerald-100"] { color: #dbeafe !important; }
+.theme-blue [class*="text-emerald-200"] { color: #bfdbfe !important; }
+.theme-blue [class*="text-emerald-300"] { color: #93c5fd !important; }
+.theme-blue [class*="text-emerald-400"] { color: #60a5fa !important; }
+.theme-blue [class~="text-emerald-500/40"] { color: rgba(59, 130, 246, 0.4) !important; }
+.theme-blue [class~="from-emerald-500"] { --tw-gradient-from: #3b82f6 !important; }
+.theme-blue [class~="from-emerald-500/10"] { --tw-gradient-from: rgba(59, 130, 246, 0.1) !important; }
+.theme-blue [class~="to-emerald-400"] { --tw-gradient-to: #60a5fa !important; }
+.theme-blue .bg-\[\#0d2b12\] { background-color: #0d1b2b !important; }
+.theme-blue .bg-\[\#0f2a15\] { background-color: #0f1e2a !important; }
+.theme-blue .bg-\[\#0a1a0a\] { background-color: #0a0f1a !important; }
+.theme-blue .from-\[\#0f2a15\] { --tw-gradient-from: #0f1e2a !important; }
+.theme-blue .to-\[\#0a1a0a\] { --tw-gradient-to: #0a0f1a !important; }
+
+.theme-red [class~="bg-emerald-500"], .theme-red [class~="hover:bg-emerald-500"]:hover { background-color: #ef4444 !important; }
+.theme-red [class~="bg-emerald-400"], .theme-red [class~="hover:bg-emerald-400"]:hover { background-color: #f87171 !important; }
+.theme-red [class~="hover:bg-emerald-300"]:hover { background-color: #fca5a5 !important; }
+.theme-red [class*="bg-emerald-500/"] { background-color: rgba(239, 68, 68, 0.18) !important; }
+.theme-red [class*="bg-emerald-400/"] { background-color: rgba(248, 113, 113, 0.18) !important; }
+.theme-red [class*="hover:bg-emerald-500/"]:hover { background-color: rgba(239, 68, 68, 0.28) !important; }
+.theme-red [class~="border-emerald-500"], .theme-red [class~="border-emerald-400"] { border-color: #ef4444 !important; }
+.theme-red [class*="border-emerald-500/"], .theme-red [class*="border-emerald-400/"] { border-color: rgba(239, 68, 68, 0.35) !important; }
+.theme-red [class*="hover:border-emerald-400"]:hover { border-color: #f87171 !important; }
+.theme-red [class*="text-emerald-100"] { color: #fee2e2 !important; }
+.theme-red [class*="text-emerald-200"] { color: #fecaca !important; }
+.theme-red [class*="text-emerald-300"] { color: #fca5a5 !important; }
+.theme-red [class*="text-emerald-400"] { color: #f87171 !important; }
+.theme-red [class~="text-emerald-500/40"] { color: rgba(239, 68, 68, 0.4) !important; }
+.theme-red [class~="from-emerald-500"] { --tw-gradient-from: #ef4444 !important; }
+.theme-red [class~="from-emerald-500/10"] { --tw-gradient-from: rgba(239, 68, 68, 0.1) !important; }
+.theme-red [class~="to-emerald-400"] { --tw-gradient-to: #f87171 !important; }
+.theme-red .bg-\[\#0d2b12\] { background-color: #2b0d0d !important; }
+.theme-red .bg-\[\#0f2a15\] { background-color: #2a0f0f !important; }
+.theme-red .bg-\[\#0a1a0a\] { background-color: #1a0a0a !important; }
+.theme-red .from-\[\#0f2a15\] { --tw-gradient-from: #2a0f0f !important; }
+.theme-red .to-\[\#0a1a0a\] { --tw-gradient-to: #1a0a0a !important; }
+
+.theme-purple [class~="bg-emerald-500"], .theme-purple [class~="hover:bg-emerald-500"]:hover { background-color: #8b5cf6 !important; }
+.theme-purple [class~="bg-emerald-400"], .theme-purple [class~="hover:bg-emerald-400"]:hover { background-color: #a78bfa !important; }
+.theme-purple [class~="hover:bg-emerald-300"]:hover { background-color: #c4b5fd !important; }
+.theme-purple [class*="bg-emerald-500/"] { background-color: rgba(139, 92, 246, 0.18) !important; }
+.theme-purple [class*="bg-emerald-400/"] { background-color: rgba(167, 139, 250, 0.18) !important; }
+.theme-purple [class*="hover:bg-emerald-500/"]:hover { background-color: rgba(139, 92, 246, 0.28) !important; }
+.theme-purple [class~="border-emerald-500"], .theme-purple [class~="border-emerald-400"] { border-color: #8b5cf6 !important; }
+.theme-purple [class*="border-emerald-500/"], .theme-purple [class*="border-emerald-400/"] { border-color: rgba(139, 92, 246, 0.35) !important; }
+.theme-purple [class*="hover:border-emerald-400"]:hover { border-color: #a78bfa !important; }
+.theme-purple [class*="text-emerald-100"] { color: #ede9fe !important; }
+.theme-purple [class*="text-emerald-200"] { color: #ddd6fe !important; }
+.theme-purple [class*="text-emerald-300"] { color: #c4b5fd !important; }
+.theme-purple [class*="text-emerald-400"] { color: #a78bfa !important; }
+.theme-purple [class~="text-emerald-500/40"] { color: rgba(139, 92, 246, 0.4) !important; }
+.theme-purple [class~="from-emerald-500"] { --tw-gradient-from: #8b5cf6 !important; }
+.theme-purple [class~="from-emerald-500/10"] { --tw-gradient-from: rgba(139, 92, 246, 0.1) !important; }
+.theme-purple [class~="to-emerald-400"] { --tw-gradient-to: #a78bfa !important; }
+.theme-purple .bg-\[\#0d2b12\] { background-color: #1b0d2b !important; }
+.theme-purple .bg-\[\#0f2a15\] { background-color: #1e0f2a !important; }
+.theme-purple .bg-\[\#0a1a0a\] { background-color: #140a1a !important; }
+.theme-purple .from-\[\#0f2a15\] { --tw-gradient-from: #1e0f2a !important; }
+.theme-purple .to-\[\#0a1a0a\] { --tw-gradient-to: #140a1a !important; }
+
 /* ===== Free balance bonus popup ===== */
 @keyframes bonus-card-in {
   0% { transform: scale(0.3) translateY(40px); opacity: 0; }
@@ -281,3 +363,12 @@ body.theme-purple-body { background: #0f051a; }
   animation-timing-function: linear;
   animation-iteration-count: infinite;
 }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes bs-dropdown-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.bs-dropdown-anim { animation: bs-dropdown-in 0.14s ease-out; }
