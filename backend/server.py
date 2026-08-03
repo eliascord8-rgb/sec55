@@ -3820,6 +3820,16 @@ async def tiktok_post_download(url: str, request: Request):
     }
 
 
+def _curl_impersonate_get(url: str, headers: dict, timeout: float = 15.0):
+    """Sync GET via curl_cffi impersonating a real Chrome TLS/HTTP2 fingerprint.
+    Instagram's edge fingerprints the TLS/HTTP2 handshake and deterministically 429s
+    plain httpx/requests clients (confirmed: identical headers, httpx always 429s,
+    curl/curl_cffi always 200s) — this is not a rate limit, it's bot-fingerprint
+    blocking, so retrying with httpx again never helps."""
+    from curl_cffi import requests as _creq
+    return _creq.get(url, headers=headers, impersonate="chrome", timeout=timeout)
+
+
 async def _ig_fetch_profile(username: str) -> dict:
     """Fetch a public Instagram profile via the web app's undocumented (but keyless) JSON endpoint.
     Requires the standard `x-ig-app-id` header used by instagram.com itself. Returns raw user dict."""
@@ -3827,7 +3837,6 @@ async def _ig_fetch_profile(username: str) -> dict:
     if not h or not re.match(r"^[a-z0-9._]+$", h):
         raise HTTPException(status_code=400, detail="Invalid Instagram username")
     headers = {
-        "User-Agent": _TOOLS_UA,
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
         "x-ig-app-id": "936619743392459",
@@ -3835,8 +3844,7 @@ async def _ig_fetch_profile(username: str) -> dict:
     }
     url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={h}"
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
-            r = await c.get(url, headers=headers)
+        r = await asyncio.to_thread(_curl_impersonate_get, url, headers, 15.0)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not reach Instagram: {e}")
     if r.status_code == 404:
@@ -3899,13 +3907,11 @@ async def instagram_post_download(url: str, request: Request):
         raise HTTPException(status_code=400, detail="Paste a full Instagram post/reel URL (e.g. https://www.instagram.com/p/XXXX/)")
     shortcode = m.group(1)
     headers = {
-        "User-Agent": _TOOLS_UA,
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "en-US,en;q=0.9",
     }
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
-            r = await c.get(f"https://www.instagram.com/p/{shortcode}/", headers=headers)
+        r = await asyncio.to_thread(_curl_impersonate_get, f"https://www.instagram.com/p/{shortcode}/", headers, 15.0)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not reach Instagram: {e}")
     if r.status_code == 404:

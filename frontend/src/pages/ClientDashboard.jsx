@@ -502,22 +502,43 @@ export default function ClientDashboard() {
     ...(feat("numbers") ? [{ id: "numbers", label: t("nav_numbers"), testId: "nav-numbers" }] : []),
     ...(feat("games") ? [{ id: "games", label: t("nav_games"), testId: "nav-games" }] : []),
   ];
-  // Secondary tabs — collapsed under a "More ▾" dropdown on PC. Full list appears
-  // in the mobile drawer.
-  const secondaryTabs = [
-    ...(ownsIdFinder ? [{ id: "finder", label: "Finder", testId: "nav-finder", isNew: true, icon: Search }] : []),
-    ...(ownsBlacklist ? [{ id: "blacklist", label: "Blacklist", testId: "nav-blacklist", icon: ShieldOff }] : []),
-    { id: "invoices", label: t("nav_invoices"), testId: "nav-invoices", badge: unpaidInvoices, icon: FileText },
-    { id: "api", label: "API", testId: "nav-api", icon: Zap },
-    { id: "help", label: t("nav_help"), testId: "nav-help", icon: LifeBuoy },
-    { id: "messages", label: t("nav_messages"), testId: "nav-messages", badge: unreadDms, icon: MessageSquare },
-    { id: "tickets", label: t("nav_tickets"), testId: "nav-tickets", badge: unreadTickets, icon: Ticket },
-    { id: "funds", label: t("nav_funds"), testId: "nav-funds", icon: CreditCard },
-    { id: "discord", label: "Manage Discord", testId: "nav-discord", icon: MessageCircle },
-    { id: "referrals", label: "Referrals", testId: "nav-referrals", icon: Users },
-    { id: "redeem", label: t("nav_redeem"), testId: "nav-redeem", icon: Gift },
-    { id: "withdraw", label: t("nav_withdraw"), testId: "nav-withdraw", icon: ArrowUpRight },
+  // Secondary tabs — collapsed under a "More ▾" dropdown on PC, grouped into
+  // sections so the menu reads as organized categories instead of one long list.
+  const secondaryGroups = [
+    {
+      label: "Account",
+      tabs: [
+        { id: "invoices", label: t("nav_invoices"), testId: "nav-invoices", badge: unpaidInvoices, icon: FileText },
+        { id: "funds", label: t("nav_funds"), testId: "nav-funds", icon: CreditCard },
+        { id: "withdraw", label: t("nav_withdraw"), testId: "nav-withdraw", icon: ArrowUpRight },
+        { id: "redeem", label: t("nav_redeem"), testId: "nav-redeem", icon: Gift },
+      ],
+    },
+    {
+      label: "Tools",
+      tabs: [
+        ...(ownsIdFinder ? [{ id: "finder", label: "Finder", testId: "nav-finder", isNew: true, icon: Search }] : []),
+        ...(ownsBlacklist ? [{ id: "blacklist", label: "Blacklist", testId: "nav-blacklist", icon: ShieldOff }] : []),
+        { id: "api", label: "API", testId: "nav-api", icon: Zap },
+      ],
+    },
+    {
+      label: "Support",
+      tabs: [
+        { id: "help", label: t("nav_help"), testId: "nav-help", icon: LifeBuoy },
+        { id: "messages", label: t("nav_messages"), testId: "nav-messages", badge: unreadDms, icon: MessageSquare },
+        { id: "tickets", label: t("nav_tickets"), testId: "nav-tickets", badge: unreadTickets, icon: Ticket },
+      ],
+    },
+    {
+      label: "Community",
+      tabs: [
+        { id: "discord", label: "Manage Discord", testId: "nav-discord", icon: MessageCircle },
+        { id: "referrals", label: "Referrals", testId: "nav-referrals", icon: Users },
+      ],
+    },
   ];
+  const secondaryTabs = secondaryGroups.flatMap((g) => g.tabs);
   const navTabs = [...primaryTabs, ...secondaryTabs];
   const secondaryBadgeCount = secondaryTabs.reduce((n, tab) => n + (tab.badge || 0), 0);
 
@@ -602,28 +623,36 @@ export default function ClientDashboard() {
                 {moreOpen && (
                   <>
                     <div className="fixed inset-0 z-30" onClick={() => setMoreOpen(false)} />
-                    <div className="bs-dropdown-anim absolute right-0 top-full mt-2 w-[340px] bg-[#050505] border border-emerald-500/30 rounded-xl shadow-2xl shadow-black/50 z-40 p-2" data-testid="nav-more-menu">
-                      <div className="grid grid-cols-2 gap-1">
-                        {secondaryTabs.map((tab) => {
-                          const Icon = tab.icon;
-                          return (
-                          <button
-                            key={tab.id}
-                            onClick={() => { changeView(tab.id); setMoreOpen(false); }}
-                            data-testid={tab.testId}
-                            className={`relative flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm transition ${view === tab.id ? "bg-emerald-500/15 text-emerald-200" : "text-white/80 hover:bg-emerald-500/10 hover:text-white"}`}
-                          >
-                            {Icon && <Icon className="w-4 h-4 shrink-0 opacity-80" />}
-                            <span className="font-medium truncate">{tab.label}</span>
-                            {tab.badge > 0 && (
-                              <span className="ml-auto min-w-[18px] h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none shrink-0">
-                                {tab.badge}
-                              </span>
-                            )}
-                          </button>
-                          );
-                        })}
-                      </div>
+                    <div className="bs-dropdown-anim absolute right-0 top-full mt-2 w-[360px] max-h-[75vh] overflow-y-auto bg-[#050505] border border-emerald-500/30 rounded-xl shadow-2xl shadow-black/50 z-40 p-3" data-testid="nav-more-menu">
+                      {secondaryGroups.filter((g) => g.tabs.length > 0).map((group, gi) => (
+                        <div key={group.label} className={gi > 0 ? "mt-2 pt-2 border-t border-white/5" : ""}>
+                          <div className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-white/35">{group.label}</div>
+                          <div className="grid grid-cols-2 gap-1">
+                            {group.tabs.map((tab) => {
+                              const Icon = tab.icon;
+                              return (
+                              <button
+                                key={tab.id}
+                                onClick={() => { changeView(tab.id); setMoreOpen(false); }}
+                                data-testid={tab.testId}
+                                className={`relative flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm transition ${view === tab.id ? "bg-emerald-500/15 text-emerald-200" : "text-white/80 hover:bg-emerald-500/10 hover:text-white"}`}
+                              >
+                                {Icon && <Icon className="w-4 h-4 shrink-0 opacity-80" />}
+                                <span className="font-medium truncate">{tab.label}</span>
+                                {tab.isNew && (
+                                  <span className="text-[8px] font-black px-1 py-[1px] rounded-full bg-emerald-400 text-black tracking-wider leading-none shrink-0">NEW</span>
+                                )}
+                                {tab.badge > 0 && (
+                                  <span className="ml-auto min-w-[18px] h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none shrink-0">
+                                    {tab.badge}
+                                  </span>
+                                )}
+                              </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </>
                 )}

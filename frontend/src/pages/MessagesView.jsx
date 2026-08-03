@@ -729,14 +729,21 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
       {/* Call modal */}
       {call && (
         <div className="fixed inset-0 z-[90] bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-[#0d0a14] border border-white/10 rounded-2xl p-6 max-w-md w-full text-center shadow-2xl">
-            <div className="w-20 h-20 rounded-full bg-gradient-to-br from-[#3b82f6] to-[#7c3aed] mx-auto flex items-center justify-center text-2xl font-black animate-pulse">
+          <div className="bs-modal-anim bg-gradient-to-b from-[#14101f] to-[#0d0a14] border border-white/10 rounded-2xl p-6 max-w-md w-full text-center shadow-2xl">
+            <div className={`w-20 h-20 rounded-full bg-gradient-to-br from-[#3b82f6] to-[#7c3aed] mx-auto flex items-center justify-center text-2xl font-black ${!call.active ? "bs-ring-pulse" : ""}`}>
               {(call.peerName || activeUser?.username || "?").slice(0,2).toUpperCase()}
             </div>
             <h3 className="font-display font-black text-xl mt-4">
               {call.incoming ? "Incoming call" : call.active ? "In call" : "Calling…"}
             </h3>
             <div className="text-sm text-white/60 mt-1">@{call.peerName || activeUser?.username}</div>
+            {!call.active && (
+              <div className="flex items-center justify-center gap-1 mt-2" aria-hidden="true">
+                <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-bounce [animation-delay:-0.3s]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-bounce [animation-delay:-0.15s]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-bounce" />
+              </div>
+            )}
             {(callStats.conn || callStats.ice || callStats.gather) && (
               <div className="mt-3 mx-auto text-[10px] font-mono text-white/50 bg-white/5 rounded-md px-3 py-1.5 inline-flex gap-3" data-testid="call-debug-overlay">
                 <span>conn:{callStats.conn || "–"}</span>
@@ -746,17 +753,17 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
             )}
             {call.video && (
               <div className="grid grid-cols-2 gap-2 mt-4">
-                <video ref={remoteVideoRef} autoPlay playsInline className="w-full aspect-video bg-black rounded-md" />
-                <video ref={localVideoRef} autoPlay playsInline muted className="w-full aspect-video bg-black rounded-md" />
+                <video ref={remoteVideoRef} autoPlay playsInline className="w-full aspect-video bg-black rounded-md border border-white/10" />
+                <video ref={localVideoRef} autoPlay playsInline muted className="w-full aspect-video bg-black rounded-md border border-white/10" />
               </div>
             )}
             <div className="flex gap-3 justify-center mt-6">
               {call.incoming && !call.active && (
-                <button onClick={acceptCall} data-testid="accept-call-btn" className="px-6 py-3 rounded-full bg-emerald-500 text-black font-bold uppercase text-xs tracking-wider inline-flex items-center gap-2 hover:bg-emerald-400">
+                <button onClick={acceptCall} data-testid="accept-call-btn" className="px-6 py-3 rounded-full bg-emerald-500 text-black font-bold uppercase text-xs tracking-wider inline-flex items-center gap-2 hover:bg-emerald-400 hover:scale-105 transition">
                   <Phone className="w-4 h-4" /> Accept
                 </button>
               )}
-              <button onClick={endCall} data-testid="end-call-btn" className="px-6 py-3 rounded-full bg-red-500 text-white font-bold uppercase text-xs tracking-wider inline-flex items-center gap-2 hover:bg-red-400">
+              <button onClick={endCall} data-testid="end-call-btn" className="px-6 py-3 rounded-full bg-red-500 text-white font-bold uppercase text-xs tracking-wider inline-flex items-center gap-2 hover:bg-red-400 hover:scale-105 transition">
                 <PhoneOff className="w-4 h-4" /> {call.active ? "Hang up" : call.incoming ? "Decline" : "Cancel"}
               </button>
             </div>
@@ -766,7 +773,7 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
       {/* Report dialog */}
       {reportOpen && (
         <div className="fixed inset-0 z-[95] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setReportOpen(false)}>
-          <div className="bg-[#0d0a14] border border-white/10 rounded-2xl p-6 max-w-md w-full shadow-2xl" onClick={(e) => e.stopPropagation()} data-testid="report-dialog">
+          <div className="bs-modal-anim bg-gradient-to-b from-[#14101f] to-[#0d0a14] border border-white/10 rounded-2xl p-6 max-w-md w-full shadow-2xl" onClick={(e) => e.stopPropagation()} data-testid="report-dialog">
             <div className="flex items-center gap-3 mb-3">
               <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-400">
                 <Flag className="w-5 h-5" />
@@ -781,12 +788,16 @@ export default function MessagesView({ authedApi, me, onReadMessages }) {
               value={reportReason}
               onChange={(e) => setReportReason(e.target.value)}
               placeholder="What happened? (harassment, scam, spam, other — optional but helpful)"
-              className="w-full bg-[#1a1525] border border-white/10 rounded-md px-3 py-2 text-sm outline-none focus:border-amber-500 min-h-[100px] resize-y"
+              className="w-full bg-[#1a1525] border border-white/10 rounded-md px-3 py-2 text-sm outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/40 min-h-[100px] resize-y transition"
               maxLength={1000}
             />
-            <div className="flex gap-2 justify-end mt-4">
-              <button onClick={() => { setReportOpen(false); setReportReason(""); }} data-testid="report-cancel" className="px-4 py-2 rounded-md hover:bg-white/5 text-sm text-white/70">Cancel</button>
-              <button onClick={submitReport} disabled={reportSubmitting} data-testid="report-submit" className="px-4 py-2 rounded-md bg-amber-500 hover:bg-amber-400 text-black font-bold text-sm inline-flex items-center gap-2 disabled:opacity-50">
+            <div className="flex items-center justify-between mt-1">
+              <span />
+              <span className="text-[10px] text-white/30">{reportReason.length}/1000</span>
+            </div>
+            <div className="flex gap-2 justify-end mt-3">
+              <button onClick={() => { setReportOpen(false); setReportReason(""); }} data-testid="report-cancel" className="px-4 py-2 rounded-md hover:bg-white/5 text-sm text-white/70 transition">Cancel</button>
+              <button onClick={submitReport} disabled={reportSubmitting} data-testid="report-submit" className="px-4 py-2 rounded-md bg-amber-500 hover:bg-amber-400 hover:scale-105 text-black font-bold text-sm inline-flex items-center gap-2 disabled:opacity-50 disabled:hover:scale-100 transition">
                 {reportSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Flag className="w-4 h-4" />}
                 Submit report
               </button>
